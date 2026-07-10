@@ -74,7 +74,7 @@
 
 ## 虚拟设备模拟器
 
-Aether 自带虚拟设备模拟器 `ha_config/ha_simulator.py`，通过 MQTT 往 HA 报告虚拟设备状态。`run_demo_fixed.bat` 会自动启动它。
+Aether 自带虚拟设备模拟器 `ha_config/ha_simulator.py`，通过 MQTT 往 HA 报告虚拟设备状态。`docker compose up -d` 会自动启动它。
 
 | 设备 | 在哪个房间 | 能干嘛 |
 |------|-----------|--------|
