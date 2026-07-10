@@ -19,10 +19,10 @@
 ```
 
 - **Mosquitto**：MQTT 消息代理，容器名 `mosquitto`，端口 `1884`
-- **Home Assistant**：智能家居平台，容器名 `aether-ha`，本地镜像 `aether-ha:local`，端口 `8123`，通过 MQTT 集成感知设备
+- **Home Assistant**：智能家居平台，容器名 `aether-ha`，官方镜像 `ghcr.io/home-assistant/home-assistant:stable`，端口 `8123`，通过 MQTT 集成感知设备
 - **Aether**：AI 助手后端，通过 HA REST API 读写设备状态并执行自动化
 
-> docker-compose 只有两个服务：`mqtt`（mosquitto）和 `homeassistant`。HA 用的是本地构建的镜像 `aether-ha:local`，不是 ghcr.io 上的官方镜像。
+> docker-compose 有三个服务：`mqtt`（mosquitto）、`homeassistant`（HA 官方镜像）、`aether`（本地构建）。HA 配置通过 `./ha_config` 挂载，只用 `default_config` + 内置 MQTT 集成，无需手动构建镜像。
 
 ## 前置准备
 

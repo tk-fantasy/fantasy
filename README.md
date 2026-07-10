@@ -47,9 +47,6 @@ cp .env.example .env
 cp config.example.json config.json
 #   编辑 config.json，把 ha.token 改成你的 HA 长期访问令牌
 #   （ha.url 不用改，compose 会用 HA_URL 环境变量覆盖成容器服务名）
-
-# 3. 确认本地已有 aether-ha:local 镜像
-#   见 docs/01-安装部署/Docker服务部署指南.md
 ```
 
 启动：
