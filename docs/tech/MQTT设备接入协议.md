@@ -407,7 +407,7 @@ docker logs aether-ha --tail 30
 Get-Content logs\ha_simulator.log -Tail 20 -Wait
 ```
 
-> `logs/ha_simulator.log` 是启动脚本（`run_demo_fixed.bat`）的输出重定向，**不是后端写的日志**。后端日志只有 `logs/app.log`（RotatingFileHandler 10MB×5）。详见《08-运维排查/日志查看与问题排查》。
+> `logs/ha_simulator.log` 是设备模拟器 `ha_simulator.py` 的 stdout 重定向，**不是后端写的日志**。后端日志只有 `logs/app.log`（RotatingFileHandler 10MB×5）。详见《08-运维排查/日志查看与问题排查》。
 
 ### 常见问题
 

@@ -50,7 +50,5 @@ docs/
 todo/
 tests/
 scripts/
-# Windows 启动脚本（容器内不用）
-run_app.bat
 # 示例文件保留 config.example.json（Dockerfile 需要），其余示例排除
 .env.example

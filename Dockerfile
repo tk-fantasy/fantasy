@@ -1,6 +1,6 @@
-# ===== Stage 1: 构建前端（Vue + Vite） =====
 # npm run build 会先 vite build 生成 dist/，再由 scripts/sync-to-backend.js
 # 同步到 ../app/static/frontend/，供后端 FastAPI 作为静态资源直接托管。
+# base 镜像走 Docker daemon registry-mirror（见 ~/.docker/daemon.json），无需在 FROM 写前缀
 FROM node:22-alpine AS frontend-builder
 WORKDIR /aether
 
@@ -55,5 +55,5 @@ ENV STARTUP_PROGRESS_HOST=0.0.0.0 \
 
 EXPOSE 8010 8011
 
-# 与 run_demo_fixed.bat 一致的启动命令
+# 与 run_app.bat 一致的启动命令（纯 Docker 模式）
 CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8010"]

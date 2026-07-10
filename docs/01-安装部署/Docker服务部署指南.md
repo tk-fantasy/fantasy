@@ -54,7 +54,7 @@ docker compose ps
 | `aether-ha` | `aether-ha:local` | 8123→8123 |
 | `mosquitto` | `eclipse-mosquitto:2` | 1884→1884 |
 
-> 小提示：`run_demo_fixed.bat` 会自动执行 `docker compose up -d`，平时不用单独跑。
+> 小提示：日常启动只需 `docker compose up -d`，会自动起 MQTT + HA + Aether 全部服务。
 
 ## 停止服务
 
@@ -90,7 +90,7 @@ Aether 自带一个虚拟设备模拟器 `ha_config/ha_simulator.py`，它通过
 conda run -n yolo python ha_config\ha_simulator.py
 ```
 
-`run_demo_fixed.bat` 会自动启动它，日志在 `logs/ha_simulator.log`。
+`docker compose up -d` 会自动启动它，日志在 `logs/ha_simulator.log`。
 
 ## 配置文件位置
 
