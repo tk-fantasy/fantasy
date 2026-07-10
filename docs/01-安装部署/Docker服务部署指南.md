@@ -21,25 +21,17 @@ Aether 依赖两个 Docker 服务，都定义在 `docker-compose.yml` 里：
 
 ## 关于 HA 镜像
 
-Aether 用的不是官方镜像，而是一个**本地构建的镜像 `aether-ha:local`**——它预装了 HA 的配置、虚拟设备集成、MQTT 接入等，开箱即用。
-
-如果你拿到的是完整项目包，这个镜像应该已经构建好了（构建脚本在项目里）。第一次启动前确认镜像存在：
-
-```powershell
-docker images | findstr aether-ha
-```
-
-看到 `aether-ha  local` 这一行就对了。如果没有，需要先构建（通常是 `docker build -t aether-ha:local ha_config/`，具体以项目里的构建说明为准）。
+Aether 用官方镜像 `ghcr.io/home-assistant/home-assistant:stable`，配置通过 `./ha_config` 挂载进去。只用了 `default_config` + 内置 MQTT 集成，没有自定义组件，`docker compose up -d` 自动拉取，无需手动构建。
 
 ## 启动服务
 
 在项目根目录运行：
 
 ```powershell
-docker compose up -d
+docker compose up -d --build
 ```
 
-第一次启动会拉取 mosquitto 镜像（HA 镜像已经在本地了），很快。
+第一次启动会拉取 mosquitto、HA、构建 Aether 镜像（前端 npm ci + vite build + 后端 pip install），约 5–10 分钟。之后启动很快。
 
 ### 看看是不是跑起来了
 
@@ -47,11 +39,12 @@ docker compose up -d
 docker compose ps
 ```
 
-两个容器状态都是 `Up` 就搞定了：
+三个容器状态都是 `Up` 就搞定了：
 
 | 容器名 | 镜像 | 端口 |
 |--------|------|------|
-| `aether-ha` | `aether-ha:local` | 8123→8123 |
+| `aether` | 本地构建 | 8010→8010, 8011→8011 |
+| `aether-ha` | `ghcr.io/home-assistant/home-assistant:stable` | 8123→8123 |
 | `mosquitto` | `eclipse-mosquitto:2` | 1884→1884 |
 
 > 小提示：日常启动只需 `docker compose up -d`，会自动起 MQTT + HA + Aether 全部服务。
@@ -112,7 +105,7 @@ connection_messages true
 
 ## 常见问题
 
-**Q：`docker compose up` 报错说找不到 `aether-ha:local` 镜像？**
+**Q：`docker compose up` 报错说找不到 `ghcr.io/home-assistant/home-assistant:stable` 镜像？**
 A：本地镜像没构建。先构建 HA 镜像（见项目构建说明），或确认镜像名正确。
 
 **Q：HA 打开了但没设备？**

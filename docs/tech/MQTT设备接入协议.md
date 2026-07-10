@@ -22,7 +22,7 @@ Aether 使用 MQTT 协议连接 Home Assistant 和虚拟设备模拟器。本文
 ```
 
 - **Mosquitto** (`eclipse-mosquitto:2`，容器名 `mosquitto`）：MQTT Broker，端口 1884，**关闭匿名访问**，需账号密码认证
-- **Home Assistant**（容器名 `aether-ha`，本地镜像 `aether-ha:local`）：通过内置 MQTT Integration 订阅设备状态、发送控制指令
+- **Home Assistant**（容器名 `aether-ha`，官方镜像 `ghcr.io/home-assistant/home-assistant:stable`）：通过内置 MQTT Integration 订阅设备状态、发送控制指令
 - **ha_simulator**：模拟虚拟设备状态并响应控制命令，用 `aether/aether` 账号连接 Broker
 - **Aether**：通过 HA REST API（`/api/states`、`/api/services`）读写设备，**不直接连 MQTT**
 
@@ -399,7 +399,7 @@ mosquitto_pub -h localhost -p 1884 -u aether -P aether -t "living_room/curtain/p
 # Broker 日志
 docker logs mosquitto --tail 50 -f
 
-# HA 日志（容器名 aether-ha，镜像 aether-ha:local）
+# HA 日志（容器名 aether-ha，官方镜像 home-assistant:stable）
 docker logs aether-ha --tail 30
 
 # 模拟器日志（由启动脚本重定向到文件，非后端写入）
