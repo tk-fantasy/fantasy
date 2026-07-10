@@ -1,15 +1,17 @@
 # Aether 编排：MQTT + Home Assistant + Aether 应用
 #
-# 两种启动方式（二选一，勿同时运行以免抢占 8010 端口）：
+# 两种启动方式（端口不冲突，可同时运行）：
 #
 #   ① bat 本机启动（开发/日常）：
 #      双击 run_app.bat（生产模式 + PWA）或 run_demo_fixed.bat（开发热重载）。
 #      bat 只起下方 mqtt + homeassistant 两个侧车容器，Aether 应用由本机
-#      conda 环境的 uvicorn 运行（端口 8010）。此模式不启动 aether 容器。
+#      conda 环境的 uvicorn 运行（端口 9010，进度端口 9011）。
 #
 #   ② Docker 容器启动（部署）：
 #      docker compose up -d   一次性启动全部三个服务（含 aether 容器），
-#      Aether 应用在容器内运行，前端构建产物已打进镜像。
+#      Aether 应用在容器内运行（端口 8010，进度端口 8011），前端构建产物已打进镜像。
+#
+# 端口分配：bat 用 9010/9011，docker 用 8010/8011，两者可同时运行互不冲突。
 #
 # 首次启动前：
 #   1. cp config.example.json config.json，把 ha.token 改成 HA 长期令牌

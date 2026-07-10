@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, Query
 
 from ..container import AppContainer, get_container
 from ..core.api_models import ApiResponse
+from ..core.auth import get_current_user
 from ..core.database import Database
 from ..core.exceptions import AppException
 from ..schema.api_schemas import EmojiPreferenceRequest
@@ -67,3 +68,42 @@ async def delete_emoji_preference(
     db = Database.get()
     deleted = await db.emoji_pref_delete(scope, key)
     return ApiResponse(data={"deleted": deleted, "scope": scope, "key": key})
+
+
+@router.post("/emoji/rebuild")
+async def rebuild_emoji_index(
+    container: AppContainer = Depends(get_container),
+    current_user: dict = Depends(get_current_user),
+) -> ApiResponse[dict]:
+    """触发 emoji 向量索引重建（后台异步执行）。
+
+    从现有索引文件读取 emoji 元数据（char/code/name），用 embed client
+    重新生成每个 emoji 的语义向量，写回文件后重新加载。
+    需要先在设置页配置 embed LLM Key。
+    """
+    service = container.emoji_service
+
+    if service.rebuild_status["running"]:
+        raise AppException("索引重建正在进行中，请勿重复触发",
+                           code="rebuild_in_progress", http_status=409)
+
+    embed_client = container.embed_client
+    if not embed_client.enabled:
+        raise AppException("Embed 模型未配置或未启用，请先在设置页配置 LLM Key",
+                           code="embed_not_configured", http_status=400)
+
+    # 后台执行重建（不阻塞响应）
+    from ..main import _background_task_mgr
+    _background_task_mgr.spawn(service.rebuild_index(), name="emoji_rebuild")
+
+    return ApiResponse(data={"status": "started", "message": "索引重建已开始，请轮询进度"})
+
+
+@router.get("/emoji/rebuild/status")
+async def get_rebuild_status(
+    container: AppContainer = Depends(get_container),
+    current_user: dict = Depends(get_current_user),
+) -> ApiResponse[dict]:
+    """查询 emoji 索引重建进度。"""
+    service = container.emoji_service
+    return ApiResponse(data=service.rebuild_status)
