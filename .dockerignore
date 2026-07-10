@@ -46,7 +46,7 @@ Thumbs.db
 ha_config/
 mosquitto/
 # 文档、代办、测试、迁移脚本不属于运行时
-docs/
+# （docs/ 除外 —— RAG 服务需要读 docs/ 做知识库索引）
 todo/
 tests/
 scripts/
