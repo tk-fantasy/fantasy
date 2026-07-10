@@ -5,6 +5,9 @@ set PYTHONUTF8=1
 set NO_PROXY=localhost,127.0.0.1,0.0.0.0
 set no_proxy=localhost,127.0.0.1,0.0.0.0
 
+:: bat 模式用 9010/9011，docker 模式用 8010/8011，两者可同时运行
+set AETHER_PROGRESS_PORT=9011
+
 set "PROJECT_DIR=%~dp0"
 
 echo ========================================
@@ -17,9 +20,9 @@ echo Project directory: %PROJECT_DIR%
 echo Cleaning up existing Aether backend processes...
 powershell -NoProfile -ExecutionPolicy Bypass -File "%PROJECT_DIR%scripts\cleanup_aether.ps1"
 
-:: Fallback: kill any LISTENING process on port 8010 (in case a non-uvicorn process holds it)
-for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":8010" ^| findstr "LISTENING" 2^>nul') do (
-    echo Killing lingering process on port 8010 (PID: %%a)
+:: Fallback: kill any LISTENING process on port 9010 (in case a non-uvicorn process holds it)
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":9010" ^| findstr "LISTENING" 2^>nul') do (
+    echo Killing lingering process on port 9010 (PID: %%a)
     taskkill /PID %%a /T /F >nul 2>&1
 )
 
@@ -31,8 +34,6 @@ for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":5173" ^| findstr "LISTENING
 timeout /t 1 /nobreak >nul
 
 echo Starting Docker services (MQTT, HA)...
-:: 只起侧车容器（mqtt + homeassistant），不起 aether 容器：
-:: bat 模式下后端由本机 conda uvicorn 运行（端口 8010），aether 容器会与本机抢端口。
 docker compose -f "%PROJECT_DIR%docker-compose.yml" up -d mqtt homeassistant
 timeout /t 10 /nobreak >nul
 
@@ -55,8 +56,8 @@ echo Starting HA device simulator (hidden)...
 start /b "" cmd /c ""%CONDA_PATH%" run -n yolo python "%PROJECT_DIR%ha_config\ha_simulator.py" >> "%PROJECT_DIR%logs\ha_simulator.log" 2>&1"
 timeout /t 3 /nobreak >nul
 
-echo Starting aether backend (port 8010, hidden)...
-start /b "" cmd /c "cd /d "%PROJECT_DIR%" && "%CONDA_PATH%" run -n yolo python -m uvicorn app.main:app --host 0.0.0.0 --port 8010 --app-dir "%PROJECT_DIR%" >> "%PROJECT_DIR%logs\backend.log" 2>&1"
+echo Starting aether backend (port 9010, hidden)...
+start /b "" cmd /c "cd /d "%PROJECT_DIR%" && "%CONDA_PATH%" run -n yolo python -m uvicorn app.main:app --host 0.0.0.0 --port 9010 --app-dir "%PROJECT_DIR%" >> "%PROJECT_DIR%logs\backend.log" 2>&1"
 
 timeout /t 3 /nobreak >nul
 
@@ -73,7 +74,7 @@ timeout /t 5 /nobreak >nul
 start "" "http://localhost:5173"
 echo ========================================
 echo   Demo started at http://localhost:5173
-echo   (Backend API at http://localhost:8010)
+echo   (Backend API at http://localhost:9010)
 echo ========================================
 echo.
 echo Log files (use these commands to view):

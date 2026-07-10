@@ -38,23 +38,23 @@ export default defineConfig({
     strictPort: true,
     proxy: {
       '/api/startup-progress': {
-        target: 'http://localhost:8011',
+        target: 'http://localhost:9011',
         changeOrigin: true,
       },
       '/api': {
-        target: 'http://localhost:8010',
+        target: 'http://localhost:9010',
         changeOrigin: true,
       },
       '/ws': {
-        target: 'ws://localhost:8010',
+        target: 'ws://localhost:9010',
         ws: true,
       },
       '/search': {
-        target: 'http://localhost:8010',
+        target: 'http://localhost:9010',
         changeOrigin: true,
       },
       '/doc/content': {
-        target: 'http://localhost:8010',
+        target: 'http://localhost:9010',
         changeOrigin: true,
       },
     },

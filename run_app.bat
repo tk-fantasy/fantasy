@@ -5,6 +5,9 @@ set PYTHONUTF8=1
 set NO_PROXY=localhost,127.0.0.1,0.0.0.0
 set no_proxy=localhost,127.0.0.1,0.0.0.0
 
+:: bat 模式用 9010/9011，docker 模式用 8010/8011，两者可同时运行
+set AETHER_PROGRESS_PORT=9011
+
 set "PROJECT_DIR=%~dp0"
 
 echo ========================================
@@ -16,16 +19,16 @@ echo Project directory: %PROJECT_DIR%
 echo Cleaning up existing Aether backend processes...
 powershell -NoProfile -ExecutionPolicy Bypass -File "%PROJECT_DIR%scripts\cleanup_aether.ps1"
 
-:: Fallback: kill any LISTENING process on port 8010 (in case a non-uvicorn process holds it)
-for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":8010" ^| findstr "LISTENING" 2^>nul') do (
-    echo Killing lingering process on port 8010 (PID: %%a)
+:: Fallback: kill any LISTENING process on port 9010 (in case a non-uvicorn process holds it)
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":9010" ^| findstr "LISTENING" 2^>nul') do (
+    echo Killing lingering process on port 9010 (PID: %%a)
     taskkill /PID %%a /T /F >nul 2>&1
 )
 timeout /t 1 /nobreak >nul
 
 echo Starting Docker services (MQTT, HA)...
 :: 只起侧车容器（mqtt + homeassistant），不起 aether 容器：
-:: 生产模式下后端由本机 conda uvicorn 运行（端口 8010），aether 容器会与本机抢端口。
+:: 生产模式下后端由本机 conda uvicorn 运行（端口 9010），与 docker 容器（8010）不冲突。
 docker compose -f "%PROJECT_DIR%docker-compose.yml" up -d mqtt homeassistant
 timeout /t 10 /nobreak >nul
 
@@ -45,16 +48,23 @@ if exist "%PROJECT_DIR%logs\ha_simulator.log" del "%PROJECT_DIR%logs\ha_simulato
 if exist "%PROJECT_DIR%logs\backend.log" del "%PROJECT_DIR%logs\backend.log"
 
 :: ---- 构建前端（生产模式 + PWA）----
-echo.
-echo Building frontend (vite build + PWA)...
-cd /d "%PROJECT_DIR%frontend"
-call npm run build
-if %errorlevel% neq 0 (
-    echo ERROR: Frontend build failed. Check logs above.
-    pause
-    exit /b 1
+:: 如果构建产物已存在则跳过（避免每次启动都等 1-2 分钟 build）
+set "FRONTEND_DIST=%PROJECT_DIR%app\static\frontend\index.html"
+if exist "%FRONTEND_DIST%" (
+    echo Frontend build already exists, skipping build.
+    echo ^(Delete app\static\frontend\ to force rebuild.^)
+) else (
+    echo.
+    echo Building frontend ^(vite build + PWA^)...
+    cd /d "%PROJECT_DIR%frontend"
+    call npm run build
+    if errorlevel 1 (
+        echo ERROR: Frontend build failed. Check logs above.
+        pause
+        exit /b 1
+    )
+    echo Frontend build synced to app\static\frontend\
 )
-echo Frontend build synced to app\static\frontend\
 cd /d "%PROJECT_DIR%"
 
 echo.
@@ -62,9 +72,9 @@ echo Starting HA device simulator (hidden)...
 start /b "" cmd /c ""%CONDA_PATH%" run -n yolo python "%PROJECT_DIR%ha_config\ha_simulator.py" >> "%PROJECT_DIR%logs\ha_simulator.log" 2>&1"
 timeout /t 3 /nobreak >nul
 
-echo Starting aether backend (port 8010, hidden)...
+echo Starting aether backend (port 9010, hidden)...
 :: 生产模式：前端由后端 spa_fallback 提供（无需 vite dev server）
-start /b "" cmd /c "cd /d "%PROJECT_DIR%" && "%CONDA_PATH%" run -n yolo python -m uvicorn app.main:app --host 0.0.0.0 --port 8010 --app-dir "%PROJECT_DIR%" >> "%PROJECT_DIR%logs\backend.log" 2>&1"
+start /b "" cmd /c "cd /d "%PROJECT_DIR%" && "%CONDA_PATH%" run -n yolo python -m uvicorn app.main:app --host 0.0.0.0 --port 9010 --app-dir "%PROJECT_DIR%" >> "%PROJECT_DIR%logs\backend.log" 2>&1"
 
 echo Waiting for backend to be ready...
 timeout /t 5 /nobreak >nul
@@ -73,7 +83,7 @@ timeout /t 5 /nobreak >nul
 set /a WAIT_COUNT=0
 :wait_backend
 set /a WAIT_COUNT+=1
-curl -s -o nul -w "%%{http_code}" http://localhost:8010/api/auth/me 2>nul | findstr "401" >nul
+curl -s -o nul -w "%%{http_code}" http://localhost:9010/api/auth/me 2>nul | findstr "401" >nul
 if %errorlevel% equ 0 goto backend_ready
 if %WAIT_COUNT% geq 15 goto backend_ready
 timeout /t 2 /nobreak >nul
@@ -81,11 +91,11 @@ goto wait_backend
 
 :backend_ready
 echo Backend is ready.
-start "" "http://localhost:8010"
+start "" "http://localhost:9010"
 echo ========================================
-echo   App started at http://localhost:8010
+echo   App started at http://localhost:9010
 echo   (PWA installable: click install icon in address bar)
-echo   (Backend API at http://localhost:8010)
+echo   (Backend API at http://localhost:9010)
 echo ========================================
 echo.
 echo Log files (use these commands to view):
