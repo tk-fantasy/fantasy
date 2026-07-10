@@ -641,6 +641,12 @@ async function loadSessionHistory(sid) {
   if (!sid) return
   try {
     const res = await fetch(`/api/sessions/${sid}`)
+    if (res.status === 404) {
+      // Session no longer exists (e.g. DB reset) — clear stale ID, create fresh
+      sessionStorage.removeItem(SESSION_STORAGE_KEY)
+      sessionId.value = null
+      return
+    }
     const json = await res.json()
     if (json.data?.visible_messages) {
       messages.value = json.data.visible_messages.map(m => ({
@@ -716,8 +722,9 @@ onMounted(async () => {
   } else if (savedSessionId) {
     sessionId.value = savedSessionId
     await loadSessionHistory(savedSessionId)
-  } else {
-    // 创建新会话
+  }
+  // If session was stale (404 cleared it), create a fresh one
+  if (!sessionId.value) {
     try {
       const res = await fetch('/api/sessions', { method: 'POST' })
       const json = await res.json()
