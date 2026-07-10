@@ -87,8 +87,7 @@ python -m uvicorn app.main:app --host 0.0.0.0 --port 8010
 npm run build
 ```
 
-> Windows 上一键脚本：`run_demo_fixed.bat`（启动 HA/MQTT 容器 + 模拟器 + 后端 + 前端开发服务器），`stop_demo.bat` 停止。
-> Home Assistant 与 MQTT 仍走 Docker：`docker compose up -d mqtt homeassistant`。
+> 生产部署用 Docker：`docker compose up -d`，然后浏览器访问 `http://localhost:8010`。停止用 `docker compose down`。
 
 ## 从外面远程访问（Tailscale）
 

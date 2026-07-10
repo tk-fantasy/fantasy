@@ -64,13 +64,13 @@ tailscale ip -4
 
 这是关键前提。如果后端只绑 `127.0.0.1`（localhost），那就算防火墙放行了，Tailscale 也连不进来——因为后端根本不监听外部地址。
 
-Aether 的启动脚本 `run_demo_fixed.bat` 已经把后端绑在 `0.0.0.0`（所有网卡），所以正常启动就行。启动后可以用这条命令确认：
+Aether 的 Dockerfile 已经把后端绑在 `0.0.0.0`（所有网卡），所以正常 `docker compose up -d` 启动就行。启动后可以用这条命令确认：
 
 ```powershell
 netstat -ano | findstr "LISTENING" | findstr ":8010"
 ```
 
-应该看到 `0.0.0.0:8010` 而不是 `127.0.0.1:8010`。如果是后者，说明启动脚本的 `--host` 参数没改对，检查 `run_demo_fixed.bat` 里 uvicorn 那一行是不是 `--host 0.0.0.0`。
+应该看到 `0.0.0.0:8010` 而不是 `127.0.0.1:8010`。如果是后者，检查 `docker-compose.yml` 里 aether 服务的端口映射是否为 `"8010:8010"`，以及 Dockerfile 里 uvicorn 的 `--host` 参数是不是 `0.0.0.0`。
 
 ---
 
