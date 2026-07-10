@@ -25,6 +25,13 @@ async def index() -> RedirectResponse:
 
 @router.get("/favicon.ico")
 async def favicon() -> Response:
+    """返回 favicon.ico（优先取前端构建产物，回退 204）。"""
+    from pathlib import Path
+    from fastapi.responses import FileResponse
+
+    ico_path = Path(__file__).resolve().parent.parent / "static" / "frontend" / "favicon.ico"
+    if ico_path.is_file():
+        return FileResponse(ico_path, media_type="image/x-icon")
     return Response(status_code=204)
 
 
