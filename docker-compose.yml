@@ -53,6 +53,23 @@ services:
     depends_on:
       - mqtt
       - homeassistant
+      - simulator
+    restart: "no"
+
+  simulator:
+    # 虚拟设备模拟器：通过 MQTT 往 HA 报告灯/空调/窗帘等设备状态
+    container_name: aether-simulator
+    image: python:3.11-slim
+    working_dir: /sim
+    command: >
+      sh -c "pip install --no-cache-dir -q
+             -i https://pypi.tuna.tsinghua.edu.cn/simple
+             paho-mqtt &&
+             python ha_simulator.py --docker"
+    volumes:
+      - ./ha_config/ha_simulator.py:/sim/ha_simulator.py:ro
+    depends_on:
+      - mqtt
     restart: "no"
 
 volumes:

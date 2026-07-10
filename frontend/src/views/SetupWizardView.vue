@@ -7,9 +7,11 @@ const router = useRouter()
 const { user } = useAuth()
 
 const currentStep = ref(1)
-const totalSteps = 2
+const totalSteps = 3
 const loading = ref(false)
 const error = ref('')
+const haTesting = ref(false)
+const haTestResult = ref(null)
 
 // Step 1: 家庭信息
 const homeForm = ref({
@@ -44,7 +46,7 @@ const haForm = ref({
 })
 
 const stepTitle = computed(() => {
-  const titles = ['家庭信息', 'LLM 模型配置']
+  const titles = ['家庭信息', 'LLM 模型配置', 'Home Assistant 连接']
   return titles[currentStep.value - 1]
 })
 
@@ -52,6 +54,7 @@ const stepDesc = computed(() => {
   const descs = [
     '设置你的家庭信息，让 AI 更了解你。',
     '配置 AI 模型，至少配置对话模型才能使用核心功能。',
+    '连接 Home Assistant 智能家居平台，让 AI 能控制你的设备。',
   ]
   return descs[currentStep.value - 1]
 })
@@ -64,6 +67,9 @@ const canNext = computed(() => {
     // 至少 chat 角色必须配置
     const chat = llmForms.value.chat
     return chat.base_url && chat.api_key && chat.model
+  }
+  if (currentStep.value === 3) {
+    return haForm.value.url && haForm.value.token
   }
   return false
 })
@@ -157,6 +163,42 @@ async function submitLLMConfig() {
   }
 }
 
+async function submitHAConfig() {
+  loading.value = true
+  error.value = ''
+  haTestResult.value = null
+  haTesting.value = true
+
+  try {
+    const res = await fetch('/api/setup/ha', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        url: haForm.value.url,
+        token: haForm.value.token,
+      }),
+    })
+
+    const json = await res.json()
+
+    if (!res.ok) {
+      throw new Error(json.detail || json.message || '保存失败')
+    }
+
+    haTestResult.value = json.data
+    if (json.data.ha_connected) {
+      finishSetup()
+    } else {
+      error.value = `配置已保存，但 HA 连接失败（${json.data.entity_count || 0} 个实体）。请检查 URL 和 Token 是否正确。`
+    }
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    loading.value = false
+    haTesting.value = false
+  }
+}
+
 function finishSetup() {
   router.push('/chat')
 }
@@ -166,6 +208,8 @@ function nextStep() {
     submitHomeInfo()
   } else if (currentStep.value === 2) {
     submitLLMConfig()
+  } else if (currentStep.value === 3) {
+    submitHAConfig()
   }
 }
 </script>
@@ -261,6 +305,29 @@ function nextStep() {
               <span class="status-icon">{{ llmForms[role.key].base_url && llmForms[role.key].api_key && llmForms[role.key].model ? '✅' : '⬜' }}</span>
               <span class="status-label">{{ role.label }}</span>
             </div>
+          </div>
+        </div>
+
+        <!-- Step 3: Home Assistant -->
+        <div v-if="currentStep === 3" class="step-form">
+          <h2 class="step-title">{{ stepTitle }}</h2>
+          <p class="step-desc">{{ stepDesc }}</p>
+
+          <div class="form-group">
+            <label>HA 地址</label>
+            <input v-model="haForm.url" type="text" placeholder="http://localhost:8123" />
+            <p class="form-hint">Docker 部署通常填 http://localhost:8123</p>
+          </div>
+
+          <div class="form-group">
+            <label>长期访问令牌</label>
+            <input v-model="haForm.token" type="password" placeholder="eyJhbGciOiJIUzI1NiIs..." />
+            <p class="form-hint">在 HA 网页（http://localhost:8123）→ 左下角头像 → 长期访问令牌 → 创建</p>
+          </div>
+
+          <div v-if="haTestResult" class="ha-test-result" :class="{ success: haTestResult.ha_connected }">
+            <span class="status-icon">{{ haTestResult.ha_connected ? '✅' : '⚠️' }}</span>
+            <span>{{ haTestResult.ha_connected ? `连接成功，发现 ${haTestResult.entity_count} 个设备` : '连接失败，请检查配置' }}</span>
           </div>
         </div>
 
@@ -587,6 +654,25 @@ function nextStep() {
 .btn-back:hover {
   background: var(--color-surface-hover);
   color: var(--color-text);
+}
+
+.ha-test-result {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  padding: var(--space-10) var(--space-12);
+  background: var(--color-danger-bg);
+  border: 1px solid var(--color-danger);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  color: var(--color-danger);
+  margin-top: var(--space-12);
+}
+
+.ha-test-result.success {
+  background: var(--color-primary-light);
+  border-color: var(--color-success);
+  color: var(--color-success);
 }
 
 @media (max-width: 600px) {
