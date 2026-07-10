@@ -2,8 +2,16 @@
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { useVoiceInput } from '../composables/useVoiceInput'
+import { marked } from 'marked'
+import DOMPurify from 'dompurify'
 
 const router = useRouter()
+
+// Markdown -> safe HTML（与 NodeDetail 一致：marked 解析 + DOMPurify 消毒）
+function renderMd(text) {
+  if (!text) return ''
+  return DOMPurify.sanitize(marked.parse(text))
+}
 
 // ============ State ============
 const messages = ref([])
@@ -248,7 +256,7 @@ onUnmounted(() => {
         <div v-else-if="msg.role === 'assistant'" class="message assistant-message">
           <div class="message-avatar">&#9733;</div>
           <div class="message-content">
-            <div class="message-text">{{ msg.content }}</div>
+            <div class="message-text markdown-body" v-html="renderMd(msg.content)"></div>
             <span v-if="msg.streaming" class="streaming-indicator">|</span>
           </div>
         </div>
@@ -445,10 +453,28 @@ onUnmounted(() => {
 }
 
 .message-text {
-  white-space: pre-wrap;
   word-break: break-word;
   line-height: var(--leading-relaxed);
 }
+
+/* Markdown 渲染样式（与 NodeDetail 一致） */
+.markdown-body { font-size: var(--text-base); line-height: 1.7; }
+.markdown-body :deep(h1) { font-size: var(--text-2xl); margin: 0 0 12px; border-bottom: 1px solid var(--color-border); padding-bottom: 8px; }
+.markdown-body :deep(h2) { font-size: var(--text-xl); margin: 20px 0 10px; }
+.markdown-body :deep(h3) { font-size: var(--text-lg); margin: 16px 0 8px; }
+.markdown-body :deep(p) { margin: 8px 0; }
+.markdown-body :deep(code) { background: rgba(0,0,0,0.3); padding: 2px 6px; border-radius: 4px; font-size: var(--text-sm); font-family: var(--font-mono); }
+.markdown-body :deep(pre) { background: rgba(0,0,0,0.3); padding: 12px; border-radius: var(--radius-sm); overflow-x: auto; border: 1px solid var(--color-border); margin: 12px 0; }
+.markdown-body :deep(pre code) { background: none; padding: 0; }
+.markdown-body :deep(ul), .markdown-body :deep(ol) { padding-left: 20px; margin: 8px 0; }
+.markdown-body :deep(li) { margin: 4px 0; }
+.markdown-body :deep(a) { color: var(--color-primary); text-decoration: none; }
+.markdown-body :deep(a:hover) { text-decoration: underline; }
+.markdown-body :deep(blockquote) { border-left: 3px solid var(--color-primary); margin: 12px 0; padding: 8px 16px; background: var(--color-primary-light); border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
+.markdown-body :deep(table) { width: 100%; border-collapse: collapse; margin: 12px 0; }
+.markdown-body :deep(th), .markdown-body :deep(td) { padding: 8px 12px; border: 1px solid var(--color-border); text-align: left; }
+.markdown-body :deep(th) { background: rgba(0,0,0,0.2); font-weight: 600; }
+.markdown-body :deep(hr) { border: none; border-top: 1px solid var(--color-border); margin: 16px 0; }
 
 .streaming-indicator {
   animation: blink 0.8s infinite;
