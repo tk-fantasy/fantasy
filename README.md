@@ -43,23 +43,27 @@
 cp .env.example .env
 #   编辑 .env，填入 LLM / STT 的 API Key
 
-# 2. 配置应用
+# 2. 复制配置模板
 cp config.example.json config.json
-#   编辑 config.json，把 ha.token 改成你的 HA 长期访问令牌
-#   （ha.url 不用改，compose 会用 HA_URL 环境变量覆盖成容器服务名）
+#   ha.token 留空即可，稍后在引导向导里填
 ```
 
 启动：
 
 ```bash
 docker compose up -d --build      # 首次或代码更新后加 --build
-docker compose ps                 # 三个容器都 Up 即可
+docker compose ps                 # 四个容器都 Up 即可（aether, aether-ha, mosquitto, aether-simulator）
 ```
 
-打开 `http://localhost:8010` 进入应用（首次需走引导向导配置 HA 连接）。
+打开 `http://localhost:8010` 进入应用，首次需走引导向导：
+1. 家庭信息（名称、主人称呼、地区）
+2. LLM 模型配置（对话/视觉/嵌入/摘要，至少配对话模型）
+3. Home Assistant 连接 —— 需要先到 `http://localhost:8123` 完成账号注册并创建长期访问令牌
+
+> **HA 首次初始化**：打开 `http://localhost:8123` → 创建管理员账号 → 登录后左下角头像 → 长期访问令牌 → 创建令牌 → 复制 JWT 粘贴到引导向导第 3 步
 
 - 应用日志：`docker compose logs -f aether`
-- 停止：`docker compose down`（数据保留在 `app/data`、`logs` 等挂载目录）
+- 停止：`docker compose down`（数据保留在 Docker volume 和 `logs/` 挂载目录）
 
 > **摄像头**：默认走 RTSP 网络流（`vision.rtsp_url`），容器无需特殊设备权限，只要摄像头 IP 在容器网络可达。若改用本地 USB 摄像头，需在 `aether` 服务加 `devices: ["/dev/video0:/dev/video0"]`（仅 Linux 主机）。
 

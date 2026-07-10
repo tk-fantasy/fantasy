@@ -6,11 +6,12 @@ import logging
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import RedirectResponse, Response
+from pydantic import BaseModel
 
 from ..container import AppContainer, get_container
 from ..core.api_models import ApiResponse
 from ..core.auth import extract_token_from_request, verify_token
-from ..core.config import get_config
+from ..core.config import get_config, update_config_section
 from ..core.database import Database
 
 logger = logging.getLogger(__name__)
@@ -80,9 +81,10 @@ async def setup_status(request: Request, container: AppContainer = Depends(get_c
     ha_config = get_config("ha", {})
     ha_url = ha_config.get("url", "")
     ha_token = ha_config.get("token", "")
+    ha_configured = bool(ha_url and ha_token)
     ha_connected = False
 
-    if ha_url and ha_token:
+    if ha_configured:
         try:
             states = await ha_client.get_states()
             ha_connected = len(states) > 0
@@ -105,13 +107,66 @@ async def setup_status(request: Request, container: AppContainer = Depends(get_c
         home_config = get_config("home", {})
         has_home_info = bool(home_config.get("home_name") or home_config.get("owner_name"))
 
-    # 判断是否完成初始配置（只检查 LLM key，不检查 HA）
-    setup_complete = has_llm_key
+    # 判断是否完成初始配置（LLM key + HA token 都需要配置）
+    setup_complete = has_llm_key and ha_configured
 
     return ApiResponse(data={
         "setup_complete": setup_complete,
         "has_llm_key": has_llm_key,
+        "ha_configured": ha_configured,
         "ha_connected": ha_connected,
         "has_home_info": has_home_info,
         "llm_key_count": llm_key_count,
+    })
+
+
+class HASetupRequest(BaseModel):
+    url: str
+    token: str
+
+
+@router.post("/api/setup/ha")
+async def setup_ha(
+    body: HASetupRequest,
+    request: Request,
+    container: AppContainer = Depends(get_container),
+) -> ApiResponse[dict]:
+    """保存 HA 连接配置并测试连接。
+
+    需要已登录用户（引导向导在登录后才会到达此步骤）。
+    """
+    token = extract_token_from_request(request)
+    if not token:
+        return ApiResponse(code="missing_auth", detail="未提供认证信息")
+    try:
+        verify_token(token)
+    except Exception:
+        return ApiResponse(code="invalid_token", detail="认证已过期")
+
+    url = body.url.strip()
+    ha_token = body.token.strip()
+    if not url or not ha_token:
+        return ApiResponse(code="invalid_input", detail="URL 和 Token 不能为空")
+
+    # 写入 config.json 并同步内存
+    update_config_section("ha", {"url": url, "token": ha_token})
+
+    # 重建 ha_client 连接并测试
+    ha_client = container.ha_client
+    ha_client._base_url = url.rstrip("/")
+    ha_client._token = ha_token
+
+    ha_connected = False
+    entity_count = 0
+    try:
+        states = await ha_client.get_states()
+        entity_count = len(states)
+        ha_connected = entity_count > 0
+    except Exception as e:
+        logger.warning("HA connection test failed: %s", e)
+
+    return ApiResponse(data={
+        "ha_connected": ha_connected,
+        "entity_count": entity_count,
+        "url": url,
     })

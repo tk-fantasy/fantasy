@@ -40,6 +40,9 @@ RUN pip install --no-cache-dir \
 # 拷贝后端代码
 COPY app/ ./app/
 
+# 拷贝文档（RAG 服务读取 docs/ 做知识库索引）
+COPY docs/ ./docs/
+
 # 拷贝 Stage 1 构建好的前端产物
 COPY --from=frontend-builder /aether/app/static/frontend ./app/static/frontend
 
