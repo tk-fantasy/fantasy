@@ -1,0 +1,18 @@
+- name: "客厅风扇"
+  unique_id: living_room_fan
+  command_topic: "living_room/fan/set"
+  state_topic: "living_room/fan"
+  state_value_template: "{{ value_json.state }}"
+  preset_mode_command_topic: "living_room/fan/speed/set"
+  preset_mode_state_topic: "living_room/fan/speed"
+  oscillation_command_topic: "living_room/fan/oscillation/set"
+  oscillation_state_topic: "living_room/fan/oscillation"
+  preset_modes:
+    - "off"
+    - "low"
+    - "medium"
+    - "high"
+  payload_on: "ON"
+  payload_off: "OFF"
+  payload_oscillation_on: "ON"
+  payload_oscillation_off: "OFF"

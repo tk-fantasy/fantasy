@@ -1,0 +1,58 @@
+# ===== 版本控制 =====
+.git
+.gitignore
+
+# ===== Python 缓存与虚拟环境 =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+env/
+
+# ===== Node =====
+frontend/node_modules/
+frontend/dist/
+
+# ===== 前端构建产物（Dockerfile 多阶段构建会重新生成，排除已提交的过期副本）=====
+app/static/frontend/
+
+# ===== 运行时数据（由 volume 持久化，不进镜像）=====
+logs/
+*.log
+app/data/aether.db
+app/data/aether.db-shm
+app/data/aether.db-wal
+app/sg/output/
+
+# ===== 密钥与本地配置（绝不进镜像）=====
+.env
+.env.local
+config.json
+config.json.bak
+*.bak
+
+# ===== 编辑器/系统 =====
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# ===== 非 app 运行时所需的内容（侧车容器/文档/测试/脚本）=====
+# HA 与 MQTT 的配置由各自的侧车容器挂载，Aether 应用镜像不需要
+ha_config/
+mosquitto/
+# 文档、代办、测试、迁移脚本不属于运行时
+docs/
+todo/
+tests/
+scripts/
+# Windows 宿主启动脚本（容器内不用）
+run_demo_fixed.bat
+stop_demo.bat
+run_app.bat
+# 示例文件保留 config.example.json（Dockerfile 需要），其余示例排除
+.env.example
