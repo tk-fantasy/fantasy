@@ -1,0 +1,20 @@
+- name: "床头灯"
+  unique_id: bed_light
+  schema: json
+  command_topic: "bedroom/light/set"
+  state_topic: "bedroom/light"
+  brightness: true
+
+- name: "厨房灯"
+  unique_id: kitchen_lights
+  schema: json
+  command_topic: "kitchen/light/set"
+  state_topic: "kitchen/light"
+  brightness: true
+
+- name: "客厅吊灯"
+  unique_id: ceiling_lights
+  schema: json
+  command_topic: "living_room/ceiling/set"
+  state_topic: "living_room/ceiling"
+  brightness: true

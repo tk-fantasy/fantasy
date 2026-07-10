@@ -1,0 +1,151 @@
+{
+  "llm_keys": [
+    {
+      "id": "zhipu-chat-2",
+      "base_url": "https://open.bigmodel.cn/api/paas/v4",
+      "model": "glm-4-flash",
+      "type": "chat",
+      "api_key_env": "ZHIPU_API_KEY_2"
+    },
+    {
+      "id": "open-f2ef5b",
+      "base_url": "https://open.bigmodel.cn/api/paas/v4",
+      "model": "glm-4v-flash",
+      "type": "vision",
+      "api_key_env": "LLM_KEY_OPEN_F2EF5B"
+    },
+    {
+      "id": "api-c12091",
+      "base_url": "https://api.siliconflow.cn/v1",
+      "model": "BAAI/bge-m3",
+      "type": "embed",
+      "api_key_env": "LLM_KEY_API_C12091"
+    },
+    {
+      "id": "open-fcc2a5",
+      "base_url": "https://open.bigmodel.cn/api/paas/v4",
+      "model": "glm-4-flash",
+      "type": "summary",
+      "api_key_env": "LLM_KEY_OPEN_FCC2A5"
+    },
+    {
+      "id": "siliconflow-stt",
+      "base_url": "https://api.siliconflow.cn/v1",
+      "model": "FunAudioLLM/SenseVoiceSmall",
+      "type": "stt",
+      "chat_path": "",
+      "embed_path": "",
+      "api_key_env": "SILICONFLOW_STT_KEY"
+    }
+  ],
+  "providers": {
+    "chat": {
+      "key_id": "zhipu-chat-2",
+      "max_concurrency": 4,
+      "enabled": true,
+      "thinking": false
+    },
+    "summary": {
+      "key_id": "open-fcc2a5",
+      "max_concurrency": 8,
+      "enabled": true,
+      "thinking": false
+    },
+    "vision": {
+      "key_id": "open-f2ef5b",
+      "max_concurrency": 8,
+      "enabled": true,
+      "thinking": false,
+      "multimodal": true
+    },
+    "embed": {
+      "key_id": "api-c12091",
+      "max_concurrency": 8,
+      "enabled": true
+    }
+  },
+  "vision": {
+    "downscale_max_side": 448,
+    "jpeg_quality": 70,
+    "motion_hash_size": 16,
+    "motion_threshold": 15,
+    "motion_check_interval_seconds": 0.2,
+    "min_infer_interval_seconds": 3.0,
+    "max_idle_interval_seconds": 60.0,
+    "vision_use_img_count": 3,
+    "frame_interval_ms": 1000,
+    "camera_index": 0,
+    "read_retry_count": 3,
+    "read_retry_interval_seconds": 0.1,
+    "release_cooldown_seconds": 0.8,
+    "max_backoff_seconds": 15.0
+  },
+  "automation": {
+    "eval_interval_seconds": 10
+  },
+  "chat_assistant": {
+    "persona": "你是Aether，一个本地家庭智能助手，运行在用户自己的电脑上，连着一个摄像头，通过 Home Assistant 控制全屋智能设备。你的性格：简洁、务实，懂技术又不啰嗦。说话用中文，口语化，一次把事说清楚，不堆废话。",
+    "capabilities": "你能做这些事 (必须调用对应工具，不是你自己生成结果):\n- 控制 HA 设备 → 调用 call_service 工具\n- 查 HA 设备列表 → 调用 get_entities 工具\n- 搜索互联网 → 调用 web_search 工具\n- 看摄像头 → 调用 vision_chat 工具\n- 查视觉状态 → 调用 describe_state 工具",
+    "guidelines": "几条原则:\n- 当前时间和天气已在系统信息中提供，直接回答即可\n- 控制设备后必须验证：调用 verify_action 确认设备实际状态\n- 绝对不要只说'帮你查'而不调用工具\n- 回答必须短，用户要细节再展开"
+  },
+  "rag": {
+    "recent_turns": 5,
+    "retrieve_top_k": 6,
+    "retrieve_top_n": 3,
+    "soft_max_turns": 12,
+    "hard_max_turns": 16,
+    "soft_max_tokens": 12000,
+    "hard_max_tokens": 16000,
+    "soft_max_chars": 24000,
+    "hard_max_chars": 32000,
+    "summary_blocks": 2
+  },
+  "storage": {
+    "session_file": ""
+  },
+  "web_search": {
+    "exa": {
+      "api_key": ""
+    }
+  },
+  "ha": {
+    "url": "http://localhost:8123",
+    "token": "YOUR_HA_LONG_LIVED_ACCESS_TOKEN"
+  },
+  "logging": {
+    "level": "INFO"
+  },
+  "external_mcp": [],
+  "llm": {
+    "enabled": true,
+    "base_url": "http://127.0.0.1:11434",
+    "chat_model": "qwen3.5:9b",
+    "vision_model": "qwen3.5:9b",
+    "embed_model": "qwen3-embedding:0.6b",
+    "chat_timeout_seconds": 20,
+    "intent_timeout_seconds": 30,
+    "vision_timeout_seconds": 30,
+    "embed_timeout_seconds": 20,
+    "summary_enabled": true,
+    "summary_timeout_seconds": 30
+  },
+  "weather": {
+    "host": "YOUR_QWEATHER_HOST",
+    "kid": "YOUR_QWEATHER_KID",
+    "sub": "YOUR_QWEATHER_SUB",
+    "private_key": "YOUR_QWEATHER_PRIVATE_KEY"
+  },
+  "stt": {
+    "timeout_seconds": 30
+  },
+  "home": {
+    "home_name": "",
+    "owner_name": "",
+    "province": "",
+    "city": "",
+    "district": ""
+  },
+  "emoji": {
+    "index_path": "app/data/emoji_index.json"
+  }
+}

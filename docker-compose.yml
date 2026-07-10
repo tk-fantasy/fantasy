@@ -1,0 +1,64 @@
+# Aether 编排：MQTT + Home Assistant + Aether 应用
+#
+# 两种启动方式（二选一，勿同时运行以免抢占 8010 端口）：
+#
+#   ① bat 本机启动（开发/日常）：
+#      双击 run_app.bat（生产模式 + PWA）或 run_demo_fixed.bat（开发热重载）。
+#      bat 只起下方 mqtt + homeassistant 两个侧车容器，Aether 应用由本机
+#      conda 环境的 uvicorn 运行（端口 8010）。此模式不启动 aether 容器。
+#
+#   ② Docker 容器启动（部署）：
+#      docker compose up -d   一次性启动全部三个服务（含 aether 容器），
+#      Aether 应用在容器内运行，前端构建产物已打进镜像。
+#
+# 首次启动前：
+#   1. cp config.example.json config.json，把 ha.token 改成 HA 长期令牌
+#      （容器模式：ha.url 无需改，下方 HA_URL 环境变量会用容器服务名覆盖）
+#   2. 容器模式另需 cp .env.example .env，填入 LLM / STT 密钥
+#   3. 确认本地已构建 aether-ha:local 镜像（HA 配置见 ha_config/）
+services:
+  mqtt:
+    container_name: mosquitto
+    image: eclipse-mosquitto:2
+    ports:
+      - "1884:1884"
+    volumes:
+      - ./mosquitto/config:/mosquitto/config
+    restart: "no"
+
+  homeassistant:
+    container_name: aether-ha
+    image: aether-ha:local
+    ports:
+      - "8123:8123"
+    volumes:
+      - ./ha_config:/config
+    environment:
+      TZ: Asia/Shanghai
+    restart: "no"
+
+  aether:
+    # 仅 Docker 部署模式（②）使用；bat 模式（①）不启动此容器
+    container_name: aether
+    build: .
+    ports:
+      - "8010:8010"   # 主服务（API + WebSocket + 前端 SPA）
+      - "8011:8011"   # 冷启动进度端口（加载页轮询）
+    env_file: .env
+    environment:
+      # 容器内通过 compose 服务名访问 HA，覆盖 config.json 里的 localhost
+      HA_URL: http://homeassistant:8123
+      TZ: Asia/Shanghai
+    volumes:
+      # 配置文件（首次从 config.example.json 复制，运行时写入持久化到宿主）
+      - ./config.json:/aether/config.json
+      # 运行时数据：SQLite 库（聊天/用户/会话/规则）、JWT 密钥、emoji 索引
+      - ./app/data:/aether/app/data
+      # 日志
+      - ./logs:/aether/logs
+      # 语义图构建产物
+      - ./app/sg/output:/aether/app/sg/output
+    depends_on:
+      - mqtt
+      - homeassistant
+    restart: "no"

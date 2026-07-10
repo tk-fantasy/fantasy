@@ -1,0 +1,26 @@
+- name: "中央空调"
+  unique_id: hvac
+  mode_command_topic: "living_room/ac/mode/set"
+  mode_state_topic: "living_room/ac/mode"
+  temperature_command_topic: "living_room/ac/temp/set"
+  temperature_state_topic: "living_room/ac/temp"
+  current_temperature_topic: "living_room/ac/current_temp"
+  fan_mode_command_topic: "living_room/ac/fan/set"
+  fan_mode_state_topic: "living_room/ac/fan"
+  modes:
+    - "off"
+    - "heat"
+    - "cool"
+    - "auto"
+    - "dry"
+    - "fan_only"
+  fan_modes:
+    - "auto"
+    - "low"
+    - "medium"
+    - "high"
+  min_temp: 16
+  max_temp: 30
+  temp_step: 1
+  initial: 24
+  action_topic: "living_room/ac/action"

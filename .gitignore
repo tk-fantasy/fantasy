@@ -1,0 +1,80 @@
+# 密钥与本地配置
+.env
+.env.local
+config.json
+config.json.bak
+*.bak
+*.bak[0-9]*
+app/data/.jwt_secret
+mosquitto/config/passwd
+
+# 运行时数据(含聊天记录、数据流状态、日志)
+logs/
+*.log
+
+# Aether 运行时数据库（聊天记录、用户、会话等，每次运行都会变）
+app/data/aether.db
+app/data/aether.db-shm
+app/data/aether.db-wal
+
+# Emoji 向量索引（预构建，~119MB，过大不宜进版本库；需从现有机器拷贝）
+app/data/emoji_index.json
+
+# Home Assistant 运行时产物：日志、数据库、锁文件
+ha_config/home-assistant.log
+ha_config/home-assistant.log.*
+ha_config/home-assistant_v2.db
+ha_config/home-assistant_v2.db-shm
+ha_config/home-assistant_v2.db-wal
+ha_config/.ha_run.lock
+ha_config/.simulator.lock
+ha_config/secrets.yaml
+
+# HA .storage — 只保留核心配置文件，其余全部忽略
+ha_config/.storage/*
+!ha_config/.storage/core.config
+!ha_config/.storage/core.config_entries
+!ha_config/.storage/core.device_registry
+!ha_config/.storage/core.entity_registry
+!ha_config/.storage/lovelace_dashboards
+!ha_config/.storage/onboarding
+
+# HA 品牌图标缓存（运行时下载，体积大）
+ha_config/.cache/
+
+# 一次性脚本（含用户名/环境信息）
+import_keys.py
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# Node
+node_modules/
+frontend/dist/
+# 前端构建产物同步目录（npm run build → sync-to-backend.js 自动生成，勿进版本库）
+app/static/frontend/
+
+# 编辑器/系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+.zcode/
+.qwen/
+
+# 语义图构建产物（运行时生成）
+app/sg/output/
+
+# 编译产物 / 二进制（不入版本库）
+Aether.exe
+*.pyc.dll

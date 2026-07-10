@@ -1,0 +1,174 @@
+"""RAG 文档助手服务 — 封装 RAG 索引状态与检索/LLM 客户端构建。
+
+原先 RAG 状态散落在 app/main.py 的模块级全局变量（RAG_CHUNKS / RAG_FAISS_INDEX /
+RAG_EMBEDDER）与若干辅助函数中，路由层通过 `from ..main import` 延迟导入读取。
+本类将其收敛为一个服务对象，由 AppContainer 持有，消除路由对 app.main 全局状态的依赖。
+
+向量后端复用 embed_client（用户在前端 /keys 配置的 embed 模型），与语义图构建共享同一
+embedding，消除维度不一致问题。
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+from pathlib import Path
+
+import httpx
+import numpy as np
+
+from ..core.config import get_config
+
+logger = logging.getLogger(__name__)
+
+
+class RagService:
+    """RAG 索引状态与检索操作。
+
+    索引在应用启动阶段（lifespan）后台构建，构建完成前 is_ready 为 False。
+    向量化通过注入的 embed_client（async）完成，不再依赖外部 pipeline。
+    """
+
+    def __init__(self, base_dir: Path, embed_client=None) -> None:
+        self._base_dir = base_dir
+        self._embed_client = embed_client
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self.chunks: list[str] = []
+        self.faiss_index = None  # faiss.IndexFlatIP | None
+
+    @property
+    def is_ready(self) -> bool:
+        """RAG 索引是否已构建就绪。"""
+        return self.faiss_index is not None and len(self.chunks) > 0
+
+    @property
+    def chunk_count(self) -> int:
+        return len(self.chunks)
+
+    def set_embed_client(self, embed_client) -> None:
+        """注入 embed_client（容器初始化后调用）。"""
+        self._embed_client = embed_client
+
+    def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        """绑定主事件循环（后台线程构建索引用）。"""
+        self._loop = loop
+
+    def safe_build(self) -> None:
+        """build_index 的安全包装，吞掉异常。供后台线程调用。"""
+        try:
+            self.build_index()
+        except Exception as e:
+            logger.warning("RAG index build failed: %s", e)
+
+    def build_index(self) -> None:
+        """扫描 docs 目录，用 embed_client 向量化后构建 FAISS 索引。
+
+        在后台线程中运行：通过 run_coroutine_threadsafe 把 async embed 调用投递回主循环。
+        失败时记录警告，不抛异常。
+        """
+        import faiss
+
+        loop = self._loop
+        if loop is None:
+            loop = asyncio.new_event_loop()
+        if self._embed_client is None:
+            logger.warning("RAG: embed_client 未注入，跳过索引构建")
+            return
+        if not self._embed_client.enabled:
+            logger.warning("RAG: embed 客户端未启用，跳过索引构建")
+            return
+
+        docs_root = Path(os.environ.get("DOCS_ROOT", str(self._base_dir.parent / "docs")))
+        if not docs_root.exists():
+            logger.warning("RAG: docs not found: %s", docs_root)
+            return
+
+        chunks: list[str] = []
+        for md_path in docs_root.rglob("*.md"):
+            text = md_path.read_text(encoding="utf-8")
+            sections = text.split("\n## ")
+            for sec in sections:
+                sec = sec.strip()
+                if len(sec) > 50:
+                    chunks.append(sec)
+        if not chunks:
+            logger.warning("RAG: no chunks")
+            return
+
+        # 批量向量化：embed_client 是 async，后台线程内同步等待
+        embed_client = self._embed_client
+
+        def _embed_batch(texts: list[str]) -> list[list[float]]:
+            futures = [
+                asyncio.run_coroutine_threadsafe(
+                    embed_client.post_embedding({
+                        "model": embed_client.model,
+                        "prompt": t,
+                    }),
+                    loop,
+                )
+                for t in texts
+            ]
+            return [f.result()["embedding"] for f in futures]
+
+        # 分批控制并发（每批 16 条，避免一次性打爆 key 池）
+        all_vecs: list[list[float]] = []
+        batch = 16
+        for i in range(0, len(chunks), batch):
+            all_vecs.extend(_embed_batch(chunks[i:i + batch]))
+
+        vectors = np.array(all_vecs, dtype=np.float32)
+        faiss.normalize_L2(vectors)
+
+        dim = vectors.shape[1]
+        index = faiss.IndexFlatIP(dim)
+        index.add(vectors)
+
+        self.chunks = chunks
+        self.faiss_index = index
+        logger.info("RAG index ready: %d chunks, dim=%d", len(chunks), dim)
+
+    async def search(self, query: str) -> str:
+        """embedding + FAISS 搜索 → 返回拼接后的 context 字符串。"""
+        import faiss
+
+        if self.faiss_index is None or self._embed_client is None:
+            return ""
+
+        embed_client = self._embed_client
+
+        def _embed_and_search():
+            # search 在主循环上下文调用，可直接 await；此处用线程安全投递
+            loop = self._loop or asyncio.get_event_loop()
+            fut = asyncio.run_coroutine_threadsafe(
+                embed_client.post_embedding({
+                    "model": embed_client.model,
+                    "prompt": query,
+                }),
+                loop,
+            )
+            q_vec = np.array(fut.result()["embedding"], dtype=np.float32).reshape(1, -1)
+            faiss.normalize_L2(q_vec)
+            scores, indices = self.faiss_index.search(q_vec, 5)
+            return [self.chunks[i] for i in indices[0] if 0 <= i < len(self.chunks)]
+
+        # search 在路由 async 上下文调用，直接在线程池跑同步块
+        loop = asyncio.get_event_loop()
+        context_chunks = await loop.run_in_executor(None, _embed_and_search)
+        return "\n\n---\n\n".join(context_chunks)
+
+    def build_llm_client(self) -> tuple:
+        """构建 RAG 用的 OpenAI 客户端，返回 (client, model_name)。"""
+        import openai
+
+        llm_keys = get_config("llm_keys", [])
+        chat_cfg = next((k for k in llm_keys if k.get("type") == "chat"), {})
+        chat_key = os.environ.get(chat_cfg.get("api_key_env", ""), "")
+        chat_base = chat_cfg.get("base_url", "")
+        chat_model = chat_cfg.get("model", "glm-4-flash")
+        transport = httpx.HTTPTransport(retries=0)
+        client = openai.OpenAI(
+            api_key=chat_key, base_url=chat_base,
+            http_client=httpx.Client(transport=transport, timeout=60.0, trust_env=False),
+        )
+        return client, chat_model

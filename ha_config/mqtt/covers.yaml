@@ -1,0 +1,10 @@
+- name: "客厅窗帘"
+  unique_id: living_room_window
+  device_class: curtain
+  command_topic: "living_room/curtain/set"
+  state_topic: "living_room/curtain"
+  payload_open: "OPEN"
+  payload_close: "CLOSE"
+  payload_stop: "STOP"
+  position_topic: "living_room/curtain/position"
+  set_position_topic: "living_room/curtain/position/set"
