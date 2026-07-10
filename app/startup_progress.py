@@ -21,7 +21,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 logger = logging.getLogger(__name__)
 
-_PROGRESS_PORT = 8011
+# bat 模式设 AETHER_PROGRESS_PORT=9011，docker 模式默认 8011，两者可同时运行
+_PROGRESS_PORT = int(os.getenv("AETHER_PROGRESS_PORT", "8011"))
 # 默认仅本机回环；容器内需置 0.0.0.0 才能让宿主浏览器访问加载进度
 _PROGRESS_HOST = os.getenv("STARTUP_PROGRESS_HOST", "127.0.0.1")
 

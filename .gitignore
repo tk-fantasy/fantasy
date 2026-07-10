@@ -76,5 +76,6 @@ Thumbs.db
 app/sg/output/
 
 # 编译产物 / 二进制（不入版本库）
-Aether.exe
-*.pyc.dll
+*.exe
+*.dll
+*.pyd
