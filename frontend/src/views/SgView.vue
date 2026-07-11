@@ -150,13 +150,13 @@ onUnmounted(() => {
         <div class="config-item">
           <span class="config-label">向量模型</span>
           <span class="config-value" :class="{ unset: !config.embed_model }">
-            {{ config.embed_model || '未配置（请到 /keys 添加 type=embed 的 key）' }}
+            {{ config.embed_model || '未配置（请在「高级」页面添加 type=embed 的 key）' }}
           </span>
         </div>
         <div class="config-item">
           <span class="config-label">LLM 模型</span>
           <span class="config-value" :class="{ unset: !config.chat_model }">
-            {{ config.chat_model || '未配置（请到 /keys 添加 type=chat 的 key）' }}
+            {{ config.chat_model || '未配置（请在「高级」页面添加 type=chat 的 key）' }}
           </span>
         </div>
         <div class="config-item">
