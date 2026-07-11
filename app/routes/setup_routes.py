@@ -137,16 +137,16 @@ async def setup_ha(
     """
     token = extract_token_from_request(request)
     if not token:
-        return ApiResponse(code="missing_auth", detail="未提供认证信息")
+        return ApiResponse(code="missing_auth", message="未提供认证信息", data=None)
     try:
         verify_token(token)
     except Exception:
-        return ApiResponse(code="invalid_token", detail="认证已过期")
+        return ApiResponse(code="invalid_token", message="认证已过期", data=None)
 
     url = body.url.strip()
     ha_token = body.token.strip()
     if not url or not ha_token:
-        return ApiResponse(code="invalid_input", detail="URL 和 Token 不能为空")
+        return ApiResponse(code="invalid_input", message="URL 和 Token 不能为空", data=None)
 
     # 写入 config.json 并同步内存
     update_config_section("ha", {"url": url, "token": ha_token})
