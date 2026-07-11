@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import pytest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.core.auth import create_access_token, hash_password
 
@@ -32,6 +32,9 @@ class TestSetupStatus:
         mock_request = AsyncMock(spec=Request)
         mock_request.client = AsyncMock()
         mock_request.client.host = "127.0.0.1"
+        # is_secure_request 读 headers 和 url.scheme；测试按 HTTP 场景
+        mock_request.headers = {}
+        mock_request.url = MagicMock(scheme="http")
         mock_response = AsyncMock()
         payload = AuthRegisterRequest(username="newuser", password="password123")
 
@@ -67,6 +70,9 @@ class TestSetupStatus:
         mock_request = AsyncMock(spec=Request)
         mock_request.client = AsyncMock()
         mock_request.client.host = "127.0.0.1"
+        # is_secure_request 读 headers 和 url.scheme；测试按 HTTP 场景
+        mock_request.headers = {}
+        mock_request.url = MagicMock(scheme="http")
         mock_response = AsyncMock()
         payload = AuthRegisterRequest(username="testuser", password="password123")
 

@@ -4,11 +4,11 @@ from __future__ import annotations
 import json
 import logging
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Request, Response
 
 from ..container import AppContainer, get_container
 from ..core.api_models import ApiResponse
-from ..core.auth import get_current_user, create_access_token, create_refresh_token, set_auth_cookies, verify_password
+from ..core.auth import get_current_user, create_access_token, create_refresh_token, is_secure_request, set_auth_cookies, verify_password
 from ..core.config import get_config, update_memory_config, write_secrets
 from ..core.database import Database
 from ..core.exceptions import AppException
@@ -53,6 +53,7 @@ async def get_current_user_info(
 
 @router.post("/users/switch")
 async def switch_user(
+    request: Request,
     payload: UserSwitchRequest,
     response: Response,
     current_user: dict = Depends(get_current_user),
@@ -80,7 +81,7 @@ async def switch_user(
     # 设置新用户的 cookie
     access_token = create_access_token(target_user["id"], target_user["username"])
     refresh_token = create_refresh_token(target_user["id"])
-    set_auth_cookies(response, access_token, refresh_token)
+    set_auth_cookies(response, access_token, refresh_token, secure=is_secure_request(request))
 
     logger.info("User switched to: %s (%s)", username, target_user["id"])
 
