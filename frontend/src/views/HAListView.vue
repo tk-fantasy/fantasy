@@ -2,7 +2,7 @@
 import { ref, computed, onMounted } from 'vue'
 import BaseToggle from '../components/BaseToggle.vue'
 import EmojiPicker from '../components/EmojiPicker.vue'
-import { resolveCapabilities, formatSliderValue, toActualValue } from '../utils/deviceCapabilities.js'
+import { adaptControls, formatSliderValue, toActualValue } from '../utils/deviceCapabilities.js'
 import { apiGet } from '../utils/api'
 
 const entities = ref([])
@@ -454,10 +454,10 @@ function closeModal() {
   selectedDevice.value = null
 }
 
-// Capabilities from services
+// Capabilities — 复用后端 _controls（已由 entity_controls.py 在 /api/ha/entities 时附加）
 const capabilities = computed(() => {
   if (!selectedDevice.value) return []
-  return resolveCapabilities(selectedDevice.value, services.value)
+  return adaptControls(selectedDevice.value._controls, selectedDevice.value)
 })
 
 async function handleCapability(cap, value) {
