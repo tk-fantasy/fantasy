@@ -111,6 +111,9 @@ def initialize_services() -> dict[str, Any]:
     services["embed_client"] = embed_client
     services["emoji_service"] = emoji_service
 
+    # embed_client 的热重载钩子须在实例创建后注册
+    llm_settings_service.register_reload_hook(embed_client.reload)
+
     # 语义图构建服务（复用 embed_client + llm_chat_client）
     from .services.sg_service import SemanticGraphService
     sg_service = SemanticGraphService(embed_client=embed_client, llm_chat_client=llm_chat_client)

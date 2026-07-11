@@ -273,7 +273,7 @@ class ScheduledTaskCreateRequest(BaseModel):
     payload 形如 {"kind":"tool","tool_name":"ha_devices___call_service","tool_input":{...}} /
                   {"kind":"message","message":"该起床了"}
     """
-    name: str = Field(min_length=1)
+    name: str = ""
     schedule: dict[str, Any]
     payload: dict[str, Any]
     enabled: bool = True

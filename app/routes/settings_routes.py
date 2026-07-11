@@ -29,8 +29,11 @@ router = APIRouter()
 
 
 def _reload_key_pools(container: AppContainer) -> None:
-    """llm_keys 改动后重建 key 池。"""
+    """llm_keys 改动后重建 key 池，并检测 embed 模型变更触发 RAG 重建。"""
     container.vision_key_pool.reload()
+    container.embed_client.reload()
+    if container.rag_service:
+        container.rag_service.maybe_rebuild_if_model_changed()
 
 
 async def _sync_llm_keys_to_current_user(current_user: dict) -> None:

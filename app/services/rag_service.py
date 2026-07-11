@@ -35,6 +35,9 @@ class RagService:
         self._loop: asyncio.AbstractEventLoop | None = None
         self.chunks: list[str] = []
         self.faiss_index = None  # faiss.IndexFlatIP | None
+        # 记录构建索引时使用的 embed 模型，用于检测模型变更后自动重建
+        self._embed_model: str = ""
+        self._rebuilding: bool = False
 
     @property
     def is_ready(self) -> bool:
@@ -59,6 +62,30 @@ class RagService:
             self.build_index()
         except Exception as e:
             logger.warning("RAG index build failed: %s", e)
+        finally:
+            self._rebuilding = False
+
+    def maybe_rebuild_if_model_changed(self) -> None:
+        """检测 embed 模型是否变更，变更则在后台线程重建索引。
+
+        由 LLM 设置热重载钩子触发（embed_client.reload 之后调用）。
+        _rebuilding 防止并发重建。
+        """
+        if self._rebuilding:
+            return
+        if not self._embed_model or not self._embed_client:
+            return
+        current_model = self._embed_client.model
+        if current_model == self._embed_model:
+            return
+        logger.info("RAG: embed 模型变更 %s -> %s，后台重建索引", self._embed_model, current_model)
+        self._rebuilding = True
+        loop = self._loop
+        if loop is None:
+            logger.warning("RAG: 主循环未绑定，无法后台重建")
+            self._rebuilding = False
+            return
+        loop.run_in_executor(None, self.safe_build)
 
     def build_index(self) -> None:
         """扫描 docs 目录，用 embed_client 向量化后构建 FAISS 索引。
@@ -126,7 +153,8 @@ class RagService:
 
         self.chunks = chunks
         self.faiss_index = index
-        logger.info("RAG index ready: %d chunks, dim=%d", len(chunks), dim)
+        self._embed_model = embed_client.model
+        logger.info("RAG index ready: %d chunks, dim=%d, model=%s", len(chunks), dim, self._embed_model)
 
     async def search(self, query: str) -> str:
         """embedding + FAISS 搜索 → 返回拼接后的 context 字符串。"""
@@ -138,7 +166,7 @@ class RagService:
         embed_client = self._embed_client
 
         def _embed_and_search():
-            # search 在主循环上下文调用，可直接 await；此处用线程安全投递
+            # search 在主循环上下文���用，可直接 await；此处用线程安全投递
             loop = self._loop or asyncio.get_event_loop()
             fut = asyncio.run_coroutine_threadsafe(
                 embed_client.post_embedding({
@@ -148,13 +176,24 @@ class RagService:
                 loop,
             )
             q_vec = np.array(fut.result()["embedding"], dtype=np.float32).reshape(1, -1)
+            # 维度守卫：模型变更后 query 维度可能与索引不一致，跳过检索避免 FAISS 崩溃
+            if q_vec.shape[1] != self.faiss_index.d:
+                logger.warning(
+                    "RAG search: 维度不匹配 (query=%d, index=%d)，模型可能已变更，跳过检索",
+                    q_vec.shape[1], self.faiss_index.d,
+                )
+                return []
             faiss.normalize_L2(q_vec)
             scores, indices = self.faiss_index.search(q_vec, 5)
             return [self.chunks[i] for i in indices[0] if 0 <= i < len(self.chunks)]
 
         # search 在路由 async 上下文调用，直接在线程池跑同步块
         loop = asyncio.get_event_loop()
-        context_chunks = await loop.run_in_executor(None, _embed_and_search)
+        try:
+            context_chunks = await loop.run_in_executor(None, _embed_and_search)
+        except Exception as e:
+            logger.warning("RAG search 失败，返回空上下文: %s", e)
+            return ""
         return "\n\n---\n\n".join(context_chunks)
 
     def build_llm_client(self) -> tuple:

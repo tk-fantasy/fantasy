@@ -186,8 +186,16 @@ async def sg_search(q: str = "", top_k: int = 10, container: AppContainer = Depe
 
     q_vec = q_vec.reshape(1, -1).astype(np.float32)
     faiss.normalize_L2(q_vec)
-    idx = faiss.read_index(str(faiss_path))
-    scores, indices = idx.search(q_vec, min(top_k * 2, idx.ntotal))
+    try:
+        idx = faiss.read_index(str(faiss_path))
+        # 维度守卫：模型变更后 query 维度可能与索引不一致，退化关键词搜索
+        if q_vec.shape[1] != idx.d:
+            logger.warning("SG search: 维度不匹配 (query=%d, index=%d)，模型可能已变更，请重建语义图", q_vec.shape[1], idx.d)
+            return {"results": _keyword_search(q, top_k, nodes)}
+        scores, indices = idx.search(q_vec, min(top_k * 2, idx.ntotal))
+    except Exception as e:
+        logger.warning("SG search: FAISS 检索失败，退化为关键词匹配: %s", e)
+        return {"results": _keyword_search(q, top_k, nodes)}
     id_to_node = {n["id"]: n for n in nodes}
     results = []
     for score, i in zip(scores[0], indices[0]):
