@@ -10,8 +10,9 @@ from pydantic import BaseModel, Field, field_validator
 
 class AuthRegisterRequest(BaseModel):
     """POST /auth/register 请求体。"""
-    username: str = Field(min_length=1)
-    password: str = Field(min_length=1)
+    username: str = Field(min_length=1, max_length=32)
+    # 注册密码至少 8 位；登录用 AuthLoginRequest 不设下限，避免锁死历史短密码用户
+    password: str = Field(min_length=8, max_length=128)
 
 
 class AuthLoginRequest(BaseModel):

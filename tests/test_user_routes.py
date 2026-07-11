@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+from starlette.requests import Request
 
 from app.core.auth import hash_password
 
@@ -90,6 +91,9 @@ class TestUserRoutes:
 
         mock_container = MagicMock()
         mock_response = MagicMock()
+        mock_request = MagicMock(spec=Request)
+        mock_request.headers = {}
+        mock_request.url = MagicMock(scheme="http")
         current_user = {"user_id": "1", "username": "admin"}
         payload = UserSwitchRequest(username="user2", password="pass123")
 
@@ -97,7 +101,7 @@ class TestUserRoutes:
             with patch("app.routes.user_routes.update_memory_config"):
                 with patch("app.routes.user_routes.write_secrets"):
                     with patch("app.routes.user_routes.logger"):
-                        result = await switch_user(payload, mock_response, current_user, mock_container)
+                        result = await switch_user(mock_request, payload, mock_response, current_user, mock_container)
                         assert result.data["switched_to"] == "user2"
 
     @pytest.mark.asyncio
@@ -112,12 +116,15 @@ class TestUserRoutes:
 
         mock_container = MagicMock()
         mock_response = MagicMock()
+        mock_request = MagicMock(spec=Request)
+        mock_request.headers = {}
+        mock_request.url = MagicMock(scheme="http")
         current_user = {"user_id": "1", "username": "admin"}
         payload = UserSwitchRequest(username="nonexistent", password="pass123")
 
         with patch("app.routes.user_routes.Database.get", return_value=mock_db):
             with pytest.raises(AppException) as exc_info:
-                await switch_user(payload, mock_response, current_user, mock_container)
+                await switch_user(mock_request, payload, mock_response, current_user, mock_container)
             assert exc_info.value.code == "user_not_found"
 
     @pytest.mark.asyncio
@@ -147,11 +154,14 @@ class TestUserRoutes:
 
         mock_container = MagicMock()
         mock_response = MagicMock()
+        mock_request = MagicMock(spec=Request)
+        mock_request.headers = {}
+        mock_request.url = MagicMock(scheme="http")
         current_user = {"user_id": "1", "username": "admin"}
         payload = UserSwitchRequest(username="user2", password="wrong-pass")
 
         with patch("app.routes.user_routes.Database.get", return_value=mock_db):
             with pytest.raises(AppException) as exc_info:
-                await switch_user(payload, mock_response, current_user, mock_container)
+                await switch_user(mock_request, payload, mock_response, current_user, mock_container)
             assert exc_info.value.code == "invalid_credentials"
             assert exc_info.value.http_status == 401

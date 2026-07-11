@@ -99,7 +99,7 @@ class SemanticGraphService:
             return {"error": "已有构建任务在运行", **self.snapshot()}
 
         if self._loop is None:
-            self._loop = asyncio.get_event_loop()
+            self._loop = asyncio.get_running_loop()
 
         cfg = SgConfig.from_config()
         if not cfg.ready:

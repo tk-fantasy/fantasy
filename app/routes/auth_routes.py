@@ -14,6 +14,7 @@ from ..core.auth import (
     extract_refresh_token_from_request,
     get_current_user,
     hash_password,
+    is_secure_request,
     set_auth_cookies,
     verify_password,
     verify_token,
@@ -68,7 +69,7 @@ async def register(request: Request, response: Response, payload: AuthRegisterRe
     # 自动生成 token 并设置 cookie
     access_token = create_access_token(user_id, username)
     refresh_token = create_refresh_token(user_id)
-    set_auth_cookies(response, access_token, refresh_token)
+    set_auth_cookies(response, access_token, refresh_token, secure=is_secure_request(request))
 
     logger.info("User registered: %s (%s)", username, user_id)
 
@@ -97,7 +98,7 @@ async def login(request: Request, response: Response, payload: AuthLoginRequest)
     # 生成 token 并设置 cookie
     access_token = create_access_token(user["id"], user["username"])
     refresh_token = create_refresh_token(user["id"])
-    set_auth_cookies(response, access_token, refresh_token)
+    set_auth_cookies(response, access_token, refresh_token, secure=is_secure_request(request))
 
     logger.info("User logged in: %s (%s)", username, user["id"])
 
@@ -126,7 +127,7 @@ async def refresh(request: Request, response: Response) -> ApiResponse[dict]:
     # 生成新的 token 并设置 cookie
     new_access_token = create_access_token(user_id, user["username"])
     new_refresh_token = create_refresh_token(user_id)
-    set_auth_cookies(response, new_access_token, new_refresh_token)
+    set_auth_cookies(response, new_access_token, new_refresh_token, secure=is_secure_request(request))
 
     return ApiResponse(data={})
 
