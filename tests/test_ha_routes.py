@@ -80,6 +80,25 @@ class TestHACallServiceRoute:
         result = await ha_call_service(payload, container=container)
         assert result.code == "ok"
 
+    @pytest.mark.asyncio
+    async def test_ha_call_service_invalidates_cache(self):
+        """调用服务后应清掉 HAService 状态缓存，确保前端重拉拿到最新状态。"""
+        from app.routes.ha_routes import ha_call_service
+        from app.schema.api_schemas import HAServiceCallRequest
+
+        container = _mock_container()
+        container.ha_client.call_service = AsyncMock(return_value={"result": "ok"})
+        container.ha_service.invalidate_states_cache = MagicMock()
+
+        payload = HAServiceCallRequest(
+            domain="light",
+            service="turn_on",
+            entity_id="light.test",
+            data={}
+        )
+        await ha_call_service(payload, container=container)
+        container.ha_service.invalidate_states_cache.assert_called_once()
+
 
 class TestHAConfigRoute:
     """测试 /api/ha/config 路由。"""

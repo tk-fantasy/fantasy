@@ -12,6 +12,7 @@ const modalTitle = computed(() => {
     weather: '天气 API（和风天气）',
     exa: '网页搜索（Exa）',
     vision: '视觉参数',
+    ptz: '云台（PTZ）',
     ha: 'Home Assistant',
     unique: '助手角色',
     keys: 'API Keys',
@@ -61,6 +62,20 @@ const visionConfig = ref({
 })
 const rtspPassword = ref('')
 
+// PTZ 云台配置
+const ptzConfig = ref({
+  enabled: false,
+  ip: '',
+  port: 80,
+  username: '',
+  has_password: false,
+  speed: 0.5,
+  step_ms: 300,
+})
+const ptzPassword = ref('')
+const ptzSaving = ref(false)
+const ptzSaved = ref(false)
+
 // HA 配置
 const haConfig = ref({ url: '', token_set: false, token_preview: '' })
 const haTokenInput = ref('')
@@ -86,12 +101,13 @@ const typeSelectOptions = typeOptions.map(t => ({ value: t, label: t }))
 async function loadAll() {
   loading.value = true
   try {
-    const [weatherRes, advRes, haRes, uniqueRes, keysRes] = await Promise.all([
+    const [weatherRes, advRes, haRes, uniqueRes, keysRes, ptzRes] = await Promise.all([
       fetch('/api/weather/config'),
       fetch('/api/advanced/config'),
       fetch('/api/ha/config'),
       fetch('/api/unique'),
       fetch('/api/llm_keys'),
+      fetch('/api/ptz/config'),
     ])
 
     if (weatherRes.ok) {
@@ -119,6 +135,20 @@ async function loadAll() {
     if (keysRes.ok) {
       const json = await keysRes.json()
       keys.value = json.data || []
+    }
+    if (ptzRes.ok) {
+      const json = await ptzRes.json()
+      const data = json.data || {}
+      ptzConfig.value = {
+        ...ptzConfig.value,
+        enabled: data.enabled ?? false,
+        ip: data.ip || '',
+        port: data.port || 80,
+        username: data.username || '',
+        has_password: data.has_password ?? false,
+        speed: data.speed ?? 0.5,
+        step_ms: data.step_ms ?? 300,
+      }
     }
   } catch (e) {
     console.error('Failed to load config:', e)
@@ -182,6 +212,31 @@ async function saveVision() {
     console.error('Failed to save vision config:', e)
   } finally {
     visionSaving.value = false
+  }
+}
+
+// ===== PTZ 云台保存 =====
+async function savePtz() {
+  ptzSaving.value = true
+  ptzSaved.value = false
+  try {
+    await apiPost('/api/ptz/config', {
+      enabled: ptzConfig.value.enabled,
+      ip: ptzConfig.value.ip,
+      port: ptzConfig.value.port,
+      username: ptzConfig.value.username,
+      password: ptzPassword.value,
+      speed: ptzConfig.value.speed,
+      step_ms: ptzConfig.value.step_ms,
+    })
+    ptzPassword.value = ''
+    await loadAll()
+    ptzSaved.value = true
+    setTimeout(() => { ptzSaved.value = false }, 2000)
+  } catch (e) {
+    console.error('Failed to save PTZ config:', e)
+  } finally {
+    ptzSaving.value = false
   }
 }
 
@@ -349,6 +404,7 @@ async function pollDocRebuild() {
 const weatherSummary = computed(() => weatherConfig.value.host || '未配置')
 const exaSummary = computed(() => webSearchConfig.value.exa?.api_key ? '已配置' : '匿名')
 const visionSummary = computed(() => visionConfig.value.rtsp_url || 'USB')
+const ptzSummary = computed(() => ptzConfig.value.enabled ? (ptzConfig.value.ip || '未配 IP') : '未启用')
 const haSummary = computed(() => haConfig.value.url || '未配置')
 const uniqueSummary = computed(() => personaCustomized.value ? '已自定义' : '默认')
 const keysSummary = computed(() => `${keys.value.length} 个`)
@@ -400,6 +456,14 @@ onUnmounted(() => {
           <div class="config-info">
             <span class="config-title">视觉参数</span>
             <span class="config-status">{{ visionSummary }}</span>
+          </div>
+        </div>
+
+        <div class="config-card" @click="openModal('ptz')">
+          <span class="config-icon">&#127919;</span>
+          <div class="config-info">
+            <span class="config-title">云台（PTZ）</span>
+            <span class="config-status">{{ ptzSummary }}</span>
           </div>
         </div>
 
@@ -582,6 +646,64 @@ onUnmounted(() => {
         <div class="modal-save-bar">
           <button class="btn-primary" :class="{ saved: visionSaved }" @click="saveVision" :disabled="visionSaving">
             {{ visionSaving ? '保存中...' : visionSaved ? '已保存' : '保存' }}
+          </button>
+        </div>
+      </div>
+
+      <!-- 云台（PTZ）配置 -->
+      <div v-else-if="activeModal === 'ptz'" class="modal-content">
+        <div class="setting-row">
+          <label class="setting-label">
+            <span class="label-text">启用云台</span>
+            <span class="label-desc">通过 ONVIF 协议控制摄像头转动</span>
+          </label>
+          <input type="checkbox" v-model="ptzConfig.enabled" />
+        </div>
+        <div class="setting-row">
+          <label class="setting-label">
+            <span class="label-text">IP 地址</span>
+            <span class="label-desc">保存 RTSP 地址时自动提取；USB 摄像头手填</span>
+          </label>
+          <input v-model="ptzConfig.ip" class="setting-input" placeholder="192.168.1.100" />
+        </div>
+        <div class="setting-row">
+          <label class="setting-label">
+            <span class="label-text">ONVIF 端口</span>
+            <span class="label-desc">通常 80 或 2020，不同于 RTSP 端口 554</span>
+          </label>
+          <input v-model.number="ptzConfig.port" type="number" class="setting-input narrow" />
+        </div>
+        <div class="setting-row">
+          <label class="setting-label">
+            <span class="label-text">ONVIF 用户名</span>
+            <span class="label-desc">可能与 RTSP 用户名不同（部分品牌 ONVIF 独立账号）</span>
+          </label>
+          <input v-model="ptzConfig.username" class="setting-input" placeholder="admin" />
+        </div>
+        <div class="setting-row">
+          <label class="setting-label">
+            <span class="label-text">ONVIF 密码</span>
+            <span class="label-desc">{{ ptzConfig.has_password ? '已配置（留空保持不变）' : '未配置' }}</span>
+          </label>
+          <input v-model="ptzPassword" type="password" class="setting-input" placeholder="ONVIF 密码" />
+        </div>
+        <div class="setting-row">
+          <label class="setting-label">
+            <span class="label-text">转动速度</span>
+            <span class="label-desc">0.1~1.0，越大转得越快</span>
+          </label>
+          <input v-model.number="ptzConfig.speed" type="number" step="0.1" min="0.1" max="1.0" class="setting-input narrow" />
+        </div>
+        <div class="setting-row">
+          <label class="setting-label">
+            <span class="label-text">步进时长 (ms)</span>
+            <span class="label-desc">点一下转多长时间</span>
+          </label>
+          <input v-model.number="ptzConfig.step_ms" type="number" class="setting-input narrow" />
+        </div>
+        <div class="modal-save-bar">
+          <button class="btn-primary" :class="{ saved: ptzSaved }" @click="savePtz" :disabled="ptzSaving">
+            {{ ptzSaving ? '保存中...' : ptzSaved ? '已保存' : '保存' }}
           </button>
         </div>
       </div>

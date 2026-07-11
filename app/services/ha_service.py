@@ -23,6 +23,11 @@ class HAService:
         self._entity_area_map: dict[str, str] = {}
         self._area_cache_at: float = 0.0
 
+    def invalidate_states_cache(self) -> None:
+        """使状态缓存失效。调用服务控制设备后调用，确保下次拉取拿到 HA 最新状态。"""
+        self._states_cache = None
+        self._states_cache_at = 0.0
+
     async def _get_states_cached(self) -> list[dict[str, Any]]:
         """获取所有设备状态（带缓存，TTL 5秒）。"""
         now = time.time()
@@ -42,14 +47,15 @@ class HAService:
             # 通过 WebSocket 连接 HA，获取 areas 和 entity registry
             import json
             import websockets
-            ws_url = self._client._base_url.replace("http", "ws") + "/api/websocket"
+            ws_url = self._client.base_url.replace("http", "ws") + "/api/websocket"
             headers = {}
-            if self._client._token:
-                headers["Authorization"] = f"Bearer {self._client._token}"
+            token = self._client.token
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
             async with asyncio.timeout(5):  # 5 秒超时
                 async with websockets.connect(ws_url, additional_headers=headers) as ws:
                     await ws.recv()
-                    await ws.send(json.dumps({"type": "auth", "access_token": self._client._token}))
+                    await ws.send(json.dumps({"type": "auth", "access_token": token}))
                     auth_result = json.loads(await ws.recv())
                     if auth_result.get("type") != "auth_ok":
                         raise RuntimeError(f"HA WebSocket auth failed: {auth_result}")

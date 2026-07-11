@@ -70,20 +70,24 @@ class TestAdvancedConfigRtsp:
 
         # write_secrets 被调用，参数是 {RTSP_PASSWORD: 明文}
         mock_write.assert_called_once_with({"RTSP_PASSWORD": "my_secret"})
-        # update_config_section 被调两次：一次写 vision（含 rtsp_password_env），一次补 env 变量名
-        assert mock_update.call_count == 2
-        # 第一次：vision 段，含 rtsp_url 和 rtsp_password_env
+        # update_config_section 被调三次：ptz.ip 同步、vision 段（含 rtsp_password_env）、补 env 变量名
+        assert mock_update.call_count == 3
+        # 第一次：ptz.ip 从 RTSP URL 自动同步
         first_call = mock_update.call_args_list[0]
-        assert first_call.args[0] == "vision"
-        assert first_call.args[1]["rtsp_url"] == "rtsp://192.168.110.235:554/stream2"
-        assert first_call.args[1]["rtsp_username"] == "admin"
-        assert first_call.args[1]["rtsp_password_env"] == "RTSP_PASSWORD"
-        # 确认 vision 段里没有明文密码
-        assert "rtsp_password" not in first_call.args[1]
-        # 第二次：补 rtsp_password_env（确保变量名落盘）
+        assert first_call.args[0] == "ptz"
+        assert first_call.args[1] == {"ip": "192.168.110.235"}
+        # 第二次：vision 段，含 rtsp_url 和 rtsp_password_env
         second_call = mock_update.call_args_list[1]
         assert second_call.args[0] == "vision"
-        assert second_call.args[1] == {"rtsp_password_env": "RTSP_PASSWORD"}
+        assert second_call.args[1]["rtsp_url"] == "rtsp://192.168.110.235:554/stream2"
+        assert second_call.args[1]["rtsp_username"] == "admin"
+        assert second_call.args[1]["rtsp_password_env"] == "RTSP_PASSWORD"
+        # 确认 vision 段里没有明文密码
+        assert "rtsp_password" not in second_call.args[1]
+        # 第三次：补 rtsp_password_env（确保变量名落盘）
+        third_call = mock_update.call_args_list[2]
+        assert third_call.args[0] == "vision"
+        assert third_call.args[1] == {"rtsp_password_env": "RTSP_PASSWORD"}
         assert result.data["saved"] is True
 
     @pytest.mark.asyncio
@@ -101,8 +105,8 @@ class TestAdvancedConfigRtsp:
             await advanced_routes.set_advanced_config(req)
 
         mock_write.assert_not_called()
-        # 只调一次 update_config_section（vision 段），不会补 rtsp_password_env
-        assert mock_update.call_count == 1
+        # 调两次 update_config_section：vision 段 + ptz.ip 自动同步（rtsp_url 非空触发）
+        assert mock_update.call_count == 2
 
     @pytest.mark.asyncio
     async def test_post_usb_only_no_rtsp_url(self):
@@ -148,3 +152,63 @@ class TestAdvancedConfigRtsp:
             assert val != "super_secret_123", f"明文密码泄露到 config.json 的 {key} 字段"
         # 密码只进了 write_secrets
         mock_write.assert_called_once_with({"RTSP_PASSWORD": "super_secret_123"})
+
+
+class TestRtspAutoSyncPtzIp:
+    """保存 RTSP URL 时自动提取 IP → 同步到 ptz.ip。"""
+
+    @pytest.mark.asyncio
+    async def test_post_rtsp_url_auto_syncs_ptz_ip(self):
+        """POST vision.rtsp_url → update_config_section 被调两次（vision + ptz），ptz 段含提取的 IP。"""
+        from app.routes import advanced_routes
+
+        req = AdvancedConfigRequest(
+            vision=VisionConfig(
+                rtsp_url="rtsp://admin:pass@192.168.110.235:554/stream2",
+                rtsp_username="admin",
+            ),
+            rtsp_password="",
+        )
+
+        with patch.object(advanced_routes, "write_secrets") as mock_write, \
+             patch.object(advanced_routes, "update_config_section") as mock_update:
+            await advanced_routes.set_advanced_config(req)
+
+        mock_write.assert_not_called()
+        # 找到写 ptz 段的那次调用
+        ptz_calls = [c for c in mock_update.call_args_list if c.args[0] == "ptz"]
+        assert len(ptz_calls) == 1
+        assert ptz_calls[0].args[1] == {"ip": "192.168.110.235"}
+
+    @pytest.mark.asyncio
+    async def test_post_rtsp_url_with_credentials_strips_auth(self):
+        """RTSP URL 含 user:pass@ → 提取的 IP 不含凭据信息。"""
+        from app.routes import advanced_routes
+
+        req = AdvancedConfigRequest(
+            vision=VisionConfig(rtsp_url="rtsp://cam_user:s3cr3t@10.0.0.8:554/"),
+        )
+
+        with patch.object(advanced_routes, "write_secrets"), \
+             patch.object(advanced_routes, "update_config_section") as mock_update:
+            await advanced_routes.set_advanced_config(req)
+
+        ptz_calls = [c for c in mock_update.call_args_list if c.args[0] == "ptz"]
+        assert ptz_calls[0].args[1]["ip"] == "10.0.0.8"
+
+    @pytest.mark.asyncio
+    async def test_post_empty_rtsp_url_does_not_sync_ptz(self):
+        """留空 rtsp_url（USB 模式）→ 不写 ptz.ip。"""
+        from app.routes import advanced_routes
+
+        req = AdvancedConfigRequest(
+            vision=VisionConfig(rtsp_url="", rtsp_username=""),
+        )
+
+        with patch.object(advanced_routes, "write_secrets"), \
+             patch.object(advanced_routes, "update_config_section") as mock_update:
+            await advanced_routes.set_advanced_config(req)
+
+        ptz_calls = [c for c in mock_update.call_args_list if c.args[0] == "ptz"]
+        assert len(ptz_calls) == 0
+

@@ -115,6 +115,31 @@ def make_post_model_hook():
     return hook
 
 
+# build_chat_agent 每次创建并注入 ChatOpenAI 的 httpx 客户端对（sync, async）。
+# 重建 agent 前调 close_agent_http_clients() 关闭上一对，防止连接池泄漏。
+_agent_http_clients: list[tuple[Any, Any]] = []
+
+
+async def close_agent_http_clients() -> None:
+    """关闭 build_chat_agent 上次创建的 httpx 客户端，释放连接池。
+
+    供 _rebuild_agent 在构建新 agent 前调用（旧 agent 已不再被 dispatcher 引用）。
+    首次构建时列表为空，no-op。
+    """
+    global _agent_http_clients
+    clients = _agent_http_clients
+    _agent_http_clients = []
+    for sync_client, async_client in clients:
+        try:
+            sync_client.close()
+        except Exception:
+            logger.debug("close sync httpx client failed", exc_info=True)
+        try:
+            await async_client.aclose()
+        except Exception:
+            logger.debug("close async httpx client failed", exc_info=True)
+
+
 def build_chat_agent(tools: list, model_config: dict | None = None) -> Any:
     """构建 LangGraph ReAct Agent。
 
@@ -124,6 +149,10 @@ def build_chat_agent(tools: list, model_config: dict | None = None) -> Any:
 
     Returns:
         LangGraph CompiledStateGraph（可调用 ainvoke / astream_events）
+
+    每次构建都新建一对 httpx 客户端（sync + async）注入 ChatOpenAI。
+    重建前必须调 close_agent_http_clients() 关闭上一对，否则 MCP 工具变更
+    触发的每次 rebuild 都会泄漏两个连接池，长跑耗尽文件描述符。
     """
     if model_config is None:
         model_config = _load_model_config_from_config()
@@ -132,6 +161,7 @@ def build_chat_agent(tools: list, model_config: dict | None = None) -> Any:
     from ..clients.http_client import new_client, new_sync_client
     http_client = new_sync_client(timeout=60.0)
     http_async_client = new_client(timeout=60.0)
+    _agent_http_clients.append((http_client, http_async_client))
 
     llm = ChatOpenAI(
         model=model_config.get("model", "glm-4-flash"),

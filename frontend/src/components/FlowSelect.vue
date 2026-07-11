@@ -140,8 +140,8 @@ onBeforeUnmount(() => {
   border-radius: var(--radius-lg);
   overflow: hidden;
   border: 1px solid var(--color-border-hover);
-  background: #1a1a22;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5), 0 4px 12px rgba(0, 0, 0, 0.3);
+  background: var(--dialog-bg);
+  box-shadow: var(--shadow-xl);
 }
 
 /* 流光层 */

@@ -23,7 +23,11 @@ if (saved === 'light') {
     <SidebarNav v-if="showChrome" />
     <main class="main-content">
       <WeatherWidget v-if="!hideWeather" />
-      <router-view />
+      <router-view v-slot="{ Component }">
+        <transition name="page" mode="out-in">
+          <component :is="Component" />
+        </transition>
+      </router-view>
     </main>
   </div>
 </template>
@@ -196,6 +200,22 @@ if (saved === 'light') {
 .app-layout.landing .main-content::before,
 .app-layout.landing .main-content::after {
   display: none;
+}
+
+/* 页面切换过渡：淡入淡出 + 轻微上移 */
+.page-enter-active,
+.page-leave-active {
+  transition: opacity var(--duration-normal) var(--ease-out), transform var(--duration-normal) var(--ease-out);
+}
+
+.page-enter-from {
+  opacity: 0;
+  transform: translateY(8px);
+}
+
+.page-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
 }
 
 @media (max-width: 768px) {
