@@ -45,7 +45,7 @@ class SummarizationService:
             return True, "soft"
         return False, None
 
-    async def refresh_summaries(self, session: SessionState) -> list[dict]:
+    async def refresh_summaries(self, session: SessionState, user_id: str = "") -> list[dict]:
         # 摘要缓存：该 session 消息数未变则跳过
         current_count = len(session.model_messages)
         if self._last_message_count.get(session.session_id) == current_count:
@@ -69,9 +69,12 @@ class SummarizationService:
             if len(chunks) >= self._summary_blocks:
                 break
 
+        # 按 user_id 解析 per-user summary 客户端，无配置则回退全局
+        summary_client = await self._resolve_summary_client(user_id)
+
         # 并发处理所有 chunk
         import asyncio
-        tasks = [self._summarize_chunk(chunk) for chunk in chunks]
+        tasks = [self._summarize_chunk(chunk, summary_client) for chunk in chunks]
         results = await asyncio.gather(*tasks)
 
         summaries: list[dict] = []
@@ -87,11 +90,31 @@ class SummarizationService:
         self._last_message_count[session.session_id] = current_count
         return summaries
 
-    async def _summarize_chunk(self, chunk: list[str]) -> str:
+    async def _resolve_summary_client(self, user_id: str):
+        """按 user_id 解析 per-user summary 客户端。用户无配置时回退全局 self._chat_client。"""
+        if not user_id:
+            return self._chat_client
+        try:
+            from ..core.key_resolver import resolve_key_for_role_user
+            key_info = await resolve_key_for_role_user("summary", user_id)
+            if not key_info or not key_info.get("api_key"):
+                return self._chat_client
+            from ..clients.llm_chat_client import LlmChatClient
+            client = LlmChatClient(role="summary")
+            client._api_key = key_info["api_key"]
+            client._base_url = key_info["base_url"]
+            client._model = key_info["model"]
+            return client
+        except Exception:
+            logger.debug("Failed to resolve per-user summary client, using global", exc_info=True)
+            return self._chat_client
+
+    async def _summarize_chunk(self, chunk: list[str], chat_client=None) -> str:
         joined = "\n".join(chunk)
+        client = chat_client or self._chat_client
         # 配置开启且有可用客户端时,调 LLM 压缩;否则/失败回退到截断式
         use_llm = bool(get_config("llm.summary_enabled", True))
-        if use_llm and self._chat_client is not None and getattr(self._chat_client, "enabled", False):
+        if use_llm and client is not None and getattr(client, "enabled", False):
             try:
                 timeout = int(get_config("llm.summary_timeout_seconds", 30))
                 messages = [
@@ -101,7 +124,7 @@ class SummarizationService:
                     },
                     {"role": "user", "content": f"请摘要以下对话片段:\n{joined[:4000]}"},
                 ]
-                summary = await self._chat_client.chat(messages, timeout)
+                summary = await client.chat(messages, timeout)
                 summary = str(summary).strip()
                 if summary:
                     return summary

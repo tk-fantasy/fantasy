@@ -210,6 +210,25 @@ def _load_model_config_from_config() -> dict:
     }
 
 
+async def load_model_config_for_user(user_id: str) -> dict | None:
+    """按 user_id 从 DB 解析 chat 模型配置。
+
+    用户有独立 key 配置时返回 {base_url, model, api_key}；
+    用户无配置时返回 None，调用方回退全局 agent。
+    """
+    if not user_id:
+        return None
+    from ..core.key_resolver import resolve_key_for_role_user
+    key_entry = await resolve_key_for_role_user("chat", user_id)
+    if not key_entry or not key_entry.get("api_key"):
+        return None
+    return {
+        "base_url": key_entry["base_url"].rstrip("/"),
+        "model": key_entry["model"],
+        "api_key": key_entry["api_key"],
+    }
+
+
 # ---------------------------------------------------------------------------
 # Agent 调用（流式事件）
 # ---------------------------------------------------------------------------

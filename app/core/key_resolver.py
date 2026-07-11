@@ -128,3 +128,80 @@ def resolve_key_for_role(role: str) -> dict[str, Any] | None:
     result = dict(key_entry)
     result["api_key"] = resolve_api_key(key_entry)
     return result
+
+
+async def resolve_key_for_role_user(role: str, user_id: str) -> dict[str, Any] | None:
+    """按 user_id 从 DB 解析指定角色的 key（含明文 api_key）。
+
+    读取该用户的 user_settings.llm_keys + user_settings.providers，
+    解析出 base_url/model/api_key。用户无配置时返回 None（调用方回退全局）。
+
+    Args:
+        role: 角色类型（chat/vision/embed/summary/stt）
+        user_id: 用户 ID
+
+    Returns:
+        key 配置字典（含解析后的 api_key），无可用 key 返回 None
+    """
+    if not user_id:
+        return None
+
+    import json
+    from .database import Database
+
+    db = Database.get()
+    llm_keys_json = await db.user_setting_get(user_id, "llm_keys")
+    providers_json = await db.user_setting_get(user_id, "providers")
+    if not llm_keys_json:
+        return None
+
+    try:
+        llm_keys = json.loads(llm_keys_json)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not llm_keys:
+        return None
+
+    try:
+        providers = json.loads(providers_json) if providers_json else {}
+    except (json.JSONDecodeError, TypeError):
+        providers = {}
+
+    # 1. 按 providers 绑定查找
+    key_id = providers.get(role, {}).get("key_id") if isinstance(providers, dict) else None
+    key_entry = None
+    if key_id:
+        key_entry = next((k for k in llm_keys if k.get("id") == key_id), None)
+
+    # 2. 回退到自动选择（第一个 type 匹配且有 key 的）
+    if not key_entry:
+        for item in llm_keys:
+            if item.get("type") != role:
+                continue
+            # per-user 的 key 存了明文 api_key 字段
+            if item.get("api_key") or os.getenv(item.get("api_key_env", "")):
+                key_entry = item
+                break
+
+    if not key_entry:
+        return None
+
+    # 3. 解析明文 key：优先 api_key 字段，回退 env
+    api_key = key_entry.get("api_key", "")
+    if not api_key:
+        env_name = key_entry.get("api_key_env", "")
+        if env_name:
+            api_key = os.getenv(env_name, "")
+
+    if not api_key:
+        return None
+
+    return {
+        "id": key_entry.get("id", ""),
+        "base_url": key_entry.get("base_url", "").rstrip("/"),
+        "model": key_entry.get("model", ""),
+        "type": key_entry.get("type", ""),
+        "api_key": api_key,
+        "chat_path": key_entry.get("chat_path", "/chat/completions"),
+        "embed_path": key_entry.get("embed_path", "/v1/embeddings"),
+    }

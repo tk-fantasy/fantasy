@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, File, UploadFile
+from fastapi import APIRouter, Depends, File, UploadFile
 
 from ..core.api_models import ApiResponse
+from ..core.auth import get_current_user
 from ..services import stt_service
 
 logger = logging.getLogger(__name__)
@@ -18,7 +19,7 @@ router = APIRouter()
 
 
 @router.post("/stt/transcribe")
-async def transcribe(audio: UploadFile = File(...)) -> ApiResponse[dict]:
+async def transcribe(audio: UploadFile = File(...), current_user: dict = Depends(get_current_user)) -> ApiResponse[dict]:
     """接收浏览器 MediaRecorder 录制的音频，转发给 STT 服务转文字。
 
     音频格式由浏览器决定（通常 audio/webm），后端原样转发，SiliconFlow
@@ -31,5 +32,6 @@ async def transcribe(audio: UploadFile = File(...)) -> ApiResponse[dict]:
         audio_bytes,
         filename=audio.filename or "voice.webm",
         content_type=audio.content_type or "audio/webm",
+        user_id=current_user.get("user_id", ""),
     )
     return ApiResponse(data={"text": text})
