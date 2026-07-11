@@ -136,13 +136,8 @@ async def close_http_client() -> None:
 
 # --------------------------------------------------------------- 网页爬取
 
-import html2text
+from markdownify import markdownify
 from html.parser import HTMLParser
-
-# markdown 转换器(对标 opencode 的 TurndownService),复用避免重复初始化
-_h2t_markdown = html2text.HTML2Text()
-_h2t_markdown.ignore_images = True
-_h2t_markdown.body_width = 0  # 不折行,保留原始结构
 
 # 纯文本模式下要跳过的标签(对标 opencode extractTextFromHTML 的 skip 列表)
 _SKIP_TAGS = {"script", "style", "noscript", "iframe", "object", "embed"}
@@ -188,7 +183,8 @@ def _extract_text(html: str) -> str:
 
 def _extract_markdown(html: str) -> str:
     """把 HTML 转成 markdown,保留标题/列表/链接/强调结构。对标 opencode convertHTMLToMarkdown。"""
-    return _h2t_markdown.handle(html).strip()
+    # markdownify 默认不折行;strip=['img'] 对标原 html2text 的 ignore_images
+    return markdownify(html, strip=['img']).strip()
 
 
 def _convert(html: str, content_type: str, fmt: str) -> str:

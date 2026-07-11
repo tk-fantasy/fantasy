@@ -11,7 +11,7 @@ joblib>=1.3.0
 openai>=1.0.0
 requests==2.32.3
 httpx==0.28.1
-html2text>=2024.2.26
+markdownify>=0.13.1
 websockets>=12.0
 aiosqlite
 cachetools>=5.3.0
