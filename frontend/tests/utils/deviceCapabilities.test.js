@@ -1,124 +1,111 @@
 import { describe, it, expect } from 'vitest'
-import { resolveCapabilities, formatSliderValue, toActualValue } from '../../src/utils/deviceCapabilities'
+import { adaptControls, formatSliderValue, toActualValue } from '../../src/utils/deviceCapabilities'
 
-describe('resolveCapabilities', () => {
-  const lightServices = {
-    light: {
-      turn_on: { fields: ['entity_id', 'brightness_pct', 'color_temp'], required: ['entity_id'] },
-      turn_off: { fields: ['entity_id'], required: ['entity_id'] },
-      toggle: { fields: ['entity_id'], required: ['entity_id'] },
-    },
-  }
-
-  const climateServices = {
-    climate: {
-      set_temperature: { fields: ['entity_id', 'temperature', 'hvac_mode'], required: ['entity_id', 'temperature'] },
-      set_fan_mode: { fields: ['entity_id', 'fan_mode'], required: ['entity_id'] },
-      set_swing_mode: { fields: ['entity_id', 'swing_mode'], required: ['entity_id'] },
-      turn_on: { fields: ['entity_id'], required: ['entity_id'] },
-      turn_off: { fields: ['entity_id'], required: ['entity_id'] },
-    },
-  }
-
-  const coverServicesWithPos = {
-    cover: {
-      open_cover: { fields: ['entity_id'], required: ['entity_id'] },
-      close_cover: { fields: ['entity_id'], required: ['entity_id'] },
-      set_cover_position: { fields: ['entity_id', 'position'], required: ['entity_id'] },
-    },
-  }
-
-  it('returns empty array for entity with no matching services', () => {
-    const entity = { entity_id: 'sensor.temp', attributes: { unit_of_measurement: '°C' }, state: '22' }
-    const result = resolveCapabilities(entity, {})
-    expect(result).toEqual([])
+describe('adaptControls', () => {
+  it('returns empty array for null/undefined controls', () => {
+    expect(adaptControls(null, {})).toEqual([])
+    expect(adaptControls(undefined, {})).toEqual([])
+    expect(adaptControls({}, {})).toEqual([])
   })
 
-  it('derives enum control from array attribute and matching service field', () => {
-    const entity = {
-      entity_id: 'climate.hvac',
-      attributes: {
-        fan_modes: ['auto', 'low', 'medium', 'high'],
-        fan_mode: 'auto',
-      },
-      state: 'off',
+  it('adapts enum control from backend _controls dict', () => {
+    // 后端 resolve_controls 返回的 dict，key 是控制名
+    const controls = {
+      fan_mode: { type: 'enum', service: 'set_fan_mode', param: 'fan_mode', options: ['auto', 'low', 'high'], current: 'auto' },
     }
-    const result = resolveCapabilities(entity, climateServices)
-    const enumCaps = result.filter(c => c.type === 'enum')
-    expect(enumCaps.length).toBeGreaterThanOrEqual(1)
-    const fanMode = enumCaps.find(c => c.key === 'fan_modes')
-    expect(fanMode).toBeTruthy()
-    expect(fanMode.options).toEqual(['auto', 'low', 'medium', 'high'])
-    expect(fanMode.current).toBe('auto')
+    const entity = { entity_id: 'climate.hvac', attributes: { fan_mode: 'auto', fan_modes: ['auto', 'low', 'high'] } }
+    const result = adaptControls(controls, entity)
+
+    expect(result.length).toBe(1)
+    const cap = result[0]
+    expect(cap.type).toBe('enum')
+    expect(cap.key).toBe('fan_mode')
+    expect(cap.options).toEqual(['auto', 'low', 'high'])
+    expect(cap.current).toBe('auto')
+    expect(cap.service).toBe('climate')
+    expect(cap.action).toBe('set_fan_mode')
+    expect(cap.param).toBe('fan_mode')
+    expect(cap.currentAttr).toBe('fan_mode')
+    expect(cap.label).toBe('Fan Mode')
   })
 
-  it('derives slider control from numeric attribute', () => {
-    const entity = {
-      entity_id: 'light.bed_light',
-      attributes: {
-        brightness: 128,
-        min_color_temp_kelvin: 2000,
-        max_color_temp_kelvin: 6500,
-      },
-      state: 'on',
+  it('adapts slider control with pctMatch detection', () => {
+    const controls = {
+      brightness_pct: { type: 'slider', service: 'turn_on', param: 'brightness_pct', min: 0, max: 100, step: 1, current: 50, unit: '%' },
     }
-    const result = resolveCapabilities(entity, lightServices)
-    const sliders = result.filter(c => c.type === 'slider')
-    expect(sliders.length).toBeGreaterThanOrEqual(1)
-    const brightness = sliders.find(c => c.param === 'brightness_pct')
-    expect(brightness).toBeTruthy()
-    expect(brightness.action).toBe('turn_on')
+    const entity = { entity_id: 'light.lamp', attributes: { brightness_pct: 50 } }
+    const result = adaptControls(controls, entity)
+
+    expect(result.length).toBe(1)
+    const cap = result[0]
+    expect(cap.type).toBe('slider')
+    expect(cap.key).toBe('brightness_pct')
+    expect(cap.min).toBe(0)
+    expect(cap.max).toBe(100)
+    expect(cap.step).toBe(1)
+    expect(cap.current).toBe(50)
+    expect(cap.unit).toBe('%')
+    expect(cap.service).toBe('light')
+    expect(cap.action).toBe('turn_on')
+    expect(cap.pctMatch).toBe(true)
   })
 
-  it('derives slider for cover position', () => {
-    const entity = {
-      entity_id: 'cover.curtain',
-      attributes: {
-        current_position: 50,
-      },
-      state: 'open',
+  it('adapts slider without pctMatch for non-_pct param', () => {
+    const controls = {
+      temperature: { type: 'slider', service: 'set_temperature', param: 'temperature', min: 16, max: 30, step: 1, current: 22, unit: '°C' },
     }
-    const result = resolveCapabilities(entity, coverServicesWithPos)
-    const sliders = result.filter(c => c.type === 'slider')
-    expect(sliders.length).toBeGreaterThanOrEqual(1)
-    const position = sliders.find(c => c.param === 'position')
-    expect(position).toBeTruthy()
-    expect(position.action).toBe('set_cover_position')
+    const entity = { entity_id: 'climate.hvac', attributes: { temperature: 22 } }
+    const result = adaptControls(controls, entity)
+
+    const cap = result[0]
+    expect(cap.pctMatch).toBe(false)
+    expect(cap.label).toBe('Temperature')
   })
 
-  it('derives slider with unit from unit_of_measurement', () => {
-    const entity = {
-      entity_id: 'climate.hvac',
-      attributes: {
-        temperature: 22,
-        min_temp: 16,
-        max_temp: 30,
-        target_temp_step: 1,
-        unit_of_measurement: '°C',
-      },
-      state: 'off',
+  it('aggregates action controls into single _actions entry', () => {
+    const controls = {
+      open_cover: { type: 'action', service: 'open_cover', param: null },
+      close_cover: { type: 'action', service: 'close_cover', param: null },
+      stop_cover: { type: 'action', service: 'stop_cover', param: null },
     }
-    const result = resolveCapabilities(entity, climateServices)
-    const sliders = result.filter(c => c.type === 'slider')
-    expect(sliders.length).toBeGreaterThanOrEqual(1)
-    const tempSlider = sliders.find(c => c.param === 'temperature')
-    expect(tempSlider).toBeTruthy()
-    expect(tempSlider.unit).toBe('°C')
-    expect(tempSlider.min).toBe(16)
-    expect(tempSlider.max).toBe(30)
+    const entity = { entity_id: 'cover.curtain', attributes: {} }
+    const result = adaptControls(controls, entity)
+
+    // 三个 action 应聚合为单个 _actions 条目
+    expect(result.length).toBe(1)
+    const cap = result[0]
+    expect(cap.type).toBe('action')
+    expect(cap.key).toBe('_actions')
+    expect(cap.actions.length).toBe(3)
+    expect(cap.actions[0].service).toBe('cover')
+    expect(cap.actions[0].action).toBe('open_cover')
+    expect(cap.actions[0].label).toBe('Open')
   })
 
-  it('skips enum for supported_* attributes', () => {
-    const entity = {
-      entity_id: 'climate.hvac',
-      attributes: {
-        supported_features: [1, 2, 3],
-      },
-      state: 'off',
+  it('handles mixed enum + slider + action controls', () => {
+    const controls = {
+      fan_mode: { type: 'enum', service: 'set_fan_mode', param: 'fan_mode', options: ['auto', 'low'], current: 'auto' },
+      temperature: { type: 'slider', service: 'set_temperature', param: 'temperature', min: 16, max: 30, step: 1, current: 22, unit: '°C' },
+      turn_on: { type: 'action', service: 'turn_on', param: null },
     }
-    const result = resolveCapabilities(entity, climateServices)
-    const supportedCaps = result.filter(c => c.key === 'supported_features')
-    expect(supportedCaps.length).toBe(0)
+    const entity = { entity_id: 'climate.hvac', attributes: { temperature: 22, fan_mode: 'auto' } }
+    const result = adaptControls(controls, entity)
+
+    // enum + slider + 1 个聚合的 action 条目
+    expect(result.length).toBe(3)
+    expect(result.filter(c => c.type === 'enum').length).toBe(1)
+    expect(result.filter(c => c.type === 'slider').length).toBe(1)
+    expect(result.filter(c => c.type === 'action').length).toBe(1)
+  })
+
+  it('skips entries without type field', () => {
+    const controls = {
+      fan_mode: { type: 'enum', service: 'set_fan_mode', param: 'fan_mode', options: ['auto'], current: 'auto' },
+      broken: { service: 'something', param: 'x' },  // 无 type，应跳过
+    }
+    const entity = { entity_id: 'climate.hvac', attributes: {} }
+    const result = adaptControls(controls, entity)
+    expect(result.length).toBe(1)
   })
 })
 
