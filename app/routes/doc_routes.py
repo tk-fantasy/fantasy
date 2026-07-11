@@ -37,8 +37,12 @@ async def doc_chat(request: Request, container: AppContainer = Depends(get_conta
     if not message:
         raise AppException("message is required", code="message_required", http_status=400)
 
-    # 1. RAG 搜索
-    context = await rag_service.search(message)
+    # 1. RAG 搜索（��败时降级为无上下文，不影响 LLM 回答）
+    try:
+        context = await rag_service.search(message)
+    except Exception as e:
+        logger.warning("doc_chat: RAG 检索失败，降级为无上下文: %s", e)
+        context = ""
     system = RAG_SYSTEM_PROMPT_TEMPLATE.format(context=context)
 
     # 2. LLM 流式调用
@@ -79,3 +83,34 @@ def doc_content(doc_id: str = ""):
         if md.stem == doc_id:
             return {"content": md.read_text(encoding="utf-8")}
     raise AppException("document not found", code="document_not_found", http_status=404)
+
+
+@router.post("/api/doc/rebuild")
+async def rebuild_doc_index(container: AppContainer = Depends(get_container)) -> dict:
+    """触发 RAG 索引后台重建（换 embed 模型或更新 docs 后调用）。"""
+    rag_service = container.rag_service
+    if rag_service is None:
+        raise AppException("RAG service not available", code="rag_unavailable", http_status=503)
+    if not container.embed_client.enabled:
+        raise AppException("Embed 模型未配置，请先在设置页配置 LLM Key (type=embed)",
+                           code="embed_not_configured", http_status=400)
+    if rag_service._rebuilding:
+        return {"status": "already_running", "message": "重建正在进行中"}
+
+    from ..main import _stream_executor
+    rag_service._rebuilding = True
+    _stream_executor.submit(rag_service.safe_build)
+    return {"status": "started", "message": "索引重建已开始"}
+
+
+@router.get("/api/doc/rebuild/status")
+def doc_rebuild_status(container: AppContainer = Depends(get_container)) -> dict:
+    """查询 RAG 索引重建状态。"""
+    rag_service = container.rag_service
+    if rag_service is None:
+        return {"rebuilding": False, "model": "", "chunk_count": 0}
+    return {
+        "rebuilding": rag_service._rebuilding,
+        "model": rag_service._embed_model,
+        "chunk_count": rag_service.chunk_count,
+    }

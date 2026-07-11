@@ -48,8 +48,24 @@ async def create_scheduled_task(
     svc = container.scheduler_service
     if svc is None:
         return ApiResponse(success=False, message="调度器未就绪", data=None)
+
+    # name 为空时自动生成：schedule 摘要 + payload 摘要
+    name = payload.name.strip()
+    if not name:
+        from ..services.scheduler_service import summarize_schedule
+        sched_desc = summarize_schedule(payload.schedule)
+        # payload 摘要：tool → 动作描述，message → 消息内容
+        pl = payload.payload or {}
+        if pl.get("kind") == "message":
+            pl_desc = pl.get("message", "")[:20]
+        elif pl.get("kind") == "tool":
+            pl_desc = pl.get("tool_name", "")[:30]
+        else:
+            pl_desc = str(pl.get("kind", ""))[:20]
+        name = f"{sched_desc} · {pl_desc}" if pl_desc else sched_desc
+
     task = await svc.add_task({
-        "name": payload.name,
+        "name": name,
         "schedule": payload.schedule,
         "payload": payload.payload,
         "enabled": payload.enabled,

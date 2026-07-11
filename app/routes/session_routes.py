@@ -63,6 +63,16 @@ async def list_sessions(
     return ApiResponse(data=await container.session_store.list_summaries(user_id=current_user["user_id"]))
 
 
+@router.delete("/sessions")
+async def delete_all_sessions(
+    current_user: dict = Depends(get_current_user),
+    container: AppContainer = Depends(get_container),
+) -> ApiResponse[dict]:
+    """删除当前用户��所有会话。"""
+    count = await container.session_store.delete_all(user_id=current_user["user_id"])
+    return ApiResponse(data={"deleted": True, "count": count})
+
+
 @router.get("/sessions/{session_id}")
 async def get_session(
     session_id: str,

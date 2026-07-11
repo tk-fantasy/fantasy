@@ -198,6 +198,27 @@ class SessionStore:
             self._delete_session_async(session_id)
         return existed
 
+    async def delete_all(self, user_id: str = "") -> int:
+        """删除所有会话（可按 user_id 过滤），返回删除条数。"""
+        async with self._lock:
+            if user_id:
+                to_delete = [sid for sid, s in self._sessions.items() if s.user_id == user_id]
+            else:
+                to_delete = list(self._sessions.keys())
+            for sid in to_delete:
+                self._sessions.pop(sid, None)
+        # 异步删除 DB 记录
+        if to_delete:
+            try:
+                db = Database.get()
+                task = asyncio.create_task(db.sessions_delete_all(user_id=user_id))
+                self._pending_tasks.add(task)
+                task.add_done_callback(self._pending_tasks.discard)
+                task.add_done_callback(self._log_task_error)
+            except RuntimeError:
+                logger.debug("Cannot delete all sessions: no running event loop")
+        return len(to_delete)
+
     async def fork_session(self, session_id: str, message_id: str, user_id: str = "") -> SessionState | None:
         """复制源会话直到 message_id(下标,含)为止,作为新分支会话。
 

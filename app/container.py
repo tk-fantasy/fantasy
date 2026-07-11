@@ -75,6 +75,8 @@ class AppContainer:
         self.vision_client.reload()
         self.summary_client.reload()
         self.embed_client.reload()
+        if self.rag_service:
+            self.rag_service.maybe_rebuild_if_model_changed()
 
 
 # 全局容器实例
