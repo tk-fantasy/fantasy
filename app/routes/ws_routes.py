@@ -65,7 +65,7 @@ async def doc_chat_ws(websocket: WebSocket):
         return
     await websocket.accept()
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     heartbeat_task = asyncio.create_task(_ws_heartbeat(websocket))
     try:
         while True:

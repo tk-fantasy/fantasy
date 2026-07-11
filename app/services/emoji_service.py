@@ -81,7 +81,7 @@ class EmojiService:
             logger.info("Loading emoji index from %s ...", path)
 
             # 在线程池中执行 IO 密集操作
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             data = await loop.run_in_executor(None, self._load_file, path)
 
             self._chars = [item["char"] for item in data]
@@ -161,7 +161,7 @@ class EmojiService:
 
         # 读取现有索引的元数据（char/code/name），复用不需要重新 embed 的部分
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             existing = await loop.run_in_executor(None, self._load_file, path)
         except FileNotFoundError:
             self._rebuild_message = f"索引文件不存在: {path}，无法获取 emoji 列表"

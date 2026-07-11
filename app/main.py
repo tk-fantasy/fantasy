@@ -432,11 +432,11 @@ async def lifespan(_: FastAPI):
 
     # 后台构建 RAG 索引（不阻塞启动；曾在模块级提交，现移到 lifespan 启动阶段）
     # 绑定主事件循环后再提交：RAG 向量化在后台线程内投递 async embed 调用回主循环
-    rag_service.bind_loop(asyncio.get_event_loop())
+    rag_service.bind_loop(asyncio.get_running_loop())
     _stream_executor.submit(rag_service.safe_build)
 
     # 绑定语义图服务的事件循环（供 pipeline 线程内回调投递回主循环）
-    _container.sg_service.bind_loop(asyncio.get_event_loop())
+    _container.sg_service.bind_loop(asyncio.get_running_loop())
 
     _startup_progress.mark_ready()
     yield

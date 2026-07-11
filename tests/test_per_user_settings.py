@@ -133,6 +133,9 @@ class TestSwitchUserSimplified:
         mock_db.user_get_by_username = AsyncMock(return_value=target_user)
 
         mock_response = MagicMock()
+        mock_request = MagicMock()
+        mock_request.headers = {}
+        mock_request.url = MagicMock(scheme="http")
 
         payload = UserSwitchRequest(username="alice", password="pass")
 
@@ -144,7 +147,7 @@ class TestSwitchUserSimplified:
              patch("app.core.config.update_memory_config") as mock_update, \
              patch("app.core.config.write_secrets") as mock_write:
             result = await switch_user(
-                payload, response=mock_response,
+                mock_request, payload, response=mock_response,
                 current_user=_mock_current_user(),
                 container=MagicMock(),
             )

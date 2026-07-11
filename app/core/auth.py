@@ -127,18 +127,40 @@ COOKIE_MAX_AGE_ACCESS = JWT_ACCESS_TOKEN_EXPIRE_SECONDS
 COOKIE_MAX_AGE_REFRESH = JWT_REFRESH_TOKEN_EXPIRE_SECONDS
 
 
-def set_auth_cookies(response: Response, access_token: str, refresh_token: str) -> None:
-    """在 response 上设置 httpOnly cookie。"""
+def set_auth_cookies(
+    response: Response,
+    access_token: str,
+    refresh_token: str,
+    *,
+    secure: bool = False,
+) -> None:
+    """在 response 上设置 httpOnly cookie。
+
+    secure=True 时 cookie 仅通过 HTTPS 下发；明文 HTTP 部署传 False（默认），
+    否则浏览器不会回传 cookie 导致登录失效。
+    """
     response.set_cookie(
         key=ACCESS_COOKIE, value=access_token,
         httponly=True, samesite="lax", max_age=COOKIE_MAX_AGE_ACCESS,
-        path="/",
+        secure=secure, path="/",
     )
     response.set_cookie(
         key=REFRESH_COOKIE, value=refresh_token,
         httponly=True, samesite="lax", max_age=COOKIE_MAX_AGE_REFRESH,
-        path="/",
+        secure=secure, path="/",
     )
+
+
+def is_secure_request(request: Request) -> bool:
+    """判断当前请求是否走 HTTPS。
+
+    优先读反代下发的 X-Forwarded-Proto（Nginx/Caddy 等会设置），
+    其次看 request.url.scheme。明文 HTTP（含局域网 / Tailscale HTTP）返回 False。
+    """
+    forwarded_proto = request.headers.get("x-forwarded-proto", "").split(",")[0].strip().lower()
+    if forwarded_proto:
+        return forwarded_proto == "https"
+    return request.url.scheme == "https"
 
 
 def clear_auth_cookies(response: Response) -> None:

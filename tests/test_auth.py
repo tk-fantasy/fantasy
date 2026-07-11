@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import pytest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.core.auth import (
     hash_password,
@@ -98,6 +98,9 @@ class TestAuthRoutes:
         mock_request = AsyncMock(spec=Request)
         mock_request.client = AsyncMock()
         mock_request.client.host = "127.0.0.1"
+        # is_secure_request 读 headers 和 url.scheme；测试按 HTTP 场景，secure=False
+        mock_request.headers = {}
+        mock_request.url = MagicMock(scheme="http")
         mock_response = Response()
         payload = AuthRegisterRequest(username="newuser", password="password123")
 
@@ -132,6 +135,9 @@ class TestAuthRoutes:
         mock_request = AsyncMock(spec=Request)
         mock_request.client = AsyncMock()
         mock_request.client.host = "127.0.0.1"
+        # is_secure_request 读 headers 和 url.scheme；测试按 HTTP 场景，secure=False
+        mock_request.headers = {}
+        mock_request.url = MagicMock(scheme="http")
         mock_response = Response()
         payload = AuthLoginRequest(username="testuser", password=password)
 
@@ -167,6 +173,9 @@ class TestAuthRoutes:
         mock_request = AsyncMock(spec=Request)
         mock_request.client = AsyncMock()
         mock_request.client.host = "127.0.0.1"
+        # is_secure_request 读 headers 和 url.scheme；测试按 HTTP 场景，secure=False
+        mock_request.headers = {}
+        mock_request.url = MagicMock(scheme="http")
         mock_response = Response()
         payload = AuthLoginRequest(username="testuser", password="wrongpassword")
 
