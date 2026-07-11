@@ -73,10 +73,23 @@ const TOGGLE_SERVICE_MAP = {
   valve: { on: 'open_valve', off: 'close_valve' },
 }
 
+// 每个域 toggle 后的乐观状态字符串（isOn 判断的依据）
+const TOGGLE_STATE_MAP = {
+  lock: { on: 'unlocked', off: 'locked' },
+  cover: { on: 'open', off: 'closed' },
+  valve: { on: 'open', off: 'closed' },
+}
+
 function getToggleService(domain, turnOn) {
   const mapped = TOGGLE_SERVICE_MAP[domain]
   if (mapped) return turnOn ? mapped.on : mapped.off
   return turnOn ? 'turn_on' : 'turn_off'
+}
+
+function getToggleState(domain, turnOn) {
+  const mapped = TOGGLE_STATE_MAP[domain]
+  if (mapped) return turnOn ? mapped.on : mapped.off
+  return turnOn ? 'on' : 'off'
 }
 
 // HA pattern: isOn → check if state is considered "active"
@@ -420,9 +433,15 @@ async function callService(domain, service, entityId, data = {}) {
 async function toggleDevice(entity) {
   const domain = getDomain(entity.entity_id)
   const entityId = entity.entity_id
-  const service = getToggleService(domain, !isOn(entity))
+  const turnOn = !isOn(entity)
+  const service = getToggleService(domain, turnOn)
 
   togglingDevices.value.add(entityId)
+
+  // 乐观更新：先改状态，UI 立即响应
+  const oldState = entity.state
+  entity.state = getToggleState(domain, turnOn)
+
   try {
     const res = await fetch('/api/ha/call_service', {
       method: 'POST',
@@ -430,11 +449,12 @@ async function toggleDevice(entity) {
       body: JSON.stringify({ domain, service, entity_id: entityId }),
     })
     const json = await res.json()
-    if (json.data?.success) {
-      entity.state = isOn(entity) ? 'off' : 'on'
+    if (!json.data?.success) {
+      entity.state = oldState // 请求失败，回滚
     }
   } catch (e) {
     console.error('Failed to toggle device:', e)
+    entity.state = oldState // 网络异常，回滚
   } finally {
     togglingDevices.value.delete(entityId)
   }
@@ -464,25 +484,35 @@ async function handleCapability(cap, value) {
   if (!selectedDevice.value) return
   const actualValue = cap.type === 'slider' ? toActualValue(cap, value) : value
   const data = { [cap.param]: actualValue }
-  await callService(cap.service, cap.action, selectedDevice.value.entity_id, data)
+
+  // 乐观更新：先改本地状态，UI 立即响应
   if (cap.type === 'enum') {
     if (cap.currentAttr === 'state') {
       selectedDevice.value.state = value
     } else {
       selectedDevice.value.attributes[cap.currentAttr] = value
     }
+    // 同步 _controls.current，让 computed 重新计算按钮高亮
+    const ctrl = selectedDevice.value._controls?.[cap.key]
+    if (ctrl) ctrl.current = value
   } else if (cap.type === 'slider') {
     const storedValue = cap.pctMatch ? Math.round(actualValue * 255 / 100) : actualValue
     selectedDevice.value.attributes[cap.key] = storedValue
+    // 同步 _controls.current，让滑块位置和数值立即更新
+    const ctrl = selectedDevice.value._controls?.[cap.key]
+    if (ctrl) ctrl.current = value
   }
+
+  // 然后发 API 请求（不阻塞 UI）
+  await callService(cap.service, cap.action, selectedDevice.value.entity_id, data)
 }
 
 async function handleAction(act) {
   if (!selectedDevice.value) return
   const ok = await callService(act.service, act.action, selectedDevice.value.entity_id)
   if (ok) {
-    // action 类型没有本地属性可更新，刷新设备列表拿 HA 最新状态
-    await refreshSelectedDevice()
+    // action 类型没有本地属性可乐观更新，后台缓存已失效，刷新拿最新状态
+    refreshSelectedDevice()
   }
 }
 

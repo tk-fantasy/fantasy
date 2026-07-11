@@ -62,17 +62,25 @@ class RagService:
 
         启动时先尝试从磁盘加载持久化索引（docs 内容 + embed 模型未变则复用），
         命中则跳过全量向量化；未命中才重建并落盘。
+        构建失败时自动重试 2 次（间隔递增），应对 SSL/网络偶发错误。
         """
+        max_retries = 3
         try:
-            if self.try_load():
-                logger.info(
-                    "RAG index loaded from disk: %d chunks, model=%s",
-                    len(self.chunks), self._embed_model,
-                )
-                return
-            self.build_index()
-        except Exception as e:
-            logger.warning("RAG index build failed: %s", e)
+            for attempt in range(1, max_retries + 1):
+                try:
+                    if self.try_load():
+                        logger.info(
+                            "RAG index loaded from disk: %d chunks, model=%s",
+                            len(self.chunks), self._embed_model,
+                        )
+                        return
+                    self.build_index()
+                    return  # 构建成功
+                except Exception as e:
+                    logger.warning("RAG index build failed (attempt %d/%d): %s", attempt, max_retries, e)
+                    if attempt < max_retries:
+                        import time
+                        time.sleep(5 * attempt)  # 递增等待：5s, 10s
         finally:
             self._rebuilding = False
 
@@ -192,12 +200,20 @@ class RagService:
         # 批量向量化：每批 16 条，一次 HTTP 请求拿多条向量（比逐条请求省 ~16x 往返）
         embed_client = self._embed_client
 
-        def _embed_batch(texts: list[str]) -> list[list[float]]:
-            fut = asyncio.run_coroutine_threadsafe(
-                embed_client.post_embeddings_batch(texts),
-                loop,
-            )
-            return fut.result()
+        def _embed_batch(texts: list[str], retries: int = 3) -> list[list[float]]:
+            """批量向量化，带重试（SSL 偶发错误自动重试）。"""
+            last_err = None
+            for attempt in range(retries):
+                try:
+                    fut = asyncio.run_coroutine_threadsafe(
+                        embed_client.post_embeddings_batch(texts),
+                        loop,
+                    )
+                    return fut.result()
+                except Exception as e:
+                    last_err = e
+                    logger.warning("RAG embed batch failed (attempt %d/%d): %s", attempt + 1, retries, e)
+            raise last_err  # 重试耗尽，抛出最后的错误
 
         all_vecs: list[list[float]] = []
         batch = 16
@@ -252,8 +268,8 @@ class RagService:
         embed_client = self._embed_client
 
         def _embed_and_search():
-            # search 在主循环上下文���用，可直接 await；此处用线程安全投递
-            loop = self._loop or asyncio.get_event_loop()
+            # 此函数在线程池内执行，没有 running loop；用启动时 bind_loop 捕获的主循环投递
+            loop = self._loop
             fut = asyncio.run_coroutine_threadsafe(
                 embed_client.post_embedding({
                     "model": embed_client.model,
@@ -274,7 +290,7 @@ class RagService:
             return [self.chunks[i] for i in indices[0] if 0 <= i < len(self.chunks)]
 
         # search 在路由 async 上下文调用，直接在线程池跑同步块
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
             context_chunks = await loop.run_in_executor(None, _embed_and_search)
         except Exception as e:
@@ -297,26 +313,34 @@ class RagService:
             try:
                 import asyncio
                 from ..core.key_resolver import resolve_key_for_role_user
-                key_info = asyncio.run(resolve_key_for_role_user("chat", user_id))
+
+                async def _resolve():
+                    return await resolve_key_for_role_user("chat", user_id)
+
+                try:
+                    # 不在事件循环中 → 直接 asyncio.run
+                    asyncio.get_running_loop()
+                    in_loop = True
+                except RuntimeError:
+                    in_loop = False
+
+                if not in_loop:
+                    key_info = asyncio.run(_resolve())
+                else:
+                    # 已在事件循环中 → 用线程池跑 asyncio.run
+                    import concurrent.futures
+                    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                    try:
+                        key_info = pool.submit(
+                            lambda: asyncio.run(_resolve())
+                        ).result(timeout=10)
+                    finally:
+                        pool.shutdown(wait=False)
+
                 if key_info and key_info.get("api_key"):
                     chat_key = key_info["api_key"]
                     chat_base = key_info["base_url"]
                     chat_model = key_info["model"]
-            except RuntimeError:
-                # 已在事件循环中（正常情况），改用线程池执行
-                try:
-                    import concurrent.futures
-                    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-                    key_info = pool.submit(
-                        lambda: asyncio.run(resolve_key_for_role_user("chat", user_id))
-                    ).result(timeout=5)
-                    pool.shutdown(wait=False)
-                    if key_info and key_info.get("api_key"):
-                        chat_key = key_info["api_key"]
-                        chat_base = key_info["base_url"]
-                        chat_model = key_info["model"]
-                except Exception:
-                    logger.debug("Failed to resolve per-user chat key for RAG, using global", exc_info=True)
             except Exception:
                 logger.debug("Failed to resolve per-user chat key for RAG, using global", exc_info=True)
 
