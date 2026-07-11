@@ -8,8 +8,6 @@ const route = useRoute()
 const router = useRouter()
 const { user, isAuthenticated, logout } = useAuth()
 
-const emit = defineEmits(['open-advanced'])
-
 const homeName = ref('我的家')
 const ownerName = ref('')
 const showUserMenu = ref(false)
@@ -133,22 +131,14 @@ window.addEventListener('home-info-changed', () => {
 const navItems = [
   { path: '/chat', icon: '&#128172;', label: '管家' },
   { path: '/settings', icon: '&#9881;', label: '设置' },
-  { path: '/advanced', icon: '&#128295;', label: '高级', modal: true },
+  { path: '/advanced', icon: '&#128295;', label: '高级' },
+  { path: '/monitor', icon: '&#128202;', label: '监控' },
 ]
 
 const activePath = computed(() => route.path)
 
 function goTo(path) {
   router.push(path)
-}
-
-// 高级设置改为弹窗触发，不再路由跳转
-function onNavClick(item) {
-  if (item.modal) {
-    emit('open-advanced')
-  } else {
-    goTo(item.path)
-  }
 }
 
 const timeStr = ref('')
@@ -203,8 +193,8 @@ watch(user, () => {
         v-for="item in navItems"
         :key="item.path"
         class="sidebar-item"
-        :class="{ active: !item.modal && activePath === item.path }"
-        @click="onNavClick(item)"
+        :class="{ active: activePath === item.path }"
+        @click="goTo(item.path)"
       >
         <span class="sidebar-item-icon" v-html="item.icon"></span>
         <span class="sidebar-item-label">{{ item.label }}</span>
