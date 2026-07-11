@@ -124,6 +124,8 @@ _container.ha_controls_cache_ref = _ha_controls_cache_ref
 from .services.rag_service import RagService
 rag_service = RagService(base_dir=BASE_DIR, embed_client=embed_client)
 _container.rag_service = rag_service
+# embed 模型变更时自动重建 RAG 索引（钩子在 embed_client.reload 之后执行）
+_services["llm_settings_service"].register_reload_hook(rag_service.maybe_rebuild_if_model_changed)
 
 
 def _get_ha_device_catalog() -> str:

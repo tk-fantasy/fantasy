@@ -242,6 +242,16 @@ class Database:
             await self._db.commit()
             return cursor.rowcount > 0
 
+    async def sessions_delete_all(self, user_id: str = "") -> int:
+        """删除所有会话（可按 user_id 过滤），返回删除条数。"""
+        async with self._write_lock:
+            if user_id:
+                cursor = await self._db.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+            else:
+                cursor = await self._db.execute("DELETE FROM sessions")
+            await self._db.commit()
+            return cursor.rowcount
+
     # ============ KV 操作 ============
 
     async def kv_get(self, key: str) -> str | None:
