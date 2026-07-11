@@ -21,8 +21,27 @@ logger = logging.getLogger(__name__)
 _DEFAULT_TIMEOUT = 30.0
 
 
-def _resolve_config() -> dict:
-    """从 providers.stt.key_id 指定的 key 取配置，未指定则自动选第一条 type=stt。"""
+async def _resolve_config(user_id: str = "") -> dict:
+    """从 providers.stt.key_id 指定的 key 取配置，未指定则自动选第一条 type=stt。
+
+    有 user_id 时优先从该用户的 DB 解析 per-user key，无配置则回退全局。
+    """
+    if user_id:
+        try:
+            from ..core.key_resolver import resolve_key_for_role_user
+            key = await resolve_key_for_role_user("stt", user_id)
+            if key and key.get("api_key"):
+                return {
+                    "available": True,
+                    "base_url": str(key.get("base_url", "")).rstrip("/"),
+                    "model": str(key.get("model", "FunAudioLLM/SenseVoiceSmall")),
+                    "api_key": key["api_key"],
+                    "timeout": float(get_config("stt.timeout_seconds", _DEFAULT_TIMEOUT)),
+                }
+        except Exception:
+            logger.debug("Failed to resolve per-user stt key, falling back to global", exc_info=True)
+
+    # 回退全局
     key = resolve_key_for_role("stt")
     if not key:
         return {"available": False, "timeout": float(get_config("stt.timeout_seconds", _DEFAULT_TIMEOUT))}
@@ -36,13 +55,14 @@ def _resolve_config() -> dict:
     }
 
 
-async def transcribe(audio_bytes: bytes, filename: str, content_type: str) -> str:
+async def transcribe(audio_bytes: bytes, filename: str, content_type: str, user_id: str = "") -> str:
     """转发音频到 STT 服务，返回识别文本。
 
     音频以 multipart 上传，API key 走环境变量（参照 LLM key 的 api_key_env 模式，
     不写进 config.json）。new_client 设了 trust_env=False，绕过系统代理。
+    有 user_id 时优先用该用户的 STT key，无配置则回退全局。
     """
-    cfg = _resolve_config()
+    cfg = await _resolve_config(user_id)
     if not cfg["available"]:
         logger.warning("STT API key not configured (no type=stt key in llm_keys)")
         raise AppException(

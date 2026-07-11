@@ -58,7 +58,11 @@ async def switch_user(
     current_user: dict = Depends(get_current_user),
     container: AppContainer = Depends(get_container),
 ) -> ApiResponse[dict]:
-    """切换到指定用户，应用其个人配置。需提供目标用户密码确认。"""
+    """切换到指定用户。
+
+    per-user key 现在从 DB 按用户直接读取，不再覆盖全局 CONFIG / .env / 全局 LLM 客户端。
+    全局 CONFIG 保留启动时加载的默认用户 key（供后台任务用）。
+    """
     username = payload.username.strip()
     password = payload.password
 
@@ -73,43 +77,12 @@ async def switch_user(
     if not verify_password(password, target_user["password_hash"]):
         raise AppException("密码错误", code="invalid_credentials", http_status=401)
 
-    target_user_id = target_user["id"]
-
-    # 加载目标用户的 LLM keys
-    llm_keys_json = await db.user_setting_get(target_user_id, "llm_keys")
-    llm_keys = json.loads(llm_keys_json) if llm_keys_json else []
-
-    # 加载目标用户的 providers
-    providers_json = await db.user_setting_get(target_user_id, "providers")
-    providers = json.loads(providers_json) if providers_json else {}
-
-    # 更新内存 CONFIG（不写 config.json，保持磁盘文件不变）
-    update_memory_config("llm_keys", llm_keys)
-    if providers:
-        update_memory_config("providers", providers)
-
-    # 更新 .env 文件中的 API keys
-    env_updates = {}
-    for key in llm_keys:
-        env_name = key.get("api_key_env", "")
-        api_key = key.get("api_key", "")
-        if env_name and api_key:
-            env_updates[env_name] = api_key
-
-    if env_updates:
-        write_secrets(env_updates)
-
-    # 重新加载 LLM 客户端
-    try:
-        container.reload_all_clients()
-        logger.info("Reloaded LLM clients for user: %s", username)
-    except Exception as e:
-        logger.warning("Failed to reload LLM clients: %s", e)
-
     # 设置新用户的 cookie
     access_token = create_access_token(target_user["id"], target_user["username"])
     refresh_token = create_refresh_token(target_user["id"])
     set_auth_cookies(response, access_token, refresh_token)
+
+    logger.info("User switched to: %s (%s)", username, target_user["id"])
 
     return ApiResponse(data={
         "switched_to": username,
@@ -118,8 +91,6 @@ async def switch_user(
             "username": target_user["username"],
             "display_name": target_user.get("display_name", target_user["username"]),
         },
-        "llm_keys_count": len(llm_keys),
-        "providers": list(providers.keys()) if providers else [],
     })
 
 

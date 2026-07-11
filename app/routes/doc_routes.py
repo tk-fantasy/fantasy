@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 
 from ..container import AppContainer, get_container
+from ..core.auth import get_current_user
 from ..core.exceptions import AppException
 
 logger = logging.getLogger(__name__)
@@ -21,7 +22,7 @@ router = APIRouter()
 
 
 @router.post("/api/doc/chat")
-async def doc_chat(request: Request, container: AppContainer = Depends(get_container)) -> StreamingResponse:
+async def doc_chat(request: Request, container: AppContainer = Depends(get_container), current_user: dict = Depends(get_current_user)) -> StreamingResponse:
     import asyncio
     from ..services.prompt_service import RAG_SYSTEM_PROMPT_TEMPLATE
 
@@ -46,7 +47,7 @@ async def doc_chat(request: Request, container: AppContainer = Depends(get_conta
     system = RAG_SYSTEM_PROMPT_TEMPLATE.format(context=context)
 
     # 2. LLM 流式调用
-    client, chat_model = rag_service.build_llm_client()
+    client, chat_model = rag_service.build_llm_client(user_id=current_user.get("user_id", ""))
     loop = asyncio.get_event_loop()
 
     def _run_stream():

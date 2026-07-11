@@ -159,7 +159,7 @@ async def _rebuild_agent() -> None:
     _services["langgraph_agent"] = new_agent
     _services["langchain_tools"] = langchain_tools
     if dispatcher is not None:
-        dispatcher.set_agent(new_agent)
+        dispatcher.set_agent(new_agent, tools=langchain_tools)
     logger.info("Agent rebuilt with %d tools", len(langchain_tools))
 
 
@@ -373,6 +373,7 @@ async def lifespan(_: FastAPI):
         validator=ValidatorAgent(max_retries=1),
         summarization_service=summarization_service,
     )
+    dispatcher._tools = langchain_tools  # 供 per-user agent 构建使用
     _container.dispatcher = dispatcher
 
     # 启动自动化评估

@@ -90,7 +90,7 @@ async def doc_chat_ws(websocket: WebSocket):
             system = RAG_SYSTEM_PROMPT_TEMPLATE.format(context=context)
 
             # 2. LLM 流式调用（线程池 + Queue 传 token）
-            client, chat_model = rag_service.build_llm_client()
+            client, chat_model = rag_service.build_llm_client(user_id=user_id)
 
             token_queue: _Queue = _Queue()
 

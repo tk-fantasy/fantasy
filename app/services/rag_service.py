@@ -282,15 +282,51 @@ class RagService:
             return ""
         return "\n\n---\n\n".join(context_chunks)
 
-    def build_llm_client(self) -> tuple:
-        """构建 RAG 用的 OpenAI 客户端，返回 (client, model_name)。"""
+    def build_llm_client(self, user_id: str = "") -> tuple:
+        """构建 RAG 用的 OpenAI 客户端，返回 (client, model_name)。
+
+        有 user_id 时优先用该用户的 chat key，无配置则回退全局。
+        """
         import openai
 
-        llm_keys = get_config("llm_keys", [])
-        chat_cfg = next((k for k in llm_keys if k.get("type") == "chat"), {})
-        chat_key = os.environ.get(chat_cfg.get("api_key_env", ""), "")
-        chat_base = chat_cfg.get("base_url", "")
-        chat_model = chat_cfg.get("model", "glm-4-flash")
+        chat_key = ""
+        chat_base = ""
+        chat_model = "glm-4-flash"
+
+        if user_id:
+            try:
+                import asyncio
+                from ..core.key_resolver import resolve_key_for_role_user
+                key_info = asyncio.run(resolve_key_for_role_user("chat", user_id))
+                if key_info and key_info.get("api_key"):
+                    chat_key = key_info["api_key"]
+                    chat_base = key_info["base_url"]
+                    chat_model = key_info["model"]
+            except RuntimeError:
+                # 已在事件循环中（正常情况），改用线程池执行
+                try:
+                    import concurrent.futures
+                    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                    key_info = pool.submit(
+                        lambda: asyncio.run(resolve_key_for_role_user("chat", user_id))
+                    ).result(timeout=5)
+                    pool.shutdown(wait=False)
+                    if key_info and key_info.get("api_key"):
+                        chat_key = key_info["api_key"]
+                        chat_base = key_info["base_url"]
+                        chat_model = key_info["model"]
+                except Exception:
+                    logger.debug("Failed to resolve per-user chat key for RAG, using global", exc_info=True)
+            except Exception:
+                logger.debug("Failed to resolve per-user chat key for RAG, using global", exc_info=True)
+
+        if not chat_key:
+            llm_keys = get_config("llm_keys", [])
+            chat_cfg = next((k for k in llm_keys if k.get("type") == "chat"), {})
+            chat_key = os.environ.get(chat_cfg.get("api_key_env", ""), "")
+            chat_base = chat_cfg.get("base_url", "")
+            chat_model = chat_cfg.get("model", "glm-4-flash")
+
         transport = httpx.HTTPTransport(retries=0)
         client = openai.OpenAI(
             api_key=chat_key, base_url=chat_base,
