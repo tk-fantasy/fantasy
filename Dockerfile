@@ -40,6 +40,9 @@ RUN pip install --no-cache-dir \
 # 拷贝后端代码
 COPY app/ ./app/
 
+# 测试配置（容器内跑 pytest 用，提供 asyncio_mode=auto 等）
+COPY pytest.ini ./
+
 # 拷贝文档（RAG 服务读取 docs/ 做知识库索引）
 COPY docs/ ./docs/
 

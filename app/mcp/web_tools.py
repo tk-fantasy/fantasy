@@ -183,8 +183,9 @@ def _extract_text(html: str) -> str:
 
 def _extract_markdown(html: str) -> str:
     """把 HTML 转成 markdown,保留标题/列表/链接/强调结构。对标 opencode convertHTMLToMarkdown。"""
+    # heading_style=ATX 输出 "# 标题"（默认 SETEXT 是 "标题\n==="，可读性差）
     # markdownify 默认不折行;strip=['img'] 对标原 html2text 的 ignore_images
-    return markdownify(html, strip=['img']).strip()
+    return markdownify(html, strip=['img'], heading_style="ATX").strip()
 
 
 def _convert(html: str, content_type: str, fmt: str) -> str:

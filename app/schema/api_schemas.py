@@ -230,6 +230,21 @@ class PtzStepRequest(BaseModel):
     direction: str = Field(min_length=1)
 
 
+class PtzConfigRequest(BaseModel):
+    """POST /ptz/config 请求体 — PTZ 云台配置。
+
+    密码走顶层 password 字段，路由层写 .env（PTZ_PASSWORD 变量），
+    config.json 只存变量名 password_env。留空表示不修改。
+    """
+    enabled: bool = False
+    ip: str = ""
+    port: int = Field(default=80, ge=1, le=65535)
+    username: str = ""
+    password: str = ""
+    speed: float = 0.5
+    step_ms: int = 300
+
+
 # --------------- Model Test ---------------
 
 class ModelTestRequest(BaseModel):

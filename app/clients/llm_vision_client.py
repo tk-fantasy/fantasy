@@ -98,7 +98,9 @@ class LlmVisionClient(LlmBaseClient):
             return "视觉模型未启用，无法分析画面。"
         if not self.multimodal_enabled:
             return "当前视觉模型已关闭图像输入(多模态),无法分析画面。"
-        image_b64 = encode_frame_b64(frame_bgr, self._max_side, self._jpeg_quality)
+        # imencode + base64 是 CPU 密集操作，持 GIL 会阻塞事件循环；
+        # 与 classify_frame 一致，用 to_thread 挪到独立线程。
+        image_b64 = await asyncio.to_thread(encode_frame_b64, frame_bgr, self._max_side, self._jpeg_quality)
         payload: dict[str, Any] = {
             "model": self.model,
             "stream": False,

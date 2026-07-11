@@ -173,3 +173,26 @@ class LlmBaseClient:
         if embeddings_data:
             return {"embedding": embeddings_data[0].get("embedding", [])}
         raise ModelServiceException("Embedding 响应格式错误")
+
+    async def post_embeddings_batch(self, texts: list[str], timeout: int = 60) -> list[list[float]]:
+        """批量 embedding：一次请求拿多条向量。用于 RAG 索引构建。
+
+        对标 OpenAI / SiliconFlow 的 input 数组形式：
+            {"model": "...", "input": ["文本1", "文本2", ...]}
+        返回的向量按 API 的 index 字段排序，保证与输入顺序一致。
+        """
+        if not texts:
+            return []
+        openai_payload = {
+            "model": self._model,
+            "input": texts,
+        }
+        data = await self.post_json(self._embed_path, openai_payload, timeout=timeout)
+        embeddings_data = data.get("data", [])
+        if len(embeddings_data) != len(texts):
+            raise ModelServiceException(
+                f"Embedding 批量响应数量不匹配: 请求 {len(texts)}, 返回 {len(embeddings_data)}"
+            )
+        # 按 index 排序，确保返回顺序与输入一致
+        embeddings_data.sort(key=lambda d: d.get("index", 0))
+        return [d.get("embedding", []) for d in embeddings_data]

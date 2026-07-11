@@ -16,7 +16,7 @@ SINGLE_PROMPT = """从以下文档中提取实体及关系。
 }}
 
 文档：
-{text}}}"""
+{text}"""
 
 
 class EntityExtractor:

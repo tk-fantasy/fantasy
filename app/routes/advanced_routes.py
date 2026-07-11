@@ -46,6 +46,13 @@ async def set_advanced_config(
         # 固定变量名，保证 _resolve_rtsp_url 能读到
         if vision_data.get("rtsp_url"):
             vision_data["rtsp_password_env"] = "RTSP_PASSWORD"
+            # 自动从 RTSP URL 提取 IP → 同步到 ptz.ip（同一摄像头）
+            from ..services.ptz_service import extract_host_from_url
+
+            host = extract_host_from_url(vision_data["rtsp_url"])
+            if host:
+                update_config_section("ptz", {"ip": host})
+                logger.info("PTZ ip auto-synced from RTSP URL: %s", host)
         update_config_section("vision", vision_data)
         logger.info(
             "Vision config updated: rtsp_url_set=%s",

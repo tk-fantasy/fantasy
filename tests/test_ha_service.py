@@ -55,3 +55,26 @@ class TestHAService:
         svc._area_cache_at = 9999999999
         result = await svc.get_all_devices()
         assert result == []
+
+
+class TestInvalidateStatesCache:
+    """测试缓存失效逻辑。"""
+
+    @pytest.mark.asyncio
+    async def test_invalidate_forces_refetch(self):
+        """invalidate_states_cache 后，下次 _get_states_cached 重新拉取。"""
+        svc, client = _make_service([
+            {"entity_id": "light.bed", "state": "on", "attributes": {}},
+        ])
+        # 第一次拉取 → client.get_states 被调用一次
+        await svc._get_states_cached()
+        assert client.get_states.call_count == 1
+
+        # 在 TTL 内再拉 → 命中缓存，不重新请求
+        await svc._get_states_cached()
+        assert client.get_states.call_count == 1
+
+        # 失效缓存 → 再次拉取会重新请求 HA
+        svc.invalidate_states_cache()
+        await svc._get_states_cached()
+        assert client.get_states.call_count == 2
