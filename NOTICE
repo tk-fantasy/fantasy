@@ -1,0 +1,172 @@
+Aether — Third-Party Notices
+==============================
+
+This product includes software developed by the following open source projects:
+
+--------------------------------------------------------------------------------
+Python — Backend
+--------------------------------------------------------------------------------
+
+FastAPI (MIT)
+  Copyright (c) 2018 Sebastián Ramírez
+  https://github.com/fastapi/fastapi
+
+Uvicorn (BSD-3)
+  Copyright (c) 2017-present, Encode OSS Ltd.
+  https://github.com/encode/uvicorn
+
+python-multipart (Apache 2.0)
+  Copyright (c) 2012 Andrew Dunham
+  https://github.com/Kludex/python-multipart
+
+OpenCV-Python (Apache 2.0)
+  Copyright (c) 2000-2024 Intel Corporation
+  https://github.com/opencv/opencv
+
+NumPy (BSD-3)
+  Copyright (c) 2005-2024 NumPy Developers
+  https://github.com/numpy/numpy
+
+Faiss-CPU (MIT)
+  Copyright (c) Meta Platforms, Inc. and affiliates.
+  https://github.com/facebookresearch/faiss
+
+scikit-learn (BSD-3)
+  Copyright (c) 2007-2024 The scikit-learn developers
+  https://github.com/scikit-learn/scikit-learn
+
+umap-learn (BSD-3)
+  Copyright (c) 2017 Leland McInnes
+  https://github.com/lmcinnes/umap
+
+joblib (BSD-3)
+  Copyright (c) 2008-2022, The joblib developers
+  https://github.com/joblib/joblib
+
+OpenAI Python (Apache 2.0)
+  Copyright (c) OpenAI
+  https://github.com/openai/openai-python
+
+httpx (BSD-3)
+  Copyright (c) 2019-present, Encode OSS Ltd.
+  https://github.com/encode/httpx
+
+markdownify (MIT)
+  Copyright (c) Matthew Tretter
+  https://github.com/matthewwithanm/python-markdownify
+
+websockets (BSD-3)
+  Copyright (c) Aymeric Augustin and contributors
+  https://github.com/python-websockets/websockets
+
+aiosqlite (MIT)
+  Copyright (c) Amethyst Reese
+  https://github.com/omnilib/aiosqlite
+
+croniter (MIT)
+  Copyright (c) 2012-2023 Matsumoto Taichi and croniter developers
+  https://github.com/kiorky/croniter
+
+LangChain Core (MIT)
+  Copyright (c) 2023 LangChain Inc.
+  https://github.com/langchain-ai/langchain
+
+LangChain OpenAI (MIT)
+  Copyright (c) 2023 LangChain Inc.
+  https://github.com/langchain-ai/langchain
+
+LangGraph (MIT)
+  Copyright (c) 2024 LangChain Inc.
+  https://github.com/langchain-ai/langgraph
+
+PyJWT (MIT)
+  Copyright (c) 2015-2022 José Padilla
+  https://github.com/jpadilla/pyjwt
+
+cryptography (Apache 2.0 / BSD)
+  Copyright (c) Individual contributors
+  https://github.com/pyca/cryptography
+
+passlib (BSD)
+  Copyright (c) 2011 by Eli Collins and contributors
+  https://foss.heptapod.net/python-libs/passlib
+
+pytest (MIT)
+  Copyright (c) 2004 Holger Krekel and contributors
+  https://github.com/pytest-dev/pytest
+
+pytest-asyncio (Apache 2.0)
+  Copyright (c) pytest-asyncio contributors
+  https://github.com/pytest-dev/pytest-asyncio
+
+--------------------------------------------------------------------------------
+JavaScript — Frontend
+--------------------------------------------------------------------------------
+
+Vue.js (MIT)
+  Copyright (c) 2013-present Yuxi (Evan) You
+  https://github.com/vuejs/core
+
+Vue Router (MIT)
+  Copyright (c) 2013-present Yuxi (Evan) You
+  https://github.com/vuejs/router
+
+Axios (MIT)
+  Copyright (c) 2014-present Matt Zabriskie
+  https://github.com/axios/axios
+
+china-region (ISC)
+  Copyright (c) shanyue
+  https://github.com/shfshanyue/china-region
+
+DOMPurify (Apache 2.0 / MPL 2.0)
+  Copyright (c) 2015 Mario Heiderich
+  https://github.com/cure53/DOMPurify
+
+marked (MIT)
+  Copyright (c) 2018+ MarkedJS contributors
+  Copyright (c) 2011-2018 Christopher Jeffrey
+  https://github.com/markedjs/marked
+
+Three.js (MIT)
+  Copyright (c) 2010-2024 Three.js authors
+  https://github.com/mrdoob/three.js
+
+Vite (MIT)
+  Copyright (c) 2019-present Yuxi (Evan) You & Vite contributors
+  https://github.com/vitejs/vite
+
+Vite Plugin PWA (MIT)
+  Copyright (c) 2021 Anthony Fu
+  https://github.com/vite-pwa/vite-plugin-pwa
+
+Vitest (MIT)
+  Copyright (c) 2021-Present Vitest contributors
+  https://github.com/vitest-dev/vitest
+
+jsdom (MIT)
+  Copyright (c) 2010 Elijah Insua
+  https://github.com/jsdom/jsdom
+
+sharp (Apache 2.0)
+  Copyright (c) 2013 Lovell Fuller and contributors
+  https://github.com/lovell/sharp
+
+--------------------------------------------------------------------------------
+
+The full license text for each dependency can be found in its respective
+repository or in the site-packages directory of your Python environment.
+
+For Apache 2.0 licensed components, the following applies:
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
