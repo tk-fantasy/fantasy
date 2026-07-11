@@ -79,6 +79,6 @@ describe('SetupWizardView', () => {
 
   it('shows 3 steps total', () => {
     const wrapper = mount(SetupWizardView)
-    expect(wrapper.find('.step-indicator').text()).toContain('步骤 1 / 2')
+    expect(wrapper.find('.step-indicator').text()).toContain('步骤 1 / 3')
   })
 })
