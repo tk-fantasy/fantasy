@@ -35,19 +35,9 @@ const routes = [
     component: () => import('../views/SettingsView.vue'),
   },
   {
-    path: '/keys',
-    name: 'Keys',
-    component: () => import('../views/KeysView.vue'),
-  },
-  {
     path: '/models',
     name: 'Models',
     component: () => import('../views/ModelsView.vue'),
-  },
-  {
-    path: '/ha',
-    name: 'HA',
-    component: () => import('../views/HAView.vue'),
   },
   {
     path: '/focus',
@@ -73,11 +63,6 @@ const routes = [
     path: '/sessions',
     name: 'Sessions',
     component: () => import('../views/SessionsView.vue'),
-  },
-  {
-    path: '/unique',
-    name: 'Unique',
-    component: () => import('../views/UniqueView.vue'),
   },
   {
     path: '/doc',
