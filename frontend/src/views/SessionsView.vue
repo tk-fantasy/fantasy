@@ -7,6 +7,7 @@ const router = useRouter()
 const sessions = ref([])
 const loading = ref(true)
 const deleting = ref(null)
+const deletingAll = ref(false)
 
 async function loadSessions() {
   try {
@@ -31,6 +32,19 @@ async function deleteSession(id) {
   }
 }
 
+async function deleteAllSessions() {
+  if (!confirm('确定删除所有会话？此操作不可撤销')) return
+  try {
+    deletingAll.value = true
+    await fetch('/api/sessions', { method: 'DELETE', credentials: 'include' })
+    sessions.value = []
+  } catch (e) {
+    console.error('Failed to delete all sessions:', e)
+  } finally {
+    deletingAll.value = false
+  }
+}
+
 function openSession(id) {
   router.push({ path: '/chat', query: { session: id } })
 }
@@ -49,9 +63,18 @@ onMounted(() => {
 
 <template>
   <div class="page">
-    <header class="page-header">
-      <h1>会话管理</h1>
-      <p class="page-sub">浏览和切换历史对话</p>
+    <header class="page-header page-header--split">
+      <div>
+        <h1>会话管理</h1>
+        <p class="page-sub">浏览和切换历史对话</p>
+      </div>
+      <button
+        class="btn-delete-all"
+        :disabled="sessions.length === 0 || deletingAll"
+        @click="deleteAllSessions"
+      >
+        {{ deletingAll ? '删除中...' : '一键删除' }}
+      </button>
     </header>
 
     <div v-if="loading" class="empty-state empty-state--column">
@@ -202,6 +225,29 @@ onMounted(() => {
 }
 
 .btn-delete:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-delete-all {
+  padding: var(--space-4) var(--space-12);
+  border: 1px solid var(--color-danger);
+  border-radius: var(--radius-lg);
+  background: var(--color-danger-bg);
+  color: var(--color-danger);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-out);
+  white-space: nowrap;
+}
+
+.btn-delete-all:hover:not(:disabled) {
+  background: var(--color-danger);
+  color: #fff;
+}
+
+.btn-delete-all:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
