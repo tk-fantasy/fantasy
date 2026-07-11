@@ -55,6 +55,10 @@ def _pid_alive(pid):
             return False
 
 def acquire_lock():
+    # Docker 模式下容器自身保证单实例，且 PID 锁在容器重启后会因 PID
+    # 复用而误判存活（pip 子进程恰好占用旧 PID），故跳过。
+    if args.docker:
+        return
     if os.path.exists(LOCK_FILE):
         try:
             old_pid = int(open(LOCK_FILE).read().strip())
