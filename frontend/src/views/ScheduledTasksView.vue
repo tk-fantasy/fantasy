@@ -54,7 +54,6 @@ const form = ref(emptyForm())
 
 function emptyForm() {
   return {
-    name: '',
     // 触发：自然语言翻译
     schedulePhrase: '',      // 用户输入的自然语言
     schedule: null,          // 翻译结果 {kind, ...}
@@ -127,16 +126,11 @@ async function loadTasks() {
 }
 
 async function createTask() {
-  if (!form.value.name.trim()) {
-    alert('请填写任务名称')
-    return
-  }
   creating.value = true
   try {
     const schedule = buildSchedule()
     const payload = buildPayload()
     const task = await apiPost('/api/scheduled-tasks', {
-      name: form.value.name.trim(),
       schedule,
       payload,
       enabled: true,
@@ -280,12 +274,7 @@ onMounted(() => {
 
     <!-- 创建表单 -->
     <div v-if="showCreateForm" class="create-form">
-      <div class="form-row">
-        <label class="form-label">任务名称</label>
-        <input v-model="form.name" class="form-input" placeholder="如：每天早晨提醒起床" />
-      </div>
-
-      <!-- 触发方式：自然语言翻译 -->
+      <!-- 触发方��：自然语言翻译 -->
       <div class="form-row">
         <label class="form-label">触发时间（自然语言）</label>
         <div class="parse-row">
@@ -329,11 +318,11 @@ onMounted(() => {
 
       <div class="preview-box">
         <span class="preview-label">预览</span>
-        <span class="preview-text">{{ form.name || '未命名' }} · {{ scheduleSummary }} · {{ previewPayload }}</span>
+        <span class="preview-text">{{ scheduleSummary }} · {{ previewPayload }}</span>
       </div>
 
       <div class="form-actions">
-        <button class="btn-create" :disabled="creating || !form.name.trim()" @click="createTask">
+        <button class="btn-create" :disabled="creating" @click="createTask">
           {{ creating ? '创建中...' : '创建任务' }}
         </button>
       </div>

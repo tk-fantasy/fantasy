@@ -1,7 +1,10 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { useRouter } from 'vue-router'
 import FlowSelect from '../components/FlowSelect.vue'
-import { apiGet } from '../utils/api'
+import { apiGet, apiPost } from '../utils/api'
+
+const router = useRouter()
 
 const roles = ['chat', 'vision', 'summary', 'embed', 'stt']
 const roleLabels = {
@@ -22,6 +25,11 @@ const selectedKeys = ref({
 })
 const loading = ref(true)
 const saving = ref(false)
+
+// embed 模型变更后提示重建向量索引
+const embedChanged = ref(false)
+const docRebuilding = ref(false)
+let docPollTimer = null
 
 async function loadData() {
   try {
@@ -57,20 +65,50 @@ function getRoleOptions(role) {
 async function saveRole(role) {
   try {
     saving.value = true
-    await fetch('/api/llm/settings', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        role,
-        key_id: selectedKeys.value[role],
-      }),
+    await apiPost('/api/llm/settings', {
+      role,
+      key_id: selectedKeys.value[role],
     })
+    if (role === 'embed') {
+      embedChanged.value = true
+    }
   } catch (e) {
     console.error('Failed to save settings:', e)
   } finally {
     saving.value = false
   }
 }
+
+// 重建文档向量：POST /api/doc/rebuild + 轮询状态
+async function startDocRebuild() {
+  try {
+    docRebuilding.value = true
+    await fetch('/api/doc/rebuild', { method: 'POST' })
+    docPollTimer = setInterval(pollDocRebuild, 2000)
+  } catch (e) {
+    console.error('Failed to start doc rebuild:', e)
+    docRebuilding.value = false
+  }
+}
+
+async function pollDocRebuild() {
+  try {
+    const res = await fetch('/api/doc/rebuild/status')
+    const json = await res.json()
+    const data = json.data || json
+    if (!data.rebuilding) {
+      if (docPollTimer) { clearInterval(docPollTimer); docPollTimer = null }
+      docRebuilding.value = false
+      embedChanged.value = false
+    }
+  } catch (e) {
+    console.error('Failed to poll doc rebuild status:', e)
+  }
+}
+
+onUnmounted(() => {
+  if (docPollTimer) { clearInterval(docPollTimer); docPollTimer = null }
+})
 
 onMounted(() => {
   loadData()
@@ -102,6 +140,18 @@ onMounted(() => {
             :options="getRoleOptions(role)"
             @update:model-value="v => { selectedKeys[role] = v; saveRole(role) }"
           />
+        </div>
+      </div>
+
+      <!-- embed 模型变更提示横幅 -->
+      <div v-if="embedChanged" class="embed-changed-banner">
+        <span class="banner-icon">&#9888;</span>
+        <span class="banner-text">Embed 模型已变更，建议重建向量索引</span>
+        <div class="banner-actions">
+          <button class="btn-rebuild" :disabled="docRebuilding" @click="startDocRebuild">
+            {{ docRebuilding ? '重建中...' : '重建文档向量' }}
+          </button>
+          <button class="btn-rebuild" @click="router.push('/sg')">重建语义图</button>
         </div>
       </div>
 
@@ -141,6 +191,56 @@ select.setting-input option {
 .saving-text {
   font-size: var(--text-sm);
   color: var(--color-text-muted);
+}
+
+.embed-changed-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  padding: var(--space-10) var(--space-14);
+  background: var(--color-warning-bg, rgba(255, 193, 7, 0.1));
+  border: 1px solid var(--color-warning, #ffc107);
+  border-radius: var(--radius-lg);
+}
+
+.banner-icon {
+  font-size: var(--text-lg);
+  flex-shrink: 0;
+}
+
+.banner-text {
+  flex: 1;
+  font-size: var(--text-sm);
+  color: var(--color-text);
+}
+
+.banner-actions {
+  display: flex;
+  gap: var(--space-4);
+  flex-shrink: 0;
+}
+
+.btn-rebuild {
+  padding: var(--space-3) var(--space-10);
+  border: 1px solid var(--color-primary);
+  border-radius: var(--radius-md);
+  background: var(--color-primary-light);
+  color: var(--color-primary);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-out);
+  white-space: nowrap;
+}
+
+.btn-rebuild:hover:not(:disabled) {
+  background: var(--color-primary);
+  color: #fff;
+}
+
+.btn-rebuild:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 @media (max-width: 768px) {
