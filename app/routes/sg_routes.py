@@ -122,6 +122,20 @@ def _keyword_search(q: str, top_k: int, nodes: list[dict]) -> list[dict]:
     return results[:top_k]
 
 
+def _to_vec_dict(raw, doc_ids: list[str]) -> dict:
+    """把向量产物里的 raw_vectors 统一成 {doc_id: vec} 字典。
+
+    新格式(npz)是矩阵(行顺序与 doc_ids 对齐)；老格式(pickle)是 dict[str, vec]。
+    """
+    import numpy as np
+    if isinstance(raw, np.ndarray) and raw.ndim == 2:
+        return {did: raw[i] for i, did in enumerate(doc_ids)}
+    # 老格式：被 np.load 包成 0-d array 的 dict，用 .item() 还原
+    if isinstance(raw, np.ndarray):
+        raw = raw.item()
+    return dict(raw)
+
+
 @router.get("/sg/search")
 async def sg_search(q: str = "", top_k: int = 10, container: AppContainer = Depends(get_container)):
     """向量检索：用 embed_client 给 query 取向量，在最近构建的 faiss 索引里搜近邻。
@@ -145,14 +159,17 @@ async def sg_search(q: str = "", top_k: int = 10, container: AppContainer = Depe
     import numpy as np
     import faiss
 
-    # 读取向量产物（.npz 格式，allow_pickle=False 防止反序列化任意代码）
-    vd = np.load(str(vectors_path), allow_pickle=False)
+    # 读取向量产物：新格式为 npz（allow_pickle=False 安全），老格式为纯 pickle
+    # （本地自产文件，回退 allow_pickle=True 仅作兼容，无不可信外部输入）
+    try:
+        vd = np.load(str(vectors_path), allow_pickle=False)
+    except ValueError:
+        vd = np.load(str(vectors_path), allow_pickle=True)
     doc_ids = list(vd["doc_ids"])
 
     # query 向量化：优先复用产物中已存在的向量，否则调 embed_client
-    # raw_vectors 存为矩阵（行顺序与 doc_ids 对齐），还原成 {doc_id: vec} 字典
-    raw_mat = vd["raw_vectors"]
-    raw_vecs = {did: raw_mat[i] for i, did in enumerate(doc_ids)}
+    # 新格式 raw_vectors 是矩阵（行顺序与 doc_ids 对齐）；老格式是 dict[str, vec]
+    raw_vecs = _to_vec_dict(vd["raw_vectors"], doc_ids)
     if q in raw_vecs:
         q_vec = raw_vecs[q]
     else:
