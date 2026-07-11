@@ -1,8 +1,9 @@
 <script setup>
-import { computed } from 'vue'
+import { ref, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import SidebarNav from './components/SidebarNav.vue'
 import WeatherWidget from './components/WeatherWidget.vue'
+import AdvancedModal from './components/AdvancedModal.vue'
 
 const route = useRoute()
 const isLanding = computed(() => route.name === 'Landing')
@@ -12,6 +13,9 @@ const CHROME_HIDDEN_ROUTES = ['Landing', 'Loading', 'Login', 'Setup']
 const showChrome = computed(() => !CHROME_HIDDEN_ROUTES.includes(route.name))
 const hideWeather = computed(() => !showChrome.value || route.name === 'KGraph')
 
+// 高级设置弹窗：侧边栏"高级"按钮触发，替代 /advanced 路由页面
+const showAdvanced = ref(false)
+
 const saved = localStorage.getItem('aether-theme')
 if (saved === 'light') {
   document.documentElement.classList.add('light-mode')
@@ -20,11 +24,12 @@ if (saved === 'light') {
 
 <template>
   <div class="app-layout" :class="{ landing: isLanding }">
-    <SidebarNav v-if="showChrome" />
+    <SidebarNav v-if="showChrome" @open-advanced="showAdvanced = true" />
     <main class="main-content">
       <WeatherWidget v-if="!hideWeather" />
       <router-view />
     </main>
+    <AdvancedModal v-if="showAdvanced" @close="showAdvanced = false" />
   </div>
 </template>
 

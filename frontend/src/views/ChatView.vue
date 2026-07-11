@@ -99,14 +99,12 @@ const SLASH_COMMANDS = [
   { cmd: '/halist', desc: '查看智能家居设备', action: 'nav', url: '/halist' },
   { cmd: '/task', desc: '查看自动化规则', action: 'nav', url: '/task' },
   { cmd: '/scheduled', desc: '查看定时任务', action: 'nav', url: '/scheduled' },
-  { cmd: '/keys', desc: '管理 API Key', action: 'nav', url: '/keys' },
   { cmd: '/models', desc: '模型配置与切换', action: 'nav', url: '/models' },
-  { cmd: '/ha', desc: '配置 Home Assistant', action: 'nav', url: '/ha' },
   { cmd: '/focus', desc: '设置视觉关注重点', action: 'nav', url: '/focus' },
   { cmd: '/sessions', desc: '浏览并切换历史会话', action: 'nav', url: '/sessions' },
-  { cmd: '/unique', desc: '自定义助手角色与原则', action: 'nav', url: '/unique' },
   { cmd: '/doc', desc: '打开RAG文档助手', action: 'nav', url: '/doc' },
   { cmd: '/sg', desc: '构建与管理语义图', action: 'nav', url: '/sg' },
+  { cmd: '/monitor', desc: '查看系统监控', action: 'nav', url: '/monitor' },
 ]
 
 const statusText = computed(() => {
