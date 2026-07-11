@@ -8,7 +8,7 @@ from typing import Any, Awaitable, Callable
 
 from langchain_core.messages import HumanMessage
 
-from .langgraph_agent import session_to_langchain_messages, run_agent_streaming, tool_call_signature
+from .langgraph_agent import session_to_langchain_messages, run_agent_streaming, tool_call_signature, load_model_config_for_user, build_chat_agent, close_agent_http_clients
 from .validator_agent import ValidatorAgent
 from ..schema.chat_schema import Dialog, Event, Instruction, Internal, Template, UI
 from ..services.priority_service import interactive_priority
@@ -205,6 +205,9 @@ class Dispatcher:
     ) -> None:
         self._session_store = session_store
         self._agent = agent
+        self._tools: list = []           # 工具列表（构建 per-user agent 用）
+        self._user_agents: dict[str, Any] = {}  # user_id → agent 缓存
+        self._user_agent_lock = asyncio.Lock()
         self._camera_stream = camera_stream
         self._ha_catalog_provider = ha_catalog_provider
         self._ha_controls_provider = ha_controls_provider
@@ -236,9 +239,44 @@ class Dispatcher:
         )
         return HumanMessage(content="\n".join(lines))
 
-    def set_agent(self, agent: Any) -> None:
-        """运行时替换 Agent 实例（MCP 工具变更后调用）。"""
+    def set_agent(self, agent: Any, tools: list | None = None) -> None:
+        """运行时替换 Agent 实例（MCP 工具变更后调用）。
+
+        同时更新工具列表并清空 per-user agent 缓存，下次各用户聊天时按新工具重建。
+        """
         self._agent = agent
+        if tools is not None:
+            self._tools = tools
+        self._user_agents.clear()
+
+    def invalidate_user_agent(self, user_id: str) -> None:
+        """用户修改 chat key 绑定后清除其 agent 缓存，下次聊天用新 key 重建。"""
+        self._user_agents.pop(user_id, None)
+
+    async def _get_agent(self, user_id: str) -> Any:
+        """按 user_id 获取 agent。用户有独立 key 配置时返回 per-user agent，
+        无配置或无 user_id 时回退全局 self._agent。"""
+        if not user_id:
+            return self._agent
+        if user_id in self._user_agents:
+            return self._user_agents[user_id]
+        model_config = await load_model_config_for_user(user_id)
+        if not model_config:
+            return self._agent  # 用户无独立配置，回退全局
+        async with self._user_agent_lock:
+            # double-check：持锁后可能已被其他协程构建
+            if user_id in self._user_agents:
+                return self._user_agents[user_id]
+            try:
+                await close_agent_http_clients()
+                agent = build_chat_agent(self._tools, model_config=model_config)
+                self._user_agents[user_id] = agent
+                logger.info("Built per-user agent for user_id=%s, model=%s",
+                            user_id, model_config.get("model"))
+                return agent
+            except Exception:
+                logger.exception("Failed to build per-user agent for %s, falling back to global", user_id)
+                return self._agent
 
     async def _emit_turn_error(
         self, exc: Exception, state: _StreamRunState,
@@ -266,7 +304,7 @@ class Dispatcher:
         except Exception:
             logger.exception("_run_turn: failed to send error [%s]", path)
 
-    async def _prepare_context(self, session, query: str) -> dict[str, Any]:
+    async def _prepare_context(self, session, query: str, user_id: str = "") -> dict[str, Any]:
         """共享的准备逻辑：构建 agent 运行所需的全部上下文。
 
         Returns:
@@ -298,7 +336,7 @@ class Dispatcher:
         # 自动压缩过期对话，生成摘要
         if self._summarization_service is not None:
             try:
-                await self._summarization_service.refresh_summaries(session)
+                await self._summarization_service.refresh_summaries(session, user_id=user_id)
             except Exception:
                 logger.exception("Failed to refresh summaries")
 
@@ -344,7 +382,7 @@ class Dispatcher:
         session.current_query = query
 
         try:
-            ctx = await self._prepare_context(session, query)
+            ctx = await self._prepare_context(session, query, user_id=user_id)
         except Exception as e:
             logger.exception("dispatch: _prepare_context failed")
             return [
@@ -363,7 +401,8 @@ class Dispatcher:
         async def emit(instruction: Instruction) -> None:
             instructions.append(instruction)
 
-        await self._run_turn(event, session, query, ctx, emit, stream_tokens=False)
+        agent = await self._get_agent(user_id)
+        await self._run_turn(event, session, query, ctx, emit, stream_tokens=False, agent=agent)
 
         session.history_instructions.extend(instructions)
         await self._session_store.store_session(session)
@@ -386,7 +425,7 @@ class Dispatcher:
         session.current_query = query
 
         try:
-            ctx = await self._prepare_context(session, query)
+            ctx = await self._prepare_context(session, query, user_id=user_id)
         except Exception as e:
             logger.exception("dispatch_stream: _prepare_context failed")
             try:
@@ -409,7 +448,8 @@ class Dispatcher:
         async def emit(instruction: Instruction) -> None:
             await ws_send(instruction.model_dump())
 
-        await self._run_turn(event, session, query, ctx, emit, stream_tokens=True)
+        agent = await self._get_agent(user_id)
+        await self._run_turn(event, session, query, ctx, emit, stream_tokens=True, agent=agent)
 
         session.history_instructions = []  # 流式模式不存 history_instructions
         await self._session_store.store_session(session)
@@ -427,8 +467,11 @@ class Dispatcher:
         emit: Callable[[Instruction], Awaitable[None]],
         *,
         stream_tokens: bool,
+        agent: Any = None,
     ) -> None:
         """单轮 agent 执行的共享编排骨架，REST/WS 共用。
+
+        agent 参数由调用方按 user_id 解析后传入；未传时回退 self._agent。
 
         覆盖：Dispatcher 信号 → thinking 状态 → agent 流式 → 失败重试 →
         Validator 兜底 → 静默收尾兜底 → 最终回复 → session 更新 → Finish。
@@ -443,6 +486,9 @@ class Dispatcher:
         session_id = event.header.session_id
         lc_messages = ctx["lc_messages"]
         path = "WS" if stream_tokens else "REST"
+
+        if agent is None:
+            agent = self._agent
 
         logger.info("System prompt length: %d chars, device_catalog: %s",
                     len(ctx["system_prompt"]),
@@ -482,7 +528,7 @@ class Dispatcher:
         # 主轮：运行 LangGraph agent，收集流式事件
         with interactive_priority.hold():
             try:
-                async for stream_event in run_agent_streaming(self._agent, lc_messages, session):
+                async for stream_event in run_agent_streaming(agent, lc_messages, session):
                     await handler(stream_event)
             except Exception as e:
                 # WS：emit 可能因连接断开抛错，兜底设 has_error 并尝试发 Dialog.Exception。
@@ -509,7 +555,7 @@ class Dispatcher:
             state.reset_for_retry()
             try:
                 async for stream_event in run_agent_streaming(
-                    self._agent, lc_messages, session,
+                    agent, lc_messages, session,
                     succeeded_tool_calls=state.succeeded_tool_calls,
                 ):
                     await handler(stream_event)
@@ -536,7 +582,7 @@ class Dispatcher:
             lc_messages.append(self._validator.build_retry_message())
             state.final_content = ""
             try:
-                async for stream_event in run_agent_streaming(self._agent, lc_messages, session):
+                async for stream_event in run_agent_streaming(agent, lc_messages, session):
                     await handler(stream_event)
             except Exception as e:
                 # Validator 重试轮异常兜底：同上，置 has_error 退出 while，收尾发 Finish(success=False)

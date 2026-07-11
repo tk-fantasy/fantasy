@@ -17,13 +17,15 @@ class TestSttTranscribeRoute:
         mock_file.filename = "voice.webm"
         mock_file.content_type = "audio/webm"
 
+        mock_current_user = {"user_id": "user-1", "username": "tester"}
+
         with patch("app.routes.stt_routes.stt_service.transcribe", new_callable=AsyncMock) as mock_t:
             mock_t.return_value = "你好世界"
-            result = await transcribe(audio=mock_file)
+            result = await transcribe(audio=mock_file, current_user=mock_current_user)
 
         assert result.code == "ok"
         assert result.data["text"] == "你好世界"
-        mock_t.assert_called_once_with(b"audio-bytes", filename="voice.webm", content_type="audio/webm")
+        mock_t.assert_called_once_with(b"audio-bytes", filename="voice.webm", content_type="audio/webm", user_id="user-1")
 
     @pytest.mark.asyncio
     async def test_transcribe_empty_audio(self):
@@ -33,6 +35,8 @@ class TestSttTranscribeRoute:
         mock_file = MagicMock()
         mock_file.read = AsyncMock(return_value=b"")
 
-        result = await transcribe(audio=mock_file)
+        mock_current_user = {"user_id": "user-1", "username": "tester"}
+
+        result = await transcribe(audio=mock_file, current_user=mock_current_user)
         assert result.code == "invalid_input"
         assert result.data["text"] == ""

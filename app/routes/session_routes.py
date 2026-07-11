@@ -147,7 +147,7 @@ async def compress_session(
 ) -> ApiResponse[dict]:
     """手动触发会话压缩（生成摘要）。"""
     session = await _check_session_owner(container, session_id, current_user)
-    await container.summarization_service.refresh_summaries(session)
+    await container.summarization_service.refresh_summaries(session, user_id=current_user["user_id"])
     await container.session_store.store_session(session)
     return ApiResponse(data={
         "compressed": True,

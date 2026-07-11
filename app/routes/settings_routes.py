@@ -37,17 +37,57 @@ def _reload_key_pools(container: AppContainer) -> None:
 
 
 async def _sync_llm_keys_to_current_user(current_user: dict) -> None:
-    """同步当前 config 的 llm_keys 到指定用户的 user_settings。"""
+    """同步当前 config 的 llm_keys 到指定用户的 user_settings。
+
+    写入 DB 时把实际 api_key 也存入 api_key 字段（从 env 读取），
+    供 per-user 解析使用。明文 key 仅存于本地 SQLite，不会返回前端。
+    """
     try:
+        import os
+        import copy
         from ..core.config import get_config
         db = Database.get()
+        keys = copy.deepcopy(get_config("llm_keys", []))
+        for k in keys:
+            env_name = k.get("api_key_env", "")
+            if env_name and not k.get("api_key"):
+                k["api_key"] = os.getenv(env_name, "")
         await db.user_setting_set(
             current_user["user_id"],
             "llm_keys",
-            json.dumps(get_config("llm_keys", []), ensure_ascii=False)
+            json.dumps(keys, ensure_ascii=False)
         )
     except Exception as e:
         logger.warning(f"Failed to sync llm_keys to user: {e}")
+
+
+# per-user 隔离的角色：chat/summary/stt 按用户存，vision/embed 全局共享
+PER_USER_ROLES = {"chat", "summary", "stt"}
+
+
+async def _save_user_provider(user_id: str, role: str, key_id: str, values: dict) -> None:
+    """把 per-user provider 绑定写入用户 DB。"""
+    try:
+        db = Database.get()
+        providers_json = await db.user_setting_get(user_id, "providers")
+        providers = json.loads(providers_json) if providers_json else {}
+        providers[role] = {**values, "key_id": key_id}
+        await db.user_setting_set(
+            user_id, "providers",
+            json.dumps(providers, ensure_ascii=False)
+        )
+    except Exception as e:
+        logger.warning(f"Failed to save user provider: {e}")
+
+
+async def _get_user_providers(user_id: str) -> dict:
+    """读取用户 DB 中的 providers 绑定。"""
+    try:
+        db = Database.get()
+        providers_json = await db.user_setting_get(user_id, "providers")
+        return json.loads(providers_json) if providers_json else {}
+    except Exception:
+        return {}
 
 
 def _generate_key_id(base_url: str) -> str:
@@ -179,11 +219,22 @@ async def delete_llm_key_route(
 
 @router.get("/llm/settings")
 async def get_llm_settings(
+    current_user: dict = Depends(get_current_user),
     container: AppContainer = Depends(get_container),
 ) -> ApiResponse[dict]:
-    """获取当前 LLM 设置。"""
+    """获取当前 LLM 设置。
+
+    chat/summary/stt 返回当前用户的 per-user 绑定；
+    vision/embed 返回全局 config.json 绑定。
+    """
+    settings = container.llm_settings_service.current_settings()
+    # per-user 角色用用户 DB 覆盖
+    user_providers = await _get_user_providers(current_user["user_id"])
+    for role in PER_USER_ROLES:
+        if role in user_providers:
+            settings[role] = user_providers[role]
     return ApiResponse(data={
-        "current": container.llm_settings_service.current_settings(),
+        "current": settings,
         "warnings": container.llm_settings_service.warnings(),
     })
 
@@ -194,9 +245,36 @@ async def set_llm_settings(
     current_user: dict = Depends(get_current_user),
     container: AppContainer = Depends(get_container),
 ) -> ApiResponse[dict]:
-    """应用 LLM 设置。"""
+    """应用 LLM 设置。
+
+    vision/embed 写全局 config.json（所有用户共享）；
+    chat/summary/stt 写用户 DB（per-user 隔离）。
+    """
+    role = payload.role
+
+    if role in PER_USER_ROLES:
+        # per-user：写入用户 DB
+        values: dict = {
+            "key_id": payload.key_id,
+            "max_concurrency": max(1, payload.max_concurrency or 8),
+            "enabled": True,
+        }
+        if role in ("chat", "summary") and payload.thinking is not None:
+            values["thinking"] = bool(payload.thinking)
+        await _save_user_provider(
+            current_user["user_id"], role, payload.key_id, values
+        )
+        # 清除该用户的 agent 缓存，下次聊天用新 key 重建
+        if hasattr(container.dispatcher, "invalidate_user_agent"):
+            container.dispatcher.invalidate_user_agent(current_user["user_id"])
+        logger.info("Per-user provider saved", extra={
+            "role": role, "user_id": current_user["user_id"]
+        })
+        return ApiResponse(data={"role": role, "applied": values})
+
+    # vision/embed：全局写 config.json（现有逻辑）
     result = container.llm_settings_service.apply(
-        role=payload.role,
+        role=role,
         key_id=payload.key_id,
         max_concurrency=payload.max_concurrency,
         thinking=payload.thinking,
