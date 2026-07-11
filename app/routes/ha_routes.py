@@ -57,6 +57,8 @@ async def ha_call_service(payload: HAServiceCallRequest, container: AppContainer
         entity_id = f"{domain}.{entity_id}"
     try:
         result = await container.ha_client.call_service(domain, service, entity_id, data)
+        # 调用服务后立即清掉 HAService 的状态缓存，确保前端重拉拿到最新状态
+        container.ha_service.invalidate_states_cache()
         return ApiResponse(data={"success": True, "result": result})
     except Exception as e:
         logger.exception("HA call_service failed")

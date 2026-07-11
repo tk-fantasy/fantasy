@@ -8,6 +8,7 @@ from langchain_openai import ChatOpenAI
 
 from ..core.config import get_config
 from ..core.key_resolver import resolve_key_for_role
+from ..utils.json_extractor import extract_json_from_content
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,26 @@ _VALIDATOR_SYSTEM_PROMPT = (
     "- 如果回复既表达了意图又确认了完成（如'我将帮你打开，已经打开了'），返回 false。\n\n"
     "只返回 JSON：{\"need_retry\": true} 或 {\"need_retry\": false}，不要返回其他内容。"
 )
+
+
+def _parse_need_retry(text: str) -> bool:
+    """从校验 LLM 的输出中解析 need_retry 布尔。
+
+    prompt 约束输出 {"need_retry": true/false}。用 extract_json_from_content
+    从杂文本/markdown 代码块中提取 JSON，再读 need_retry 字段。
+
+    任何解析失败（非 JSON、缺字段、非布尔）一律返回 False（安全默认：不重试），
+    避免校验器误触发不必要的重试轮。
+    """
+    import json
+    extracted = extract_json_from_content(text)
+    try:
+        data = json.loads(extracted)
+    except (json.JSONDecodeError, ValueError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    return bool(data.get("need_retry", False))
 
 
 class ValidatorAgent:

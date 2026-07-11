@@ -20,6 +20,9 @@ app/data/aether.db-wal
 # Emoji 向量索引（预构建，~119MB，过大不宜进版本库；需从现有机器拷贝）
 app/data/emoji_index.json
 
+# RAG 索引持久化产物（运行时构建，由 Docker volume 持久化）
+app/data/rag_index/
+
 # Home Assistant 运行时产物：日志、数据库、锁文件
 ha_config/home-assistant.log
 ha_config/home-assistant.log.*

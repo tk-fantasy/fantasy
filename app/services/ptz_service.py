@@ -19,9 +19,24 @@ import threading
 import time
 from typing import Any
 
+from urllib.parse import urlparse
+
 from ..core.config import get_config
 
 logger = logging.getLogger(__name__)
+
+
+def extract_host_from_url(url: str) -> str:
+    """从 RTSP/HTTP URL 提取主机 IP（去端口、路径、凭据）。
+
+    rtsp://admin:pass@192.168.1.100:554/stream → 192.168.1.100
+    rtsp://192.168.1.100:554/stream            → 192.168.1.100
+    rtsp://192.168.1.100/stream                → 192.168.1.100
+    空串 / 无效 URL                              → ""
+    """
+    if not url or not url.strip():
+        return ""
+    return urlparse(url.strip()).hostname or ""
 
 # 方向 → (pan, tilt) 速度向量。ONVIF PanTilt：x=pan(左右), y=tilt(上下)。
 # 数值范围 -1~1，正负由设备安装方向定；这里按常见约定：

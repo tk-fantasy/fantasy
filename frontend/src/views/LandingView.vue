@@ -80,8 +80,8 @@ function enterApp() {
   width: 100vw;
   height: 100vh;
   overflow: hidden;
-  background: #0a0a0a;
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  background: var(--color-bg);
+  font-family: var(--font-family);
 }
 
 .video-wrapper {
@@ -120,7 +120,7 @@ function enterApp() {
   align-items: center;
   justify-content: center;
   height: 100%;
-  padding: 40px;
+  padding: var(--space-32);
   text-align: center;
   opacity: 0;
   transform: translateY(30px);
@@ -141,15 +141,15 @@ function enterApp() {
 .brand {
   display: flex;
   align-items: center;
-  gap: 12px;
-  margin-bottom: 32px;
+  gap: var(--space-6);
+  margin-bottom: var(--space-24);
 }
 
 .brand-dot {
-  width: 8px;
-  height: 8px;
+  width: var(--space-4);
+  height: var(--space-4);
   border-radius: 50%;
-  background: #4a7c70;
+  background: var(--color-primary);
   animation: pulse-dot 2s ease-in-out infinite;
 }
 
@@ -159,31 +159,31 @@ function enterApp() {
 }
 
 .brand-line {
-  width: 40px;
+  width: var(--space-20);
   height: 1px;
-  background: rgba(255, 255, 255, 0.3);
+  background: var(--color-text-tertiary);
 }
 
 .title {
-  margin-bottom: 20px;
+  margin-bottom: var(--space-10);
 }
 
 .title-sub {
   display: block;
-  font-size: 14px;
-  font-weight: 500;
-  letter-spacing: 6px;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  letter-spacing: var(--space-3);
   text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.5);
-  margin-bottom: 12px;
+  color: var(--color-text-secondary);
+  margin-bottom: var(--space-6);
 }
 
 .title-main {
   display: block;
-  font-size: 56px;
-  font-weight: 700;
+  font-size: var(--text-6xl);
+  font-weight: var(--weight-bold);
   letter-spacing: -1.5px;
-  line-height: 1.15;
+  line-height: var(--leading-tight);
   color: #fff;
   background: linear-gradient(135deg, #ffffff 0%, #c8e6d9 100%);
   -webkit-background-clip: text;
@@ -192,27 +192,27 @@ function enterApp() {
 }
 
 .desc {
-  font-size: 15px;
-  color: rgba(255, 255, 255, 0.55);
-  line-height: 1.8;
+  font-size: var(--text-lg);
+  color: var(--color-text-secondary);
+  line-height: var(--leading-relaxed);
   max-width: 520px;
-  margin-bottom: 48px;
+  margin-bottom: var(--space-40);
 }
 
 .enter-btn {
   position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 10px;
-  padding: 16px 40px;
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  border-radius: 50px;
-  background: rgba(255, 255, 255, 0.06);
+  gap: var(--space-5);
+  padding: var(--space-8) var(--space-32);
+  border: 1px solid var(--color-border-hover);
+  border-radius: var(--radius-full);
+  background: var(--color-surface-hover);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
-  color: #fff;
-  font-size: 15px;
-  font-weight: 500;
+  color: var(--color-text);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-medium);
   cursor: pointer;
   transition: all 0.4s ease;
   overflow: hidden;
@@ -222,8 +222,8 @@ function enterApp() {
   content: '';
   position: absolute;
   inset: 0;
-  border-radius: 50px;
-  background: linear-gradient(135deg, #2d5a4e, #4a7c70);
+  border-radius: var(--radius-full);
+  background: linear-gradient(135deg, var(--color-primary-dark), var(--color-primary));
   opacity: 0;
   transition: opacity 0.4s ease;
 }

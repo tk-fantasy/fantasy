@@ -53,6 +53,16 @@ class HomeAssistantClient:
             await self._client.aclose()
             self._client = None
 
+    @property
+    def base_url(self) -> str:
+        """HA 服务地址（已 rstrip / ），供外部服务读，避免访问 _base_url 私有属性。"""
+        return self._base_url
+
+    @property
+    def token(self) -> str:
+        """Long-Lived Access Token，供外部服务读，避免访问 _token 私有属性。"""
+        return self._token
+
     # ============ 状态查询 ============
 
     async def get_states(self) -> list[dict[str, Any]]:

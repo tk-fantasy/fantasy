@@ -1044,7 +1044,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.3);
+  background: var(--overlay-bg);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   pointer-events: none;
@@ -1226,7 +1226,7 @@ onUnmounted(() => {
 .tool-detail {
   padding: var(--space-2) var(--space-5) var(--space-4);
   border-top: 1px solid var(--color-border);
-  background: rgba(0, 0, 0, 0.15);
+  background: var(--color-surface);
 }
 
 .tool-detail-section {
@@ -1442,7 +1442,7 @@ onUnmounted(() => {
 .camera-modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.7);
+  background: var(--overlay-bg);
   backdrop-filter: blur(8px);
   display: flex;
   align-items: center;
@@ -1517,7 +1517,7 @@ onUnmounted(() => {
 
 .camera-stage {
   padding: var(--space-12);
-  background: #000;
+  background: var(--color-bg);
   display: flex;
   align-items: center;
   justify-content: center;

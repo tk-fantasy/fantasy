@@ -27,9 +27,15 @@ _startup_progress_mod.startup_progress.set = lambda *a, **kw: None
 
 
 @pytest.fixture(autouse=True)
-def _patch_config(monkeypatch):
+def _patch_config(monkeypatch, tmp_path):
     """Auto-patch app.config so tests don't read real config.json / .env."""
     import app.core.config as cfg
+
+    # 让 update_config_section 写到临时文件，避免 rename 真实 config.json
+    # （Docker bind-mount 下 os.rename 会报 Device or resource busy）
+    tmp_config = tmp_path / "config.json"
+    tmp_config.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(cfg, "CONFIG_PATH", tmp_config)
 
     test_config = {
         "llm": {

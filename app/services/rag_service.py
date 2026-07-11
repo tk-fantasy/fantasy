@@ -10,6 +10,7 @@ embedding，消除维度不一致问题。
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 from pathlib import Path
@@ -38,6 +39,10 @@ class RagService:
         # 记录构建索引时使用的 embed 模型，用于检测模型变更后自动重建
         self._embed_model: str = ""
         self._rebuilding: bool = False
+        # docs 指纹缓存：try_load 算好后供 _persist_index 复用，避免同一 build 周期重复扫盘
+        self._last_fingerprint: dict[str, list[int]] | None = None
+        # 索引持久化目录（与 SQLite 同卷 aether-data，跨重启复用）
+        self._index_dir = base_dir / "data" / "rag_index"
 
     @property
     def is_ready(self) -> bool:
@@ -48,22 +53,84 @@ class RagService:
     def chunk_count(self) -> int:
         return len(self.chunks)
 
-    def set_embed_client(self, embed_client) -> None:
-        """注入 embed_client（容器初始化后调用）。"""
-        self._embed_client = embed_client
-
     def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         """绑定主事件循环（后台线程构建索引用）。"""
         self._loop = loop
 
     def safe_build(self) -> None:
-        """build_index 的安全包装，吞掉异常。供后台线程调用。"""
+        """build_index 的安全包装，吞掉异常。供后台线程调用。
+
+        启动时先尝试从磁盘加载持久化索引（docs 内容 + embed 模型未变则复用），
+        命中则跳过全量向量化；未命中才重建并落盘。
+        """
         try:
+            if self.try_load():
+                logger.info(
+                    "RAG index loaded from disk: %d chunks, model=%s",
+                    len(self.chunks), self._embed_model,
+                )
+                return
             self.build_index()
         except Exception as e:
             logger.warning("RAG index build failed: %s", e)
         finally:
             self._rebuilding = False
+
+    def _compute_docs_fingerprint(self) -> dict[str, list[int]]:
+        """扫描 docs 目录，返回每个 .md 文件的指纹 {相对路径: [size, mtime_ns]}。
+
+        用于检测 docs 内容是否变更：只要文件大小或修改时间变了就判定为需要重建。
+        """
+        docs_root = Path(os.environ.get("DOCS_ROOT", str(self._base_dir.parent / "docs")))
+        fingerprint: dict[str, list[int]] = {}
+        if not docs_root.exists():
+            return fingerprint
+        for md_path in sorted(docs_root.rglob("*.md")):
+            rel = str(md_path.relative_to(docs_root)).replace("\\", "/")
+            stat = md_path.stat()
+            fingerprint[rel] = [stat.st_size, stat.st_mtime_ns]
+        return fingerprint
+
+    def try_load(self) -> bool:
+        """尝试从磁盘加载持久化索引。成功返回 True，需重建返回 False。
+
+        判定条件（全部满足才复用）：
+        1. 三个产物文件都存在（faiss.index / chunks.json / meta.json）
+        2. meta 中记录的 embed 模型与当前 embed_client.model 一致
+        3. meta 中记录的 docs 指纹与当前 docs 目录一致
+        """
+        index_file = self._index_dir / "faiss.index"
+        chunks_file = self._index_dir / "chunks.json"
+        meta_file = self._index_dir / "meta.json"
+        if not (index_file.exists() and chunks_file.exists() and meta_file.exists()):
+            return False
+        if self._embed_client is None:
+            return False
+
+        try:
+            meta = json.loads(meta_file.read_text(encoding="utf-8"))
+            # 模型变更 → 必须重建
+            if meta.get("embed_model") != self._embed_client.model:
+                logger.info(
+                    "RAG: 持久化索引模型不匹配 (disk=%s, current=%s)，需重建",
+                    meta.get("embed_model"), self._embed_client.model,
+                )
+                return False
+            # docs 内容变更 → 必须重建
+            current_fp = self._compute_docs_fingerprint()
+            self._last_fingerprint = current_fp  # 缓存供 _persist_index 复用（同 build 周期 docs 不变）
+            if meta.get("docs_fingerprint") != current_fp:
+                logger.info("RAG: docs 内容已变更，需重建索引")
+                return False
+
+            import faiss  # 文件齐全且模型/docs 未变才需要 faiss；faiss 缺失时此处才暴露 ModuleNotFoundError
+            self.faiss_index = faiss.read_index(str(index_file))
+            self.chunks = json.loads(chunks_file.read_text(encoding="utf-8"))
+            self._embed_model = meta["embed_model"]
+            return True
+        except Exception as e:
+            logger.warning("RAG: 加载持久化索引失败，回退重建: %s", e)
+            return False
 
     def maybe_rebuild_if_model_changed(self) -> None:
         """检测 embed 模型是否变更，变更则在后台线程重建索引。
@@ -122,23 +189,16 @@ class RagService:
             logger.warning("RAG: no chunks")
             return
 
-        # 批量向量化：embed_client 是 async，后台线程内同步等待
+        # 批量向量化：每批 16 条，一次 HTTP 请求拿多条向量（比逐条请求省 ~16x 往返）
         embed_client = self._embed_client
 
         def _embed_batch(texts: list[str]) -> list[list[float]]:
-            futures = [
-                asyncio.run_coroutine_threadsafe(
-                    embed_client.post_embedding({
-                        "model": embed_client.model,
-                        "prompt": t,
-                    }),
-                    loop,
-                )
-                for t in texts
-            ]
-            return [f.result()["embedding"] for f in futures]
+            fut = asyncio.run_coroutine_threadsafe(
+                embed_client.post_embeddings_batch(texts),
+                loop,
+            )
+            return fut.result()
 
-        # 分批控制并发（每批 16 条，避免一次性打爆 key 池）
         all_vecs: list[list[float]] = []
         batch = 16
         for i in range(0, len(chunks), batch):
@@ -155,6 +215,32 @@ class RagService:
         self.faiss_index = index
         self._embed_model = embed_client.model
         logger.info("RAG index ready: %d chunks, dim=%d, model=%s", len(chunks), dim, self._embed_model)
+
+        # 落盘持久化：下次启动若 docs + 模型未变则直接读盘，跳过全量向量化
+        self._persist_index(index, chunks, self._embed_model)
+
+    def _persist_index(self, index, chunks: list[str], embed_model: str) -> None:
+        """把索引产物写到磁盘，供下次启动复用。"""
+        import faiss
+
+        try:
+            self._index_dir.mkdir(parents=True, exist_ok=True)
+            faiss.write_index(index, str(self._index_dir / "faiss.index"))
+            (self._index_dir / "chunks.json").write_text(
+                json.dumps(chunks, ensure_ascii=False), encoding="utf-8"
+            )
+            # 复用 try_load 已算的指纹（同一 build 周期 docs 不变），避免重复扫盘
+            fingerprint = self._last_fingerprint or self._compute_docs_fingerprint()
+            meta = {
+                "embed_model": embed_model,
+                "docs_fingerprint": fingerprint,
+            }
+            (self._index_dir / "meta.json").write_text(
+                json.dumps(meta, ensure_ascii=False), encoding="utf-8"
+            )
+            logger.info("RAG index persisted to %s", self._index_dir)
+        except Exception as e:
+            logger.warning("RAG: 索引落盘失败（不影响本次构建）: %s", e)
 
     async def search(self, query: str) -> str:
         """embedding + FAISS 搜索 → 返回拼接后的 context 字符串。"""

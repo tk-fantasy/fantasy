@@ -710,7 +710,7 @@ watch(user, () => {
   left: 0;
   right: 0;
   margin-bottom: var(--space-8);
-  background: #1a1a22;
+  background: var(--dialog-bg);
   border: 1px solid var(--color-border-hover);
   border-radius: var(--radius-lg);
   box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.45), 0 0 12px rgba(74, 124, 112, 0.08);
@@ -940,7 +940,7 @@ watch(user, () => {
 .switch-confirm {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.55);
+  background: var(--overlay-bg);
   backdrop-filter: blur(4px);
   -webkit-backdrop-filter: blur(4px);
   display: flex;
@@ -953,10 +953,10 @@ watch(user, () => {
 .switch-confirm-card {
   width: 320px;
   max-width: calc(100vw - 32px);
-  background: #1a1a22;
+  background: var(--dialog-bg);
   border: 1px solid var(--color-border-hover);
   border-radius: var(--radius-lg);
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--shadow-xl);
   padding: var(--space-16);
   position: relative;
   z-index: 1;

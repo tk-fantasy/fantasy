@@ -240,6 +240,32 @@ class Dispatcher:
         """运行时替换 Agent 实例（MCP 工具变更后调用）。"""
         self._agent = agent
 
+    async def _emit_turn_error(
+        self, exc: Exception, state: _StreamRunState,
+        emit: Callable[[Instruction], Awaitable[None]],
+        request_id: str, session_id: str, path: str,
+    ) -> None:
+        """agent 执行异常的统一兜底：置 has_error 并尽力发 Dialog.Exception。
+
+        主轮与两个重试轮共用。WS 下 emit 可能因连接断开再抛错（内层 try 兜住）；
+        REST 下 emit=append 不会抛。置 has_error=True 后各 while 循环条件
+        (not state.has_error) 失效，自然退出并走到收尾发 Finish(success=False)，
+        避免异常逃出 _run_turn 导致客户端收不到 Finish 永久挂起。
+        """
+        logger.exception("_run_turn: agent error [%s]", path)
+        state.has_error = True
+        from .langgraph_agent import _friendly_api_error
+        error_msg = _friendly_api_error(exc)
+        try:
+            await emit(
+                Instruction.build_instruction(
+                    Dialog.Exception(message=error_msg),
+                    request_id, session_id,
+                )
+            )
+        except Exception:
+            logger.exception("_run_turn: failed to send error [%s]", path)
+
     async def _prepare_context(self, session, query: str) -> dict[str, Any]:
         """共享的准备逻辑：构建 agent 运行所需的全部上下文。
 
@@ -462,19 +488,7 @@ class Dispatcher:
                 # WS：emit 可能因连接断开抛错，兜底设 has_error 并尝试发 Dialog.Exception。
                 # REST：emit=append 不会抛，run_agent_streaming 内部已吞异常 yield error，
                 # 此分支对 REST 是死代码，不改变其行为。
-                logger.exception("_run_turn: agent error [%s]", path)
-                state.has_error = True
-                from .langgraph_agent import _friendly_api_error
-                error_msg = _friendly_api_error(e)
-                try:
-                    await emit(
-                        Instruction.build_instruction(
-                            Dialog.Exception(message=error_msg),
-                            request_id, session_id,
-                        )
-                    )
-                except Exception:
-                    logger.exception("_run_turn: failed to send error [%s]", path)
+                await self._emit_turn_error(e, state, emit, request_id, session_id, path)
 
         # 失败重试：调过工具但有失败项时，追加精准提示再跑一轮，只补失败的。
         # succeeded_tool_calls 传给 post_model_hook，代码层面剔除已成功的 tool_call。
@@ -493,11 +507,16 @@ class Dispatcher:
             )
             lc_messages.append(self._build_failure_retry_message(state.failed_tools))
             state.reset_for_retry()
-            async for stream_event in run_agent_streaming(
-                self._agent, lc_messages, session,
-                succeeded_tool_calls=state.succeeded_tool_calls,
-            ):
-                await handler(stream_event)
+            try:
+                async for stream_event in run_agent_streaming(
+                    self._agent, lc_messages, session,
+                    succeeded_tool_calls=state.succeeded_tool_calls,
+                ):
+                    await handler(stream_event)
+            except Exception as e:
+                # 重试轮异常兜底：置 has_error 让 while 退出，收尾发 Finish(success=False)，
+                # 避免异常逃出 _run_turn 导致客户端收不到 Finish。
+                await self._emit_turn_error(e, state, emit, request_id, session_id, path)
 
         # Validator 校验：仅当模型完全没调工具时才触发重试（兜底安全网）
         # has_error 对 REST 恒为 False，tool_call_count==0 短路与原 REST 的 if 守卫等价。
@@ -516,8 +535,12 @@ class Dispatcher:
                 )
             lc_messages.append(self._validator.build_retry_message())
             state.final_content = ""
-            async for stream_event in run_agent_streaming(self._agent, lc_messages, session):
-                await handler(stream_event)
+            try:
+                async for stream_event in run_agent_streaming(self._agent, lc_messages, session):
+                    await handler(stream_event)
+            except Exception as e:
+                # Validator 重试轮异常兜底：同上，置 has_error 退出 while，收尾发 Finish(success=False)
+                await self._emit_turn_error(e, state, emit, request_id, session_id, path)
 
         # 静默收尾兜底：重试轮空转（hook 剔光、模型无文本产出）时 final_content 为空，
         # 但仍有未解决的工具失败。强制生成失败说明，避免「失败却 Finish(success=True)」。

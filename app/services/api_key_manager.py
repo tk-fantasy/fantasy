@@ -19,7 +19,7 @@ class ApiKeyManager:
 
     从 config.json 的 llm_keys 段加载，按 type 过滤。
     并发上限从 providers.<role>.max_concurrency 读取。
-    调用失败可经 report_failure 上报，连续失败达阈值的 key 临时熔断（冷却期内
+    调用失败可经 release(entry, success=False) 上报，连续失败达阈值的 key 临时熔断（冷却期内
     acquire 跳过），避免故障 key 持续毒化请求。
     """
 
@@ -153,11 +153,3 @@ class ApiKeyManager:
                         self._role, entry.get("id", "?"), entry["fail_count"], _COOLDOWN_SECONDS,
                     )
             self._cond.notify()
-
-    async def report_failure(self, entry: dict) -> None:
-        """上报调用失败（等价于 release(entry, success=False)）。"""
-        await self.release(entry, success=False)
-
-    async def report_success(self, entry: dict) -> None:
-        """上报调用成功（等价于 release(entry, success=True)）。"""
-        await self.release(entry, success=True)

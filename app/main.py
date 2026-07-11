@@ -147,7 +147,10 @@ async def _rebuild_agent() -> None:
     调用方必须持有 _rebuild_lock。
     """
     from .mcp.langchain_tools import convert_all_tools
-    from .agents.langgraph_agent import build_chat_agent
+    from .agents.langgraph_agent import build_chat_agent, close_agent_http_clients
+
+    # 关闭旧 agent 的 httpx 客户端，释放连接池（旧 agent 已被新 agent 取代，不再被引用）
+    await close_agent_http_clients()
 
     langchain_tools = convert_all_tools(mcp_client_manager)
     new_agent = build_chat_agent(tools=langchain_tools)

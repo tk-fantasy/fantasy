@@ -184,6 +184,10 @@ class Vectorizer:
 
         向量产物用 numpy .npz 格式（np.savez），反序列化不执行任意代码，
         避免 pickle.load 的反序列化 RCE 风险。doc_ids 与各行向量按顺序对齐。
+
+        注意：PCA/UMAP 降维模型（scikit-learn 对象）无法用 npz 序列化，
+        下方仍走 joblib.dump（内部是 pickle）。这些 .joblib 文件由本机自行产出、
+        仅本地加载，不接收外部输入，RCE 面可接受；切勿加载来源不明的 .joblib。
         """
         import faiss
         os.makedirs(model_dir, exist_ok=True)

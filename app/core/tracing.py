@@ -33,11 +33,6 @@ def new_request_id() -> str:
     return str(uuid.uuid4())[:8]
 
 
-def get_request_id() -> str:
-    """获取当前请求的 request_id。"""
-    return request_id_var.get("-")
-
-
 def set_request_id(rid: str) -> None:
     """设置当前请求的 request_id。"""
     request_id_var.set(rid)

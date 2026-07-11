@@ -31,6 +31,7 @@
   --color-surface: rgba(255, 255, 255, 0.04);
   --color-surface-hover: rgba(255, 255, 255, 0.07);
   --color-surface-active: rgba(74, 124, 112, 0.08);
+  --color-code-bg: rgba(255, 255, 255, 0.06);
   --color-border: rgba(255, 255, 255, 0.06);
   --color-border-hover: rgba(255, 255, 255, 0.1);
   --color-border-active: rgba(74, 124, 112, 0.25);
@@ -119,6 +120,7 @@
   --page-max-width: 1200px;
   --sidebar-bg: rgba(14, 14, 20, 0.95);
   --dialog-bg: #181820;
+  --overlay-bg: rgba(0, 0, 0, 0.6);
 }
 
 .light-mode {
@@ -137,6 +139,7 @@
   --color-surface: rgba(0, 0, 0, 0.03);
   --color-surface-hover: rgba(0, 0, 0, 0.05);
   --color-surface-active: rgba(74, 124, 112, 0.06);
+  --color-code-bg: rgba(0, 0, 0, 0.05);
   --color-border: rgba(0, 0, 0, 0.06);
   --color-border-hover: rgba(0, 0, 0, 0.1);
   --color-border-active: rgba(74, 124, 112, 0.2);
@@ -160,6 +163,7 @@
 
   --sidebar-bg: rgba(255, 255, 255, 0.92);
   --dialog-bg: #ffffff;
+  --overlay-bg: rgba(0, 0, 0, 0.45);
   --g1: rgba(45, 90, 78, 0.04);
   --g2: rgba(74, 124, 112, 0.03);
   --g3: rgba(30, 60, 110, 0.04);
@@ -482,7 +486,7 @@ body {
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.6);
+  background: var(--overlay-bg);
   display: flex;
   align-items: center;
   justify-content: center;

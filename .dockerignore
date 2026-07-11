@@ -26,6 +26,7 @@ logs/
 app/data/aether.db
 app/data/aether.db-shm
 app/data/aether.db-wal
+app/data/rag_index/
 app/sg/output/
 
 # ===== 密钥与本地配置（绝不进镜像）=====
