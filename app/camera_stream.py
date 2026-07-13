@@ -477,6 +477,11 @@ class CameraStream:
         backend_name = "rtsp"
         safe_url = self._sanitize_url(url)
         logger.info("Opening network stream: %s", safe_url)
+        # 强制 RTSP 媒体流走 TCP。默认 UDP RTP 在 Docker 桥��网络下会被 NAT 丢弃，
+        # 表现为信令端口 554 通但 30s 拿不到一帧。TCP 牺牲少许延迟换可靠性，
+        # 对视觉推理场景完全可接受。可通过 vision.rtsp_transport 改回 udp。
+        transport = str(get_config("vision.rtsp_transport", "tcp")).strip().lower() or "tcp"
+        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = f"rtsp_transport;{transport}"
         cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
         if not cap.isOpened():
             cap.release()
