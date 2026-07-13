@@ -97,7 +97,8 @@ class TestGetLlmSettingsMerge:
         mock_container.llm_settings_service.current_settings = MagicMock(return_value=dict(global_settings))
         mock_container.llm_settings_service.warnings = MagicMock(return_value=[])
 
-        with patch("app.routes.settings_routes._get_user_providers", new=AsyncMock(return_value=user_providers)):
+        with patch("app.routes.settings_routes._get_user_providers", new=AsyncMock(return_value=user_providers)), \
+             patch("app.core.config.get_config", return_value=8):
             result = await get_llm_settings(
                 current_user=_mock_current_user(), container=mock_container
             )
@@ -109,8 +110,8 @@ class TestGetLlmSettingsMerge:
         # vision/embed 保持全局
         assert current["vision"]["key_id"] == "global-vis"
         assert current["embed"]["key_id"] == "global-emb"
-        # summary 无 per-user 覆盖，保持全局
-        assert current["summary"]["key_id"] == "global-sum"
+        # summary 无 per-user 覆盖，返回空 key_id（不回退全局，因为全局 key 属于别的用户）
+        assert current["summary"]["key_id"] is None
 
 
 class TestSwitchUserSimplified:

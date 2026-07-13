@@ -228,11 +228,21 @@ async def get_llm_settings(
     vision/embed 返回全局 config.json 绑定。
     """
     settings = container.llm_settings_service.current_settings()
-    # per-user 角色用用户 DB 覆盖
+    # per-user 角色用用户 DB 覆盖。用户没配过的角色返回空 key_id —— 不回退全局，
+    # 因为全局 config.json 里的 key_id 属于别的用户���key 是 per-user 隔离的），
+    # 拿到当前用户的 key 列表里匹配不到，前端会显示"未选择"。
+    # 运行时已有 auto_select 回退（resolve_key_for_role_user），不依赖这里返回的 key_id。
+    from ..core.config import get_config as _get_config
     user_providers = await _get_user_providers(current_user["user_id"])
     for role in PER_USER_ROLES:
         if role in user_providers:
             settings[role] = user_providers[role]
+        else:
+            settings[role] = {
+                "key_id": None,
+                "max_concurrency": int(_get_config(f"providers.{role}.max_concurrency", 8)),
+                "thinking": False,
+            }
     return ApiResponse(data={
         "current": settings,
         "warnings": container.llm_settings_service.warnings(),
