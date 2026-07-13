@@ -1,7 +1,10 @@
 """模型连接测试服务。"""
 from __future__ import annotations
 
+import io
 import logging
+import struct
+import wave
 from typing import Any
 
 import httpx
@@ -9,6 +12,22 @@ import httpx
 from ..clients.http_client import new_client
 
 logger = logging.getLogger(__name__)
+
+
+def _silence_wav(duration_ms: int = 100, sample_rate: int = 16000) -> bytes:
+    """生成一段静音 WAV（16-bit mono PCM），用于 STT 连接测试。
+
+    SenseVoice 等模型接受 16kHz 单声道 WAV；100ms 静音足以让服务端返回
+    200（空文本），用来验证 api_key + base_url + model 是否有效。
+    """
+    n_frames = int(sample_rate * duration_ms / 1000)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)  # 16-bit
+        wf.setframerate(sample_rate)
+        wf.writeframes(struct.pack(f"<{n_frames}h", *([0] * n_frames)))
+    return buf.getvalue()
 
 
 async def test_model_connection(
@@ -33,9 +52,17 @@ async def test_model_connection(
     try:
         async with new_client(timeout=timeout) as client:
             if role == "stt":
-                # STT 走 multipart /audio/transcriptions，无标准 chat/embed 探活端点，跳过
-                return {"ok": True, "skipped": "STT 无需测试连接"}
-            if role == "embed":
+                # STT 走 multipart /audio/transcriptions，发一段静音 WAV 验证
+                # api_key + base_url + model 是否有效。服务端返回 200 即视为通过。
+                url = base_url.rstrip("/") + "/audio/transcriptions"
+                wav_bytes = _silence_wav()
+                resp = await client.post(
+                    url,
+                    headers={"Authorization": f"Bearer {api_key}"} if api_key else {},
+                    files={"file": ("test.wav", wav_bytes, "audio/wav")},
+                    data={"model": model},
+                )
+            elif role == "embed":
                 url = base_url.rstrip("/") + embed_path
                 payload = {"model": model, "input": "test"}
                 resp = await client.post(url, json=payload, headers=headers)
