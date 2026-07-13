@@ -13,6 +13,8 @@ httpx==0.28.1
 markdownify>=0.13.1
 websockets>=12.0
 aiosqlite
+# ONVIF PTZ（云台上下左右）控制 — ptz_service.py 依赖
+onvif-zeep-async>=4.0.0
 croniter>=2.0.0
 langchain-core>=0.3.0
 langchain-openai>=0.3.0

@@ -1,11 +1,10 @@
 """PTZ 云台路由 — 方向控制、停止、步进、配置。
 
-ONVIF 的 zeep client 是同步阻塞的，用 asyncio.to_thread 挪到线程池，
-避免慢网络握手卡住事件循环（影响 /video_feed 等其他路由）。
+onvif-zeep-async 4.x 的 ONVIFCamera 是 async API，ptz_service 全 async，
+路由层直接 await 即可，不需要 to_thread。
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 
@@ -62,14 +61,14 @@ async def ptz_config_set(payload: PtzConfigRequest) -> ApiResponse[dict]:
 @router.post("/ptz/move")
 async def ptz_move(payload: PtzMoveRequest) -> ApiResponse[dict]:
     """开始持续转动（按住式）。前端松开时调 /ptz/stop。"""
-    result = await asyncio.to_thread(ptz_service.move, payload.direction)
+    result = await ptz_service.move(payload.direction)
     return ApiResponse(data=result)
 
 
 @router.post("/ptz/stop")
 async def ptz_stop() -> ApiResponse[dict]:
     """停止转动（松开 / 紧急停转）。"""
-    result = await asyncio.to_thread(ptz_service.stop)
+    result = await ptz_service.stop()
     return ApiResponse(data=result)
 
 
@@ -77,5 +76,5 @@ async def ptz_stop() -> ApiResponse[dict]:
 async def ptz_step(payload: PtzStepRequest) -> ApiResponse[dict]:
     """步进（点按式）：点一下转一小段后自动停。停转由后端保证。"""
     duration = int(get_config("ptz.step_ms", 300))
-    result = await asyncio.to_thread(ptz_service.step, payload.direction, duration)
+    result = await ptz_service.step(payload.direction, duration)
     return ApiResponse(data=result)
