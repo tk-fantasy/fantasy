@@ -167,8 +167,8 @@ async def upsert_llm_key_route(
     if is_new:
         key_id = _generate_key_id(base_url)
 
-    # 新增时自动测试连接（STT 无标准 chat/embed 端点，跳过测试）
-    if is_new and api_key and model_type != "stt":
+    # 新增时自动测试连接（chat/summary/vision/embed/stt 均测）
+    if is_new and api_key:
         test_result = await test_model_connection(
             base_url=base_url,
             model=model,
