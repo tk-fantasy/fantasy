@@ -30,16 +30,18 @@ describe('adaptControls', () => {
   })
 
   it('adapts slider control with pctMatch detection', () => {
+    // 后端修复后 brightness 滑块 key 规范化为 'brightness'（param 仍是 'brightness_pct'）
     const controls = {
-      brightness_pct: { type: 'slider', service: 'turn_on', param: 'brightness_pct', min: 0, max: 100, step: 1, current: 50, unit: '%' },
+      brightness: { type: 'slider', service: 'turn_on', param: 'brightness_pct', min: 0, max: 100, step: 1, current: 50, unit: '%' },
     }
-    const entity = { entity_id: 'light.lamp', attributes: { brightness_pct: 50 } }
+    const entity = { entity_id: 'light.lamp', attributes: { brightness: 128 } }
     const result = adaptControls(controls, entity)
 
     expect(result.length).toBe(1)
     const cap = result[0]
     expect(cap.type).toBe('slider')
-    expect(cap.key).toBe('brightness_pct')
+    expect(cap.key).toBe('brightness')
+    expect(cap.label).toBe('Brightness')  // 不再出现 'Brightness Pct'
     expect(cap.min).toBe(0)
     expect(cap.max).toBe(100)
     expect(cap.step).toBe(1)

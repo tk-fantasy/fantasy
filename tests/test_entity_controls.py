@@ -87,12 +87,57 @@ class TestResolveControlsSlider:
             "light": {"turn_on": {"fields": ["entity_id", "brightness_pct"]}},
         }
         controls = resolve_controls(entity, services)
-        assert "brightness_pct" in controls
-        ctrl = controls["brightness_pct"]
+        # key 规范化为基础名 brightness，避免标签在 Brightness / Brightness Pct 间跳变
+        assert "brightness" in controls
+        ctrl = controls["brightness"]
         assert ctrl["type"] == "slider"
         assert ctrl["min"] == 0
         assert ctrl["max"] == 100
         assert ctrl["param"] == "brightness_pct"
+        assert ctrl["current"] == 50  # 本身即百分比，不再换算
+
+    def test_slider_converts_raw_brightness_to_pct(self):
+        """HA 原始 brightness（0-255）→ 百分比滑块，current 正确换算而非恒 100。"""
+        entity = {
+            "entity_id": "light.lamp",
+            "state": "on",
+            "attributes": {"brightness": 128},  # 约一半
+        }
+        services = {
+            "light": {"turn_on": {"fields": ["entity_id", "brightness_pct"]}},
+        }
+        controls = resolve_controls(entity, services)
+        assert "brightness" in controls
+        ctrl = controls["brightness"]
+        assert ctrl["param"] == "brightness_pct"
+        assert ctrl["min"] == 0
+        assert ctrl["max"] == 100
+        assert ctrl["current"] == 50  # round(128 * 100 / 255) = 50
+
+    def test_slider_for_climate_null_temperature(self):
+        """空调关机时 temperature 为 null，但有 min_temp/max_temp 边界 → 仍生成滑块。"""
+        entity = {
+            "entity_id": "climate.ac",
+            "state": "off",
+            "attributes": {
+                "temperature": None,
+                "min_temp": 16,
+                "max_temp": 30,
+                "target_temp_step": 1,
+            },
+        }
+        services = {
+            "climate": {"set_temperature": {"fields": ["entity_id", "temperature", "hvac_mode"]}},
+        }
+        controls = resolve_controls(entity, services)
+        assert "temperature" in controls
+        ctrl = controls["temperature"]
+        assert ctrl["type"] == "slider"
+        assert ctrl["min"] == 16
+        assert ctrl["max"] == 30
+        assert ctrl["current"] == 16  # null 时回退下限
+        assert ctrl["service"] == "set_temperature"
+        assert ctrl["param"] == "temperature"
 
     def test_slider_skips_min_max_step_prefix(self):
         """min_/max_/_step 前缀属性不生成控件。"""
