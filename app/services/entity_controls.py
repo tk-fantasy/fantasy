@@ -90,11 +90,16 @@ def resolve_controls(entity: dict, services: dict) -> dict[str, dict]:
         current = attr_value if attr_value is not None else min_v
         is_pct = "_pct" in match["field"]
         if is_pct:
-            current = round(current * 100 / max(attr_value, 1))
+            # attr 本身已是百分比（如 brightness_pct=50）直接用；
+            # 否则是 HA 原始值（如 brightness=128，范围固定 0-255）需换算成百分比
+            if not attr_name.endswith("_pct"):
+                current = round(current * 100 / 255)
             min_v, max_v = 0, 100
 
         unit = _unit(attr_name, attrs)
-        controls[attr_name] = _slider(match["service"], match["field"], min_v, max_v, step, current, unit)
+        # _pct 滑块的 key 统一用基础名（brightness），避免开/关时标签在 Brightness / Brightness Pct 间跳变
+        key = attr_name[:-4] if (is_pct and attr_name.endswith("_pct")) else attr_name
+        controls[key] = _slider(match["service"], match["field"], min_v, max_v, step, current, unit)
 
     # 3. 动作控件：无参服务（fields 除 entity_id 外为空）
     for svc_name, svc_def in domain_svcs.items():
@@ -131,7 +136,33 @@ def resolve_controls(entity: dict, services: dict) -> dict[str, dict]:
     if pct_candidates:
         pct_candidates.sort()
         _, f, svc_name = pct_candidates[0]
-        controls[f] = _slider(svc_name, f, 0, 100, 1, 0, "")
+        base = f[:-4]
+        # key 用基础名（brightness），与第 2 节保持一致，标签统一为 Brightness
+        controls[base] = _slider(svc_name, f, 0, 100, 1, 0, "")
+
+    # 5. 反推缺失的数值滑块（如空调关机时 temperature 为 null）：
+    #    set_ 服务存在该 field，且 entity 提供 min/max 边界 → 用下限作 current 补一个滑块
+    for svc_name, svc_def in domain_svcs.items():
+        if not svc_name.startswith("set_"):
+            continue
+        for f in svc_def.get("fields", []):
+            if f == "entity_id" or f.endswith("_pct"):
+                continue
+            if f in controls:
+                continue
+            attr_val = attrs.get(f)
+            if isinstance(attr_val, (int, float)):
+                continue  # 已在第 2 节生成
+            min_key = _attr_key(attrs, "min", f)
+            max_key = _attr_key(attrs, "max", f)
+            if not min_key or not max_key:
+                continue
+            min_v = attrs[min_key]
+            max_v = attrs[max_key]
+            step_key = _attr_key(attrs, "", f, "_step")
+            step = attrs[step_key] if step_key else 1
+            unit = _unit(f, attrs)
+            controls[f] = _slider(svc_name, f, min_v, max_v, step, min_v, unit)
 
     return controls
 
