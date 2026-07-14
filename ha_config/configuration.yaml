@@ -29,3 +29,6 @@ mqtt:
   climate: !include mqtt/climates.yaml
   cover: !include mqtt/covers.yaml
   fan: !include mqtt/fans.yaml
+  sensor: !include mqtt/sensors.yaml
+  switch: !include mqtt/switches.yaml
+  humidifier: !include mqtt/humidifiers.yaml
