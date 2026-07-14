@@ -1,0 +1,23 @@
+# 统一行尾符策略，避免 core.autocrlf 在 Windows 下产生假修改噪音
+# 文本文件统一存 LF，Windows 下 checkout 也保持 LF（现代编辑器均支持）
+* text=auto eol=lf
+
+# Windows 专用脚本必须用 CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# 二进制文件不做行尾转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.svg binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.eot binary
