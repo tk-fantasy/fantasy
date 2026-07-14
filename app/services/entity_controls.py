@@ -30,7 +30,11 @@ def resolve_controls(entity: dict, services: dict) -> dict[str, dict]:
         if attr_name.startswith("supported_"):
             continue
         target = attr_name[:-1] if attr_name.endswith("s") else attr_name
-        match = _find_field(domain_svcs, target, attr_names)
+        # available_modes → target mode（去掉 available_ 前缀）
+        if target.startswith("available_"):
+            target = target[len("available_"):]
+        # 数组属性只用精确匹配（含 _pct 回退），禁用词匹配回退以免错配（如 available_modes → humidity）
+        match = _find_field(domain_svcs, target)
         if not match:
             continue
         current = attrs.get(target, entity.get("state"))
@@ -40,11 +44,12 @@ def resolve_controls(entity: dict, services: dict) -> dict[str, dict]:
     for attr_name, attr_value in list(attrs.items()):
         if isinstance(attr_value, list) or not isinstance(attr_value, str):
             continue
+        # 复数候选：modes / available_modes 都算
         plural = attr_name + "s"
-        options = attrs.get(plural)
+        options = attrs.get(plural) or attrs.get("available_" + plural)
         if not isinstance(options, list) or len(options) < 2:
             continue
-        match = _find_field(domain_svcs, attr_name, attr_names)
+        match = _find_field(domain_svcs, attr_name)
         if not match:
             continue
         controls[attr_name] = _enum(match["service"], match["field"], options, attr_value)

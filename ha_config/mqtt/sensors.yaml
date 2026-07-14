@@ -1,0 +1,15 @@
+- name: "客厅温度"
+  unique_id: living_room_temperature
+  device_class: temperature
+  state_topic: "living_room/sensor"
+  unit_of_measurement: "°C"
+  suggested_display_precision: 1
+  value_template: "{{ value_json.temperature }}"
+
+- name: "客厅湿度"
+  unique_id: living_room_humidity
+  device_class: humidity
+  state_topic: "living_room/sensor"
+  unit_of_measurement: "%"
+  suggested_display_precision: 1
+  value_template: "{{ value_json.humidity }}"

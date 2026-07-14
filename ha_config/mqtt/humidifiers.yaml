@@ -1,0 +1,19 @@
+- name: "卧室加湿器"
+  unique_id: bedroom_humidifier
+  device_class: "humidifier"
+  command_topic: "bedroom/humidifier/set"
+  state_topic: "bedroom/humidifier"
+  state_value_template: "{{ value_json.state }}"
+  target_humidity_command_topic: "bedroom/humidifier/target_humidity/set"
+  target_humidity_state_topic: "bedroom/humidifier/target_humidity"
+  current_humidity_topic: "bedroom/humidifier/current_humidity"
+  mode_command_topic: "bedroom/humidifier/mode/set"
+  mode_state_topic: "bedroom/humidifier/mode"
+  modes:
+    - "normal"
+    - "eco"
+    - "boost"
+  min_humidity: 30
+  max_humidity: 80
+  payload_on: "ON"
+  payload_off: "OFF"

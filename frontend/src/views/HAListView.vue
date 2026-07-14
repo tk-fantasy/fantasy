@@ -2,6 +2,7 @@
 import { ref, computed, onMounted } from 'vue'
 import BaseToggle from '../components/BaseToggle.vue'
 import EmojiPicker from '../components/EmojiPicker.vue'
+import SensorChart from '../components/SensorChart.vue'
 import { adaptControls, formatSliderValue, toActualValue } from '../utils/deviceCapabilities.js'
 import { apiGet } from '../utils/api'
 
@@ -24,7 +25,7 @@ const currentEmojiTarget = ref(null)
 
 async function loadEmojiPrefs() {
   try {
-    const res = await fetch('/api/emoji/preferences')
+    const res = await fetch('/api/emoji/preferences', { credentials: 'include' })
     const json = await res.json()
     const prefs = {}
     for (const item of (json.data || [])) {
@@ -48,6 +49,7 @@ async function onEmojiSelect(item) {
   try {
     await fetch('/api/emoji/preferences', {
       method: 'PUT',
+      credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ scope, key, emoji_char: item.char }),
     })
@@ -113,6 +115,12 @@ function isControllable(entity) {
   const domain = getDomain(entity.entity_id)
   const svc = services.value?.[domain] || {}
   return Object.keys(svc).length > 0
+}
+
+// 传感器等只读实体也能点击 — 进入查看数值/历史趋势
+function isClickable(entity) {
+  const domain = getDomain(entity.entity_id)
+  return isControllable(entity) || domain === 'sensor' || domain === 'binary_sensor'
 }
 
 // ========================
@@ -415,6 +423,7 @@ async function callService(domain, service, entityId, data = {}) {
   try {
     const res = await fetch('/api/ha/call_service', {
       method: 'POST',
+      credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ domain, service, entity_id: entityId, data }),
     })
@@ -445,6 +454,7 @@ async function toggleDevice(entity) {
   try {
     const res = await fetch('/api/ha/call_service', {
       method: 'POST',
+      credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ domain, service, entity_id: entityId }),
     })
@@ -556,6 +566,62 @@ const dynamicInfoRows = computed(() => {
   return rows
 })
 
+// HA 内部系统字段，不在属性表里展示
+const HIDDEN_ATTRS = new Set([
+  'friendly_name', 'entity_id', 'device_class', 'state_class',
+  'unit_of_measurement', 'supported_features', 'assumed_state',
+  'restored', 'icon', 'available_modes',
+])
+// 常见属性键的中文标签
+const ATTR_LABELS_ZH = {
+  temperature: '目标温度',
+  current_temperature: '当前温度',
+  current_humidity: '当前湿度',
+  humidity: '目标湿度',
+  target_humidity: '目标湿度',
+  min_temp: '最低温度',
+  max_temp: '最高温度',
+  min_humidity: '最低湿度',
+  max_humidity: '最高湿度',
+  target_temp_step: '温度步长',
+  mode: '模式',
+  hvac_mode: '运行模式',
+  hvac_modes: '可用模式',
+  fan_mode: '风速',
+  swing_mode: '扫风',
+  brightness: '亮度',
+  color_mode: '色彩模式',
+  percentage: '百分比',
+  preset_mode: '预设模式',
+  position: '位置',
+  current_position: '当前位置',
+  battery_level: '电量',
+  volume_level: '音量',
+  power: '功率',
+  energy: '能耗',
+}
+
+// 属性表：过滤 HA 内部字段 + 中文友好标签
+const displayAttributes = computed(() => {
+  if (!selectedDevice.value) return []
+  const attrs = selectedDevice.value.attributes || {}
+  return Object.entries(attrs)
+    .filter(([key, value]) => {
+      if (HIDDEN_ATTRS.has(key)) return false
+      if (key.startsWith('supported_')) return false
+      // min_*/max_*/*_step 边界值已在滑块里体现，不重复显示
+      if (key.startsWith('min_') || key.startsWith('max_') || key.endsWith('_step')) return false
+      // *_list / available_modes 等选项数组不显示
+      if (key.endsWith('_list') || key.endsWith('_modes')) return false
+      return true
+    })
+    .map(([key, value]) => ({
+      key,
+      label: ATTR_LABELS_ZH[key] || key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+      value: typeof value === 'object' ? JSON.stringify(value) : value,
+    }))
+})
+
 onMounted(() => {
   loadEntities()
   loadEmojiPrefs()
@@ -592,8 +658,8 @@ onMounted(() => {
             v-for="entity in items"
             :key="entity.entity_id"
             class="device-card"
-            :class="{ on: isOn(entity), clickable: isControllable(entity) }"
-            @click="isControllable(entity) && openDeviceModal(entity)"
+            :class="{ on: isOn(entity), clickable: isClickable(entity) }"
+            @click="isClickable(entity) && openDeviceModal(entity)"
           >
             <div class="card-top">
               <div
@@ -654,6 +720,11 @@ onMounted(() => {
                 </div>
               </div>
 
+              <div class="history-section" v-if="getDomain(selectedDevice.entity_id) === 'sensor'">
+                <h3>近 24 小时趋势</h3>
+                <SensorChart :entityId="selectedDevice.entity_id" :unit="selectedDevice.attributes?.unit_of_measurement || ''" />
+              </div>
+
               <div class="control-section" v-if="isControllable(selectedDevice)">
                 <h3>控制</h3>
 
@@ -687,12 +758,12 @@ onMounted(() => {
                 </template>
               </div>
 
-              <div class="attributes-section">
-                <h3>属性 ({{ Object.keys(selectedDevice.attributes || {}).length }})</h3>
+              <div class="attributes-section" v-if="displayAttributes.length">
+                <h3>属性 ({{ displayAttributes.length }})</h3>
                 <div class="attr-table">
-                  <div class="attr-row" v-for="(value, key) in selectedDevice.attributes" :key="key">
-                    <span class="attr-key">{{ key }}</span>
-                    <span class="attr-value">{{ typeof value === 'object' ? JSON.stringify(value) : value }}</span>
+                  <div class="attr-row" v-for="attr in displayAttributes" :key="attr.key">
+                    <span class="attr-key">{{ attr.label }}</span>
+                    <span class="attr-value">{{ attr.value }}</span>
                   </div>
                 </div>
               </div>
@@ -942,14 +1013,17 @@ onMounted(() => {
 
 .info-section,
 .control-section,
+.history-section,
 .attributes-section { margin-bottom: var(--space-14); }
 
 .info-section:last-child,
 .control-section:last-child,
+.history-section:last-child,
 .attributes-section:last-child { margin-bottom: 0; }
 
 .info-section h3,
 .control-section h3,
+.history-section h3,
 .attributes-section h3 {
   font-size: var(--text-sm);
   font-weight: var(--weight-semibold);
