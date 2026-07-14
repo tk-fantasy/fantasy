@@ -72,6 +72,58 @@ class TestResolveControlsEnum:
         assert "supported_feature" not in controls
         assert "supported_features" not in controls
 
+    def test_enum_available_modes_not_misassigned(self):
+        """available_modes 数组不应被词匹配回退错配到 set_humidity/humidity。"""
+        entity = {
+            "entity_id": "humidifier.bedroom",
+            "state": "on",
+            "attributes": {
+                "humidity": 50,
+                "min_humidity": 30,
+                "max_humidity": 80,
+                "mode": "normal",
+                "available_modes": ["normal", "eco", "boost"],
+            },
+        }
+        services = {
+            "humidifier": {
+                "set_humidity": {"fields": ["entity_id", "humidity"]},
+                "set_mode": {"fields": ["entity_id", "mode"]},
+            }
+        }
+        controls = resolve_controls(entity, services)
+        # 不应生成指向 set_humidity 的 available_mode 错配控件
+        assert "available_mode" not in controls
+        assert "available_modes" not in controls
+
+    def test_enum_mode_from_available_modes(self):
+        """加湿器 mode 属性 + available_modes 数组 → 生成 mode 枚举，指向 set_mode。"""
+        entity = {
+            "entity_id": "humidifier.bedroom",
+            "state": "on",
+            "attributes": {
+                "humidity": 50,
+                "min_humidity": 30,
+                "max_humidity": 80,
+                "mode": "normal",
+                "available_modes": ["normal", "eco", "boost"],
+            },
+        }
+        services = {
+            "humidifier": {
+                "set_humidity": {"fields": ["entity_id", "humidity"]},
+                "set_mode": {"fields": ["entity_id", "mode"]},
+            }
+        }
+        controls = resolve_controls(entity, services)
+        assert "mode" in controls
+        ctrl = controls["mode"]
+        assert ctrl["type"] == "enum"
+        assert ctrl["service"] == "set_mode"
+        assert ctrl["param"] == "mode"
+        assert ctrl["options"] == ["normal", "eco", "boost"]
+        assert ctrl["current"] == "normal"
+
 
 class TestResolveControlsSlider:
     """滑块控件：数值属性 → service field 匹配。"""

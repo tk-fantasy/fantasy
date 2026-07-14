@@ -116,3 +116,42 @@ class TestHAConfigRoute:
             result = await get_ha_config()
             assert result.code == "ok"
             assert result.data["url"] == "http://localhost:8123"
+
+
+class TestHAHistoryRoute:
+    """测试 /api/ha/history 路由。"""
+
+    @pytest.mark.asyncio
+    async def test_ha_history_returns_data(self):
+        """查询历史成功，返回 history 数组。"""
+        from app.routes.ha_routes import ha_history
+
+        container = _mock_container()
+        container.ha_client.get_history = AsyncMock(return_value=[
+            [{"entity_id": "sensor.temp", "state": "26.5", "last_updated": "2026-07-13T00:00:00+00:00"}],
+        ])
+        result = await ha_history(
+            filter_entity_id="sensor.temp", hours=24, container=container,
+        )
+        assert result.code == "ok"
+        assert result.data["count"] == 1
+        assert len(result.data["history"]) == 1
+        # 验证传给 client 的参数含 timestamp/end_time
+        call_kwargs = container.ha_client.get_history.call_args.kwargs
+        assert call_kwargs["filter_entity_id"] == "sensor.temp"
+        assert call_kwargs["timestamp"]  # 非空 ISO8601
+        assert call_kwargs["end_time"]
+        assert call_kwargs["minimal"]  # truthy（直接调用路由时是 Query(True)，FastAPI 运行时会解包为 True）
+
+    @pytest.mark.asyncio
+    async def test_ha_history_empty_result(self):
+        """无历史数据时返回空数组而非报错。"""
+        from app.routes.ha_routes import ha_history
+
+        container = _mock_container()
+        container.ha_client.get_history = AsyncMock(return_value=[])
+        result = await ha_history(
+            filter_entity_id="sensor.nodata", hours=6, container=container,
+        )
+        assert result.code == "ok"
+        assert result.data["count"] == 0

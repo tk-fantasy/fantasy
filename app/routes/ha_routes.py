@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 from ..container import AppContainer, get_container
 from ..clients.ha_client import HomeAssistantClient
@@ -45,6 +45,36 @@ async def ha_services(container: AppContainer = Depends(get_container)) -> ApiRe
     except Exception as e:
         logger.exception("HA services failed")
         raise AppException(f"Home Assistant 服务列表获取失败: {e}", code="ha_error", http_status=502)
+
+
+@router.get("/ha/history")
+async def ha_history(
+    filter_entity_id: str = Query(..., description="实体 ID（逗号分隔多个）"),
+    hours: float = Query(default=24, ge=0.1, le=24 * 30, description="查询近 N 小时历史"),
+    minimal: bool = Query(default=True, description="仅返回最少字段以加速传输"),
+    container: AppContainer = Depends(get_container),
+) -> ApiResponse[dict]:
+    """查询实体历史状态记录（用于传感器趋势图）。
+
+    后端按 hours 计算起止时间（ISO8601），直接透传 HA /api/history/period。
+    """
+    from datetime import datetime, timedelta, timezone
+
+    try:
+        now = datetime.now(timezone.utc)
+        start = now - timedelta(hours=hours)
+        timestamp = start.isoformat()
+        end_time = now.isoformat()
+        history = await container.ha_client.get_history(
+            filter_entity_id=filter_entity_id,
+            timestamp=timestamp,
+            end_time=end_time,
+            minimal=minimal,
+        )
+        return ApiResponse(data={"history": history, "count": len(history)})
+    except Exception as e:
+        logger.exception("HA history failed")
+        raise AppException(f"Home Assistant 历史查询失败: {e}", code="ha_error", http_status=502)
 
 
 @router.post("/ha/call_service")

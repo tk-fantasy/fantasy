@@ -144,6 +144,53 @@ class TestGetServices:
         assert await c.get_services() == svc_data
 
 
+class TestGetHistory:
+    @pytest.mark.asyncio
+    async def test_get_history_with_filter_and_time_range(self):
+        """带 filter_entity_id + timestamp + end_time 查询历史。"""
+        history = [[{"entity_id": "sensor.temp", "state": "26.5", "last_updated": "..."}]]
+        captured = {}
+
+        async def handler(request):
+            captured["path"] = request.url.path
+            captured["params"] = dict(request.url.params)
+            return httpx.Response(200, json=history)
+
+        c = _make_client(handler)
+        result = await c.get_history(
+            filter_entity_id="sensor.temp",
+            timestamp="2026-07-12T00:00:00+00:00",
+            end_time="2026-07-13T00:00:00+00:00",
+            minimal=True,
+        )
+        assert result == history
+        # timestamp 拼进 path，其余走 query params
+        assert captured["path"] == "/api/history/period/2026-07-12T00:00:00+00:00"
+        assert captured["params"]["filter_entity_id"] == "sensor.temp"
+        assert captured["params"]["end_time"] == "2026-07-13T00:00:00+00:00"
+        assert captured["params"]["minimal"] == "true"
+
+    @pytest.mark.asyncio
+    async def test_get_history_without_timestamp(self):
+        """不传 timestamp → path 不含时间段，只带 filter。"""
+        async def handler(request):
+            assert request.url.path == "/api/history/period"
+            assert request.url.params["filter_entity_id"] == "sensor.temp"
+            return httpx.Response(200, json=[])
+
+        c = _make_client(handler)
+        assert await c.get_history(filter_entity_id="sensor.temp") == []
+
+    @pytest.mark.asyncio
+    async def test_get_history_raises_on_error(self):
+        async def handler(request):
+            return httpx.Response(500, text="err")
+
+        c = _make_client(handler)
+        with pytest.raises(httpx.HTTPStatusError):
+            await c.get_history(filter_entity_id="sensor.temp")
+
+
 class TestClose:
     @pytest.mark.asyncio
     async def test_close_sets_client_none(self):
