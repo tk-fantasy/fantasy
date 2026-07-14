@@ -18,19 +18,42 @@ def _make_service(devices: list[dict] | None = None) -> tuple[HAService, MagicMo
 
 class TestHAService:
     @pytest.mark.asyncio
-    async def test_get_all_devices(self):
+    async def test_get_all_devices_without_area_filtered(self):
+        """没 area_id 的设备被过滤（避免 HA 内置实体涌入设备列表）。"""
         devices = [
             {"entity_id": "light.bed", "state": "on", "attributes": {"friendly_name": "Bed Light"}},
             {"entity_id": "climate.ac", "state": "cool", "attributes": {"friendly_name": "AC"}},
         ]
         svc, _ = _make_service(devices)
-        # Mock area maps to return empty (no area assignments)
         svc._area_map = {}
         svc._entity_area_map = {}
-        svc._area_cache_at = 9999999999  # Far future to avoid refresh
+        svc._area_cache_at = 9999999999
         result = await svc.get_all_devices()
-        # Devices without area_id are filtered out
         assert len(result) == 0
+
+    @pytest.mark.asyncio
+    async def test_get_all_devices_filters_non_device_domains(self):
+        """sun/zone/person 等 HA 内置 domain 即使有 area_id 也不出现。"""
+        devices = [
+            {"entity_id": "light.bed", "state": "on", "attributes": {}},
+            {"entity_id": "sun.sun", "state": "above_horizon", "attributes": {}},
+            {"entity_id": "zone.home", "state": "0", "attributes": {}},
+            {"entity_id": "person.admin", "state": "home", "attributes": {}},
+            {"entity_id": "update.ha_os", "state": "off", "attributes": {}},
+        ]
+        svc, _ = _make_service(devices)
+        svc._area_map = {"bedroom": "Bedroom", "home": "Home"}
+        svc._entity_area_map = {
+            "light.bed": "bedroom",
+            "sun.sun": "bedroom",      # 有 area 但 domain 不在白名单
+            "zone.home": "home",
+            "person.admin": "home",
+            "update.ha_os": "home",
+        }
+        svc._area_cache_at = 9999999999
+        result = await svc.get_all_devices()
+        ids = [d["entity_id"] for d in result]
+        assert ids == ["light.bed"]
 
     @pytest.mark.asyncio
     async def test_get_all_devices_with_area(self):

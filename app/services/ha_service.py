@@ -92,14 +92,27 @@ class HAService:
             for s in states
         }
 
+    # 可控/可展示的设备 domain — 过滤掉 sun/zone/person/update 等 HA 内置实体
+    _DEVICE_DOMAINS = frozenset({
+        "light", "switch", "climate", "cover", "fan", "humidifier",
+        "sensor", "binary_sensor", "lock", "media_player", "vacuum",
+        "valve", "water_heater", "siren", "alarm_control_panel",
+    })
+
     async def get_all_devices(self) -> list[dict[str, Any]]:
-        """获取所有设备（含区域信息）。"""
+        """获取所有设备（含区域信息）。
+
+        双重过滤：domain 白名单（排除 sun/zone/person 等内置实体）
+        + area_id 非空（只显示已分配区域的设备，未分配的不显示）。
+        """
         states = await self._get_states_cached()
         area_map, entity_area_map = await self._get_area_maps_cached()
         devices = []
         for state in states:
             entity_id = state["entity_id"]
             domain = entity_id.split(".")[0]
+            if domain not in self._DEVICE_DOMAINS:
+                continue
             area_id = entity_area_map.get(entity_id)
             if area_id is None:
                 continue

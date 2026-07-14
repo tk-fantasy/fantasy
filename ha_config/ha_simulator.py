@@ -18,7 +18,7 @@ if sys.platform == "win32":
         pass
 
 import paho.mqtt.client as mqtt
-import signal, json, argparse
+import signal, json, argparse, threading, random, urllib.request, urllib.error
 from datetime import datetime
 
 parser = argparse.ArgumentParser()
@@ -84,10 +84,14 @@ state = {
                            "fan":"auto", "swing":"off"},
     "living_room/curtain":{"position": 100},
     "living_room/fan":    {"state": "OFF", "speed": "low", "oscillation": False},
+    "living_room/sensor": {"temperature": 26.5, "humidity": 58},
+    "bedroom/plug":       {"state": "OFF"},
+    "kitchen/plug":       {"state": "OFF"},
+    "bedroom/humidifier": {"state": "OFF", "target_humidity": 50, "current_humidity": 45, "mode": "normal"},
 }
 
-def pub(c, t, p):
-    c.publish(t, p)
+def pub(c, t, p, retain=True):
+    c.publish(t, p, retain=retain)
     log(f"→ {t}: {p}")
 
 # ---------------------------------------------------------------
@@ -122,6 +126,16 @@ def _publish_device(c, device_key):
                 if isinstance(val, bool):
                     val = "ON" if val else "OFF"
                 pub(c, f"{device_key}/{attr}", str(val))
+        return
+
+    # Humidifier：含 target_humidity
+    if "target_humidity" in s:
+        pub(c, device_key, json.dumps(s))
+        pub(c, f"{device_key}/target_humidity", str(s["target_humidity"]))
+        if "current_humidity" in s:
+            pub(c, f"{device_key}/current_humidity", str(s["current_humidity"]))
+        if "mode" in s:
+            pub(c, f"{device_key}/mode", str(s["mode"]))
         return
 
     # Light / 默认：JSON 全量
@@ -200,6 +214,42 @@ def handle_set(c, topic, raw):
 
     _publish_device(c, device_key)
 
+def _fetch_weather_baseline():
+    """从后端 /api/weather 获取真实天气作传感器基准，失败回退固定值。"""
+    # docker 模式走容器网络，宿主机走 localhost
+    base = "http://aether:8010" if args.docker else "http://localhost:8010"
+    try:
+        with urllib.request.urlopen(f"{base}/api/weather", timeout=5) as r:
+            data = json.loads(r.read().decode())
+        w = data.get("data", data) if isinstance(data, dict) else {}
+        temp = float(w.get("temperature", 22))
+        hum = float(w.get("humidity", 55))
+        log(f"和风天气基准: {temp}°C / {hum}%")
+        return temp, hum
+    except Exception as e:
+        log(f"获取天气基准失败，用默认值: {e}")
+        return 22.0, 55.0
+
+
+def _sensor_loop(client, stop_event):
+    """后台线程：每 60 秒在天气基准附近随机微扰，发布传感器 + 加湿器读数。
+
+    模拟真实环境温湿度缓慢波动，让传感器历史趋势图有连续变化的数据。
+    """
+    base_temp, base_hum = _fetch_weather_baseline()
+    while not stop_event.is_set():
+        # 温度 ±0.3°C、湿度 ±2% 微扰
+        temp = round(base_temp + random.uniform(-0.3, 0.3), 1)
+        hum = max(10, min(99, round(base_hum + random.uniform(-2, 2))))
+        state["living_room/sensor"]["temperature"] = temp
+        state["living_room/sensor"]["humidity"] = hum
+        # 加湿器当前湿度跟随环境湿度小幅变化
+        state["bedroom/humidifier"]["current_humidity"] = hum
+        _publish_device(client, "living_room/sensor")
+        _publish_device(client, "bedroom/humidifier")
+        stop_event.wait(60)
+
+
 def publish_all(c):
     log("发布全量初始状态")
     for key in state:
@@ -233,8 +283,11 @@ def main():
     client.on_connect = on_connect
     client.on_message = on_message
 
+    stop_event = threading.Event()
+
     def cleanup(*_):
         log("退出")
+        stop_event.set()
         release_lock()
         client.disconnect()
         sys.exit(0)
@@ -243,7 +296,13 @@ def main():
     signal.signal(signal.SIGTERM, cleanup)
     try:
         client.connect(BROKER, PORT, 60)
-        client.loop_forever()
+        # loop_start 开后台网络线程，传感器循环用独立线程定期发布
+        client.loop_start()
+        sensor_thread = threading.Thread(target=_sensor_loop, args=(client, stop_event), daemon=True)
+        sensor_thread.start()
+        # 主线程阻塞等待信号；daemon 线程随进程退出
+        while not stop_event.is_set():
+            stop_event.wait(1)
     except ConnectionRefusedError:
         log(f"错误：无法连接 Mosquitto ({BROKER}:{PORT})")
         release_lock()

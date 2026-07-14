@@ -128,3 +128,38 @@ class HomeAssistantClient:
         response = await client.get("/api/services", timeout=30.0)
         response.raise_for_status()
         return response.json()
+
+    # ============ 历史数据 ============
+
+    async def get_history(
+        self,
+        filter_entity_id: str | None = None,
+        timestamp: str | None = None,
+        end_time: str | None = None,
+        minimal: bool | None = None,
+    ) -> list[list[dict[str, Any]]]:
+        """查询 HA 历史状态记录。
+
+        HA API: GET /api/history/period/<timestamp>?filter_entity_id=...&end_time=...
+
+        Args:
+            filter_entity_id: 实体 ID（逗号分隔多个），None 则返回全部实体
+            timestamp: 起始时间 ISO8601，None 表示从最早开始
+            end_time: 结束时间 ISO8601，None 表示到现在
+            minimal: True 时仅返回最少字段（state/last_changed）
+
+        Returns:
+            外层列表每项对应一个实体，内层列表是该实体的历史状态点。
+        """
+        client = await self._get_client()
+        path = "/api/history/period" + (f"/{timestamp}" if timestamp else "")
+        params: dict[str, Any] = {}
+        if filter_entity_id is not None:
+            params["filter_entity_id"] = filter_entity_id
+        if end_time is not None:
+            params["end_time"] = end_time
+        if minimal is not None:
+            params["minimal"] = minimal
+        response = await client.get(path, params=params or None, timeout=30.0)
+        response.raise_for_status()
+        return response.json()

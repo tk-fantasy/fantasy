@@ -1,0 +1,17 @@
+- name: "卧室智能插座"
+  unique_id: bedroom_plug
+  device_class: outlet
+  state_topic: "bedroom/plug"
+  command_topic: "bedroom/plug/set"
+  payload_on: "ON"
+  payload_off: "OFF"
+  value_template: "{{ value_json.state }}"
+
+- name: "厨房智能插座"
+  unique_id: kitchen_plug
+  device_class: outlet
+  state_topic: "kitchen/plug"
+  command_topic: "kitchen/plug/set"
+  payload_on: "ON"
+  payload_off: "OFF"
+  value_template: "{{ value_json.state }}"
