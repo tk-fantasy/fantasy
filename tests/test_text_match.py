@@ -14,7 +14,7 @@ import pytest
 from app.utils.text_match import match_devices
 
 
-# 模拟一套含多盏灯 / 多台空调 / 风扇的真实设备
+# 模拟一套含多盏灯 / 多台空调 / 风扇 / 加湿器的真实设备
 DEVICES = [
     {"entity_id": "light.bedroom_bedside", "name": "床头灯",   "area_name": "卧室", "domain": "light"},
     {"entity_id": "light.living_main",     "name": "客厅吊灯", "area_name": "客厅", "domain": "light"},
@@ -22,6 +22,7 @@ DEVICES = [
     {"entity_id": "light.study_desk",      "name": "台灯",     "area_name": "书房", "domain": "light"},
     {"entity_id": "climate.living_ac",     "name": "中央空调", "area_name": "客厅", "domain": "climate"},
     {"entity_id": "fan.living_fan",        "name": "客厅风扇", "area_name": "客厅", "domain": "fan"},
+    {"entity_id": "humidifier.bedroom",    "name": "卧室加湿器", "area_name": "卧室", "domain": "humidifier"},
 ]
 
 
@@ -119,3 +120,38 @@ class TestHvacModeEnum:
         matched = match_devices(query, DEVICES)
         assert len(matched) == 1
         assert matched[0]["name"] == expected_name
+
+
+class TestHumidifierMatching:
+    """加湿器匹配回归。
+
+    回归点：用户「打开加湿器」在有加湿器时应唯一命中加湿器，绝不可因空调带
+    除湿（dry）模式而误命中空调；去掉加湿器后应返回空（而非降级命中空调）。
+    """
+
+    # 去掉加湿器后的设备子集（模拟「移出房间 → AI 看不到」）
+    DEVICES_NO_HUMIDIFIER = [d for d in DEVICES if d["domain"] != "humidifier"]
+
+    @pytest.mark.parametrize("query,expected_name", [
+        ("打开加湿器",   "卧室加湿器"),
+        ("开下加湿器",   "卧室加湿器"),
+        ("关闭加湿器",   "卧室加湿器"),
+        ("把加湿器打开", "卧室加湿器"),
+    ])
+    def test_humidifier_unique(self, query, expected_name):
+        matched = match_devices(query, DEVICES)
+        assert len(matched) == 1
+        assert matched[0]["name"] == expected_name
+
+    @pytest.mark.parametrize("query", [
+        "打开加湿器",
+        "开下加湿器",
+        "关闭加湿器",
+        "把加湿器打开",
+    ])
+    def test_no_humidifier_yields_empty(self, query):
+        """去掉加湿器后，相同指令应返回空，不降级命中空调。"""
+        matched = match_devices(query, self.DEVICES_NO_HUMIDIFIER)
+        assert matched == []
+        # 显式断言：空调不应出现在误命中结果里
+        assert all(d["domain"] != "climate" for d in matched)

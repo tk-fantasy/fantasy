@@ -154,6 +154,14 @@ async def build_system_prompt(
     if device_controls:
         if _query_matches_controls(query, device_controls):
             parts.append(f"\n设备可控项（直接用于 call_service）：\n{device_controls}")
+        else:
+            # query 提到的设备未匹中可控项：注入强约束，防止 LLM 语义近邻误判
+            # （如把用户提到的设备当作另一台功能相近的设备）顶替执行。
+            parts.append(
+                "\n注意：用户提到的设备未在当前可控项中匹配到。"
+                "请先用 get_entities 核实是否真实存在；若不存在，如实告知用户，"
+                "禁止用语义相近的实体顶替执行。"
+            )
     elif device_catalog:
         parts.append(f"\n当前 Home Assistant 可用设备:\n{device_catalog}")
 
