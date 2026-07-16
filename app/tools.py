@@ -18,6 +18,7 @@ from .mcp.local_mcp_servers import (
 )
 from .mcp.mcp_client_manager import MCPClientManager, MCPTool
 from .services.entity_controls import resolve_controls
+from .utils.text_match import match_devices
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +145,35 @@ def _register_ha_call_service(deps: ToolDeps) -> None:
                         }
                 except Exception:
                     logger.warning("call_service: entity_id 校验失败，放行", exc_info=True)
+            # query→entity 语义校验：复用 match_devices 判断用户指令命中的设备，
+            # 若命中设备但目标 entity_id 不在命中范围内 → 拒绝（防止语义近邻顶替，
+            # 如「打开加湿器」却操作带除湿模式的空调）。
+            # matched 为空时放行（无法区分"设备不在列表"与"泛指无设备名"，
+            # 避免误伤"太热了→开空调"这类合理推断；该场景靠 system prompt 注入兜底软约束）。
+            query = getattr(session, "current_query", "") or ""
+            if query and entity_id:
+                try:
+                    devices = await deps.ha_service.get_all_devices()
+                    matched = match_devices(query, devices)
+                    if matched:
+                        matched_ids = {d.get("entity_id") for d in matched}
+                        eid_list = [e.strip() for e in str(entity_id).split(",") if e.strip()]
+                        if not any(e in matched_ids for e in eid_list):
+                            names = "、".join(d.get("name", d.get("entity_id", "")) for d in matched)
+                            logger.info(
+                                "call_service 拒绝语义错配: query=%r matched=%s target=%s",
+                                query, matched_ids, eid_list,
+                            )
+                            return {
+                                "success": False,
+                                "error": (
+                                    f"用户说的是「{query}」，匹配到的设备是「{names}」，"
+                                    f"与目标 {entity_id} 不符。不要用语义相近的实体顶替，"
+                                    "若用户提到的设备不存在请如实告知。"
+                                ),
+                            }
+                except Exception:
+                    logger.warning("call_service: 语义校验失败，放行", exc_info=True)
             result = await ha_client.call_service(domain, service, entity_id, data)
             new_state = None
             if entity_id:
