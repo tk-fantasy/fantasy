@@ -402,7 +402,7 @@ class Dispatcher:
             instructions.append(instruction)
 
         agent = await self._get_agent(user_id)
-        await self._run_turn(event, session, query, ctx, emit, stream_tokens=False, agent=agent)
+        await self._run_turn(event, session, query, ctx, emit, stream_tokens=False, agent=agent, user_id=user_id)
 
         session.history_instructions.extend(instructions)
         await self._session_store.store_session(session)
@@ -449,7 +449,7 @@ class Dispatcher:
             await ws_send(instruction.model_dump())
 
         agent = await self._get_agent(user_id)
-        await self._run_turn(event, session, query, ctx, emit, stream_tokens=True, agent=agent)
+        await self._run_turn(event, session, query, ctx, emit, stream_tokens=True, agent=agent, user_id=user_id)
 
         session.history_instructions = []  # 流式模式不存 history_instructions
         await self._session_store.store_session(session)
@@ -468,10 +468,12 @@ class Dispatcher:
         *,
         stream_tokens: bool,
         agent: Any = None,
+        user_id: str = "",
     ) -> None:
         """单轮 agent 执行的共享编排骨架，REST/WS 共用。
 
         agent 参数由调用方按 user_id 解析后传入；未传时回退 self._agent。
+        user_id 透传给 validator，使其按 per-user chat key 校验（与主对话同模型）。
 
         覆盖：Dispatcher 信号 → thinking 状态 → agent 流式 → 失败重试 →
         Validator 兜底 → 静默收尾兜底 → 最终回复 → session 更新 → Finish。
@@ -568,7 +570,7 @@ class Dispatcher:
         # has_error 对 REST 恒为 False，tool_call_count==0 短路与原 REST 的 if 守卫等价。
         retry_count = 0
         while (state.tool_call_count == 0 and not state.has_error
-               and await self._validator.should_retry(state.final_content, state.tool_call_count)
+               and await self._validator.should_retry(state.final_content, state.tool_call_count, user_id=user_id)
                and retry_count < self._validator._max_retries):
             retry_count += 1
             logger.info("Validator: auto-retry (%d/%d) [%s]", retry_count, self._validator._max_retries, path)

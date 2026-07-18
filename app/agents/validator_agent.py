@@ -55,15 +55,60 @@ class ValidatorAgent:
     def __init__(self, max_retries: int = 1, llm: ChatOpenAI | None = None):
         self._max_retries = max_retries
         self._llm = llm
+        # per-user LLM 缓存（user_id → ChatOpenAI），仿 dispatcher._user_agents 模式。
+        # 主聊天重试时 validator 与主对话用同一模型，避免全局/用户模型不一致误判。
+        # user_id 为空（APP_TOKEN 鉴权等）走全局 self._llm。
+        # 注意：key 解析是 async（resolve_key_for_role_user），在 should_retry 内完成；
+        # 这里只缓存已构建的 ChatOpenAI 实例。
+        self._user_llms: dict[str, ChatOpenAI] = {}
 
-    def _get_llm(self) -> ChatOpenAI:
+    def _get_llm(self, user_id: str = "") -> ChatOpenAI:
+        """按 user_id 取已缓存的 per-user LLM；未缓存或无 user_id 回退全局。
+
+        per-user LLM 的构建（含 async key 解析）由 _resolve_user_llm 完成，
+        should_retry 调用它后本方法从缓存取。
+        """
+        if user_id and user_id in self._user_llms:
+            return self._user_llms[user_id]
+        # 无 per-user 缓存：走全局
         if self._llm is None:
             self._llm = self._build_llm()
         return self._llm
 
+    async def _resolve_user_llm(self, user_id: str) -> ChatOpenAI | None:
+        """按 user_id 解析 per-user chat key 并构建 LLM，缓存后返回。
+
+        在 async 上下文（should_retry）内调用。用户无 per-user 配置返回 None，
+        调用方回退全局 _get_llm(user_id)（命中全局分支）。
+        """
+        if not user_id or user_id in self._user_llms:
+            return self._user_llms.get(user_id)
+        try:
+            from ..core.key_resolver import resolve_key_for_role_user
+            key_info = await resolve_key_for_role_user("chat", user_id)
+            if not key_info or not key_info.get("api_key"):
+                return None
+            from ..clients.http_client import new_client, new_sync_client
+            llm = ChatOpenAI(
+                model=key_info.get("model", "glm-4-flash"),
+                base_url=key_info.get("base_url", "").rstrip("/"),
+                api_key=key_info["api_key"],
+                temperature=0.0,
+                max_tokens=50,
+                http_client=new_sync_client(timeout=30.0),
+                http_async_client=new_client(timeout=30.0),
+            )
+            self._user_llms[user_id] = llm
+            logger.info("Validator: built per-user LLM for user_id=%s, model=%s",
+                        user_id, key_info.get("model"))
+            return llm
+        except Exception:
+            logger.debug("Validator: failed to build per-user LLM, will fallback to global", exc_info=True)
+            return None
+
     @staticmethod
     def _build_llm() -> ChatOpenAI:
-        """复用 chat 角色的模型配置构建轻量 LLM 实例。"""
+        """复用 chat 角色的【全局】模型配置构建轻量 LLM 实例。"""
         from ..clients.http_client import new_client, new_sync_client
         http_client = new_sync_client(timeout=30.0)
         http_async_client = new_client(timeout=30.0)
@@ -99,12 +144,13 @@ class ValidatorAgent:
             http_async_client=http_async_client,
         )
 
-    async def should_retry(self, final_content: str, tool_call_count: int) -> bool:
+    async def should_retry(self, final_content: str, tool_call_count: int, user_id: str = "") -> bool:
         """用 LLM 语义判断模型是否只表达了执行意图但没有确认动作已完成。
 
         Args:
             final_content: 模型最终输出的文本内容
             tool_call_count: 工具调用次数（保留参数但不参与判断）
+            user_id: 当前用户 ID，用于解析 per-user chat key。为空或用户无 per-user 配置时走全局。
 
         Returns:
             True 表示需要重试
@@ -113,7 +159,10 @@ class ValidatorAgent:
             logger.debug("Validator: empty content, skip retry")
             return False
 
-        llm = self._get_llm()
+        # per-user 优先：解析用户 chat key 构建专用 LLM（缓存），失败/无配置回退全局
+        if user_id:
+            await self._resolve_user_llm(user_id)
+        llm = self._get_llm(user_id)
         messages = [
             SystemMessage(content=_VALIDATOR_SYSTEM_PROMPT),
             HumanMessage(content=final_content[:500]),  # 截断防止超长
