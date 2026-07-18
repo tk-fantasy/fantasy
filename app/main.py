@@ -281,28 +281,56 @@ async def lifespan(_: FastAPI):
     await rule_registry_service.load_from_db()
     await session_store.load_from_db()
 
-    # 从 DB 加载默认用户的 LLM keys（覆盖 config.json 中的 llm_keys）
-    # 选择第一个有 llm_keys 的用户作为默认用户
+    # 加载全局 LLM keys：优先 config.json（全局共享、跨重启持久化）；
+    # 仅当 config.json 的 llm_keys 为空时，fallback 到"第一个有 llm_keys 的用户 DB"，
+    # 并一次性迁移到 config.json（兼容历史部署：老版本把全局 key 只存用户 DB）。
     try:
         db = Database.get()
-        all_users = await db.user_list_all()
-        for user in all_users:
-            llm_keys_json = await db.user_setting_get(user["id"], "llm_keys")
-            if llm_keys_json:
+        config_keys = get_config("llm_keys", []) or []
+        if config_keys:
+            logger.info("Loaded %d global LLM keys from config.json", len(config_keys))
+        else:
+            # config.json 无 key：fallback 到第一个有 llm_keys 的用户 DB，并迁移到 config.json
+            all_users = await db.user_list_all()
+            migrated = False
+            for user in all_users:
+                llm_keys_json = await db.user_setting_get(user["id"], "llm_keys")
+                if not llm_keys_json:
+                    continue
                 llm_keys = json.loads(llm_keys_json)
-                if llm_keys:
-                    from .core.config import update_memory_config
-                    update_memory_config("llm_keys", llm_keys)
-                    # 同时加载 providers
-                    providers_json = await db.user_setting_get(user["id"], "providers")
-                    if providers_json:
-                        providers = json.loads(providers_json)
-                        if providers:
-                            update_memory_config("providers", providers)
-                    logger.info("Loaded LLM keys from user '%s' (%d keys)", user["username"], len(llm_keys))
-                    break
+                if not llm_keys:
+                    continue
+                from .core.config import (
+                    update_memory_config,
+                    save_global_llm_keys,
+                    update_config_section,
+                )
+                update_memory_config("llm_keys", llm_keys)
+                # 同步 providers（老版本把第一个用户的 providers 当全局用，迁移时一并持久化）
+                providers_json = await db.user_setting_get(user["id"], "providers")
+                migrated_providers: dict = {}
+                if providers_json:
+                    providers = json.loads(providers_json)
+                    if providers:
+                        update_memory_config("providers", providers)
+                        migrated_providers = providers
+                # 一次性迁移到 config.json 持久化（llm_keys 数组 + providers dict）
+                try:
+                    save_global_llm_keys(llm_keys)
+                    if migrated_providers:
+                        update_config_section("providers", migrated_providers)
+                    migrated = True
+                    logger.info(
+                        "Migrated %d LLM keys + providers from user '%s' DB to config.json",
+                        len(llm_keys), user["username"],
+                    )
+                except Exception:
+                    logger.warning("Failed to persist migrated llm_keys to config.json", exc_info=True)
+                break
+            if not migrated:
+                logger.info("No LLM keys found in config.json or any user DB")
     except Exception as e:
-        logger.warning("Failed to load default user LLM keys from DB: %s", e)
+        logger.warning("Failed to load global LLM keys: %s", e)
 
     # 加载视觉关注指令（支持新多条格式 + 旧单条迁移）
     db = Database.get()

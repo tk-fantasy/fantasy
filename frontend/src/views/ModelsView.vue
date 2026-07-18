@@ -18,6 +18,9 @@ const roleLabels = {
 const SYSTEM_ROLES = ['vision', 'embed']
 const PERSONAL_ROLES = ['chat', 'summary', 'stt']
 
+// 顶层 tab：我的模型 / 全局配置
+const activeTab = ref('mine')
+
 const keys = ref([])
 const selectedKeys = ref({
   chat: '',
@@ -25,6 +28,12 @@ const selectedKeys = ref({
   summary: '',
   embed: '',
   stt: '',
+})
+// use_global 标志：chat/summary/stt 是否走全局兜底（true=全局，false=私有）
+const useGlobal = ref({
+  chat: false,
+  summary: false,
+  stt: false,
 })
 const loading = ref(true)
 const saving = ref(false)
@@ -47,16 +56,23 @@ async function loadData() {
     ])
     keys.value = keysData || []
     const current = settings.current || {}
-    
-    // 提取每个角色的 key_id
+
+    // 提取每个角色的 key_id 和 use_global
     for (const role of roles) {
       selectedKeys.value[role] = current[role]?.key_id || ''
+    }
+    for (const role of PERSONAL_ROLES) {
+      useGlobal.value[role] = bool(current[role]?.use_global)
     }
   } catch (e) {
     console.error('Failed to load data:', e)
   } finally {
     loading.value = false
   }
+}
+
+function bool(v) {
+  return v === true || v === 'true' || v === 1
 }
 
 function getRoleOptions(role) {
@@ -75,6 +91,7 @@ async function saveRole(role) {
     await apiPost('/api/llm/settings', {
       role,
       key_id: selectedKeys.value[role],
+      use_global: useGlobal.value[role],
     })
     if (role === 'embed') {
       embedChanged.value = true
@@ -88,6 +105,16 @@ async function saveRole(role) {
   } finally {
     saving.value = false
   }
+}
+
+// 切换私有/全局：true=该角色走全局兜底，false=走 per-user
+async function toggleUseGlobal(role, value) {
+  useGlobal.value[role] = value
+  // 切到全局时清空 per-user key_id 选择（resolver 会因 use_global=true 直接返回 None 走全局）
+  if (value) {
+    selectedKeys.value[role] = ''
+  }
+  await saveRole(role)
 }
 
 // 锁定相关
@@ -142,12 +169,239 @@ async function pollDocRebuild() {
   }
 }
 
+// ============ 全局配置 tab ============
+
+// 二级密码状态：'unknown' | 'unset' | 'locked' | 'unlocked'
+const passwordStatus = ref('unknown')
+const passwordInput = ref('')
+const passwordConfirm = ref('')
+const passwordError = ref('')
+const passwordLoading = ref(false)
+// 解锁后持有密码的 ref —— 写操作（CRUD 全局 key / 改全局 providers）需每次带密码
+// 验证成功后存这里，passwordInput 输入框清空只影响显示。
+// 退出解锁或刷新页时清空（session 级，不持久化）。
+const sessionPassword = ref('')
+
+// 全局 key 列表 + 全局 providers
+const globalKeys = ref([])
+const globalProviders = ref({})
+const globalLoading = ref(false)
+
+// 编辑/新增全局 key 的表单
+const editingKey = ref(null) // null=不在编辑；{}=新增；{id:...}=编辑
+const keyForm = ref({ id: '', base_url: '', model: '', type: 'chat', api_key: '' })
+const keyFormError = ref('')
+const keySaving = ref(false)
+
+// 全局 providers 编辑（每个角色选 key_id）
+const globalSelectedKeys = ref({ chat: '', vision: '', summary: '', embed: '', stt: '' })
+const globalSaving = ref(false)
+const restartNotice = ref('') // 热重载失败时提示需重启
+
+async function loadGlobalPanel() {
+  // 查密码状态
+  try {
+    const status = await apiGet('/api/global/password/status')
+    if (!status.set) {
+      passwordStatus.value = 'unset'
+    } else {
+      passwordStatus.value = 'locked'
+    }
+  } catch (e) {
+    passwordStatus.value = 'unknown'
+    console.error('Failed to check password status:', e)
+  }
+  // 全局 key 列表 + 全局 providers 读操作不需密码
+  await Promise.all([loadGlobalKeys(), loadGlobalSettings()])
+}
+
+async function loadGlobalKeys() {
+  try {
+    globalKeys.value = (await apiGet('/api/global/llm_keys')) || []
+  } catch (e) {
+    globalKeys.value = []
+    console.error('Failed to load global keys:', e)
+  }
+}
+
+async function loadGlobalSettings() {
+  try {
+    const data = await apiGet('/api/global/llm/settings')
+    const current = data.current || {}
+    globalProviders.value = current
+    for (const role of roles) {
+      globalSelectedKeys.value[role] = current[role]?.key_id || ''
+    }
+  } catch (e) {
+    console.error('Failed to load global settings:', e)
+  }
+}
+
+// 首次设置二级密码
+async function setupPassword() {
+  passwordError.value = ''
+  if (passwordInput.value.length < 6) {
+    passwordError.value = '密码至少 6 位'
+    return
+  }
+  if (passwordInput.value !== passwordConfirm.value) {
+    passwordError.value = '两次输入不一致'
+    return
+  }
+  try {
+    passwordLoading.value = true
+    await apiPost('/api/global/password', { password: passwordInput.value })
+    sessionPassword.value = passwordInput.value  // 保留供后续写操作使用
+    passwordStatus.value = 'unlocked'
+    passwordInput.value = ''
+    passwordConfirm.value = ''
+  } catch (e) {
+    passwordError.value = e.message || '设置失败'
+  } finally {
+    passwordLoading.value = false
+  }
+}
+
+// 验证二级密码解锁
+async function verifyPassword() {
+  passwordError.value = ''
+  try {
+    passwordLoading.value = true
+    await apiPost('/api/global/password/verify', { password: passwordInput.value })
+    sessionPassword.value = passwordInput.value  // 保留供后续写操作使用
+    passwordStatus.value = 'unlocked'
+    passwordInput.value = ''
+  } catch (e) {
+    passwordError.value = e.message || '验证失败'
+  } finally {
+    passwordLoading.value = false
+  }
+}
+
+function exitUnlocked() {
+  passwordStatus.value = 'locked'
+  passwordInput.value = ''
+  sessionPassword.value = ''  // 退出解锁时清掉 session 密码
+  editingKey.value = null
+}
+
+function getGlobalRoleOptions(role) {
+  const opts = [{ value: '', label: '-- 未选择 --' }]
+  for (const key of globalKeys.value) {
+    if (key.type === role) {
+      opts.push({ value: key.id, label: `${key.model} (${key.base_url})` })
+    }
+  }
+  return opts
+}
+
+function startAddKey() {
+  editingKey.value = {}
+  keyForm.value = { id: '', base_url: '', model: '', type: 'chat', api_key: '' }
+  keyFormError.value = ''
+}
+
+function startEditKey(k) {
+  editingKey.value = k
+  keyForm.value = {
+    id: k.id,
+    base_url: k.base_url,
+    model: k.model,
+    type: k.type,
+    api_key: '', // 编辑时留空 = 不改密钥
+  }
+  keyFormError.value = ''
+}
+
+function cancelEditKey() {
+  editingKey.value = null
+  keyFormError.value = ''
+}
+
+async function saveGlobalKey() {
+  keyFormError.value = ''
+  if (!keyForm.value.base_url || !keyForm.value.model) {
+    keyFormError.value = 'base_url 和 model 必填'
+    return
+  }
+  const isEdit = !!editingKey.value?.id
+  if (!isEdit && !keyForm.value.api_key) {
+    keyFormError.value = '新增 key 必须填 api_key'
+    return
+  }
+  try {
+    keySaving.value = true
+    const result = await apiPost('/api/global/llm_keys', {
+      id: keyForm.value.id || '',
+      base_url: keyForm.value.base_url,
+      model: keyForm.value.model,
+      type: keyForm.value.type,
+      api_key: keyForm.value.api_key,
+      password: sessionPassword.value,
+    })
+    if (result.restart_required) {
+      restartNotice.value = '全局对话模型已变更，部分在飞请求可能受影响。若聊天报错请重启服务。'
+    } else {
+      restartNotice.value = ''
+    }
+    globalKeys.value = result.keys || []
+    editingKey.value = null
+    // 同步刷新全局 providers（key 列表变了，下拉选项要更新）
+    await loadGlobalSettings()
+  } catch (e) {
+    keyFormError.value = e.message || '保存失败'
+  } finally {
+    keySaving.value = false
+  }
+}
+
+async function deleteGlobalKey(keyId) {
+  if (!confirm(`确认删除全局 key ${keyId}？.env 中的密钥会保留，但该 key 将从全局配置移除。`)) return
+  try {
+    const res = await fetch(`/api/global/llm_keys/${encodeURIComponent(keyId)}?password=${encodeURIComponent(sessionPassword.value)}`, {
+      method: 'DELETE',
+      credentials: 'include',
+    })
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}))
+      throw new Error(j.message || `删除失败：HTTP ${res.status}`)
+    }
+    const j = await res.json()
+    globalKeys.value = j.data?.keys || []
+    await loadGlobalSettings()
+  } catch (e) {
+    alert(e.message || '删除失败')
+  }
+}
+
+async function saveGlobalProvider(role) {
+  try {
+    globalSaving.value = true
+    const result = await apiPost('/api/global/llm/settings', {
+      role,
+      key_id: globalSelectedKeys.value[role],
+      password: sessionPassword.value,
+    })
+    if (result.restart_required) {
+      restartNotice.value = '全局对话模型已变更，部分在飞请求可能受影响。若聊天报错请重启服务。'
+    } else {
+      restartNotice.value = ''
+    }
+    await loadGlobalSettings()
+  } catch (e) {
+    alert(e.message || '保存失败')
+  } finally {
+    globalSaving.value = false
+  }
+}
+
 onUnmounted(() => {
   if (docPollTimer) { clearInterval(docPollTimer); docPollTimer = null }
 })
 
 onMounted(() => {
   loadData()
+  loadGlobalPanel()
 })
 </script>
 
@@ -158,26 +412,49 @@ onMounted(() => {
       <p class="page-sub">为不同角色分配 LLM 模型</p>
     </header>
 
-    <div v-if="loading" class="loading-state">加载中...</div>
+    <!-- 顶层 tab -->
+    <div class="tabs-bar">
+      <button :class="{ active: activeTab === 'mine' }" @click="activeTab = 'mine'">我的模型</button>
+      <button :class="{ active: activeTab === 'global' }" @click="activeTab = 'global'">全局配置</button>
+    </div>
 
-    <div v-else class="settings-sections">
+    <div v-if="loading && activeTab === 'mine'" class="loading-state">加载中...</div>
+
+    <!-- ============ 我的模型 tab ============ -->
+    <div v-show="activeTab === 'mine'" class="settings-sections">
       <!-- 个人模型：自由配置 -->
       <div class="setting-card">
         <div class="card-title">个人模型</div>
         <div
           v-for="role in PERSONAL_ROLES"
           :key="role"
-          class="setting-row"
+          class="setting-row setting-row-with-toggle"
         >
           <div class="setting-label">
             <span class="label-text">{{ roleLabels[role] }}</span>
             <span class="label-desc">{{ role }} 角色使用的模型</span>
           </div>
-          <FlowSelect
-            :model-value="selectedKeys[role]"
-            :options="getRoleOptions(role)"
-            @update:model-value="v => { selectedKeys[role] = v; saveRole(role) }"
-          />
+          <div class="setting-controls">
+            <!-- 私有/全局开关 -->
+            <div class="seg-toggle">
+              <button
+                :class="{ active: !useGlobal[role] }"
+                @click="toggleUseGlobal(role, false)"
+              >私有 key</button>
+              <button
+                :class="{ active: useGlobal[role] }"
+                @click="toggleUseGlobal(role, true)"
+              >全局 key</button>
+            </div>
+            <!-- 选全局时禁用下拉，灰显"使用全局 key" -->
+            <FlowSelect
+              v-if="!useGlobal[role]"
+              :model-value="selectedKeys[role]"
+              :options="getRoleOptions(role)"
+              @update:model-value="v => { selectedKeys[role] = v; saveRole(role) }"
+            />
+            <div v-else class="global-placeholder">使用全局 key</div>
+          </div>
         </div>
       </div>
 
@@ -239,6 +516,161 @@ onMounted(() => {
       <div class="save-bar" v-if="saving">
         <span class="saving-text">保存中...</span>
       </div>
+    </div>
+
+    <!-- ============ 全局配置 tab ============ -->
+    <div v-show="activeTab === 'global'" class="settings-sections">
+      <!-- 未设二级密码：首次设置 -->
+      <div v-if="passwordStatus === 'unset'" class="setting-card">
+        <div class="card-title">首次设置全局配置二级密码</div>
+        <div class="password-hint">
+          全局 key 影响所有用户的模型与费用，请设置一个二级密码用于门禁。
+          密码哈希存 config.json，忘记后需手改 config.json 删除 security.secondary_password_hash 重置。
+        </div>
+        <div class="password-form">
+          <input
+            v-model="passwordInput"
+            type="password"
+            placeholder="二级密码（至少 6 位）"
+            class="setting-input"
+          />
+          <input
+            v-model="passwordConfirm"
+            type="password"
+            placeholder="确认密码"
+            class="setting-input"
+          />
+          <button class="btn-primary" :disabled="passwordLoading" @click="setupPassword">
+            {{ passwordLoading ? '设置中...' : '设置密码' }}
+          </button>
+        </div>
+        <div v-if="passwordError" class="form-error">{{ passwordError }}</div>
+      </div>
+
+      <!-- 已设但未解锁：输入密码 -->
+      <div v-else-if="passwordStatus === 'locked'" class="setting-card">
+        <div class="card-title">输入二级密码</div>
+        <div class="password-hint">全局配置已设置二级密码，请输入以解锁管理面板。</div>
+        <div class="password-form">
+          <input
+            v-model="passwordInput"
+            type="password"
+            placeholder="二级密码"
+            class="setting-input"
+            @keyup.enter="verifyPassword"
+          />
+          <button class="btn-primary" :disabled="passwordLoading" @click="verifyPassword">
+            {{ passwordLoading ? '验证中...' : '解锁' }}
+          </button>
+        </div>
+        <div v-if="passwordError" class="form-error">{{ passwordError }}</div>
+      </div>
+
+      <!-- 已解锁：全局 key 管理 + 全局 providers -->
+      <div v-else-if="passwordStatus === 'unlocked'" class="settings-sections">
+        <div class="setting-card">
+          <div class="card-title">
+            全局 LLM Keys
+            <button class="btn-link" @click="exitUnlocked">锁定</button>
+          </div>
+          <div class="password-hint">
+            全局 key 存 config.json，所有用户共享。密钥本身存 .env，config.json 只存 env 变量名。
+            修改全局对话(chat)模型会触发热重载，部分在飞请求可能受影响。
+          </div>
+
+          <!-- key 列表 -->
+          <div v-if="globalKeys.length === 0" class="empty-hint">暂无全局 key，点击"新增"添加。</div>
+          <div v-else class="key-list">
+            <div v-for="k in globalKeys" :key="k.id" class="key-item">
+              <div class="key-info">
+                <span class="key-type-badge" :class="`type-${k.type}`">{{ k.type }}</span>
+                <span class="key-model">{{ k.model }}</span>
+                <span class="key-base">{{ k.base_url }}</span>
+                <span class="key-env" :class="{ set: k.api_key_set }">
+                  {{ k.api_key_set ? '密钥已配置' : '密钥未配置' }}
+                </span>
+              </div>
+              <div class="key-actions">
+                <button class="btn-link" @click="startEditKey(k)">编辑</button>
+                <button class="btn-link btn-danger" @click="deleteGlobalKey(k.id)">删除</button>
+              </div>
+            </div>
+          </div>
+
+          <button v-if="!editingKey" class="btn-primary" @click="startAddKey">新增全局 key</button>
+
+          <!-- 新增/编辑表单 -->
+          <div v-if="editingKey" class="key-form">
+            <div class="form-title">{{ editingKey.id ? `编辑 ${editingKey.id}` : '新增全局 key' }}</div>
+            <div class="form-row">
+              <label>类型</label>
+              <select v-model="keyForm.type" class="setting-input">
+                <option value="chat">chat</option>
+                <option value="summary">summary</option>
+                <option value="vision">vision</option>
+                <option value="embed">embed</option>
+                <option value="stt">stt</option>
+              </select>
+            </div>
+            <div class="form-row">
+              <label>Base URL</label>
+              <input v-model="keyForm.base_url" class="setting-input" placeholder="https://api.example.com/v1" />
+            </div>
+            <div class="form-row">
+              <label>模型名</label>
+              <input v-model="keyForm.model" class="setting-input" placeholder="glm-4-flash" />
+            </div>
+            <div class="form-row">
+              <label>API Key</label>
+              <input
+                v-model="keyForm.api_key"
+                type="password"
+                class="setting-input"
+                :placeholder="editingKey.id ? '留空=不修改' : '必填'"
+              />
+            </div>
+            <div v-if="keyFormError" class="form-error">{{ keyFormError }}</div>
+            <div class="form-actions">
+              <button class="btn-cancel" @click="cancelEditKey">取消</button>
+              <button class="btn-primary" :disabled="keySaving" @click="saveGlobalKey">
+                {{ keySaving ? '保存中...' : '保存' }}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 全局 providers：为每个角色绑定 key_id -->
+        <div class="setting-card">
+          <div class="card-title">全局角色分配</div>
+          <div class="password-hint">为每个角色指定默认使用的全局 key。所有未配置 per-user key 的用户会走这里的全局绑定。</div>
+          <div
+            v-for="role in roles"
+            :key="role"
+            class="setting-row"
+          >
+            <div class="setting-label">
+              <span class="label-text">{{ roleLabels[role] }}</span>
+              <span class="label-desc">{{ role }} 角色全局默认</span>
+            </div>
+            <FlowSelect
+              :model-value="globalSelectedKeys[role]"
+              :options="getGlobalRoleOptions(role)"
+              @update:model-value="v => { globalSelectedKeys[role] = v; saveGlobalProvider(role) }"
+            />
+          </div>
+        </div>
+
+        <div v-if="restartNotice" class="embed-changed-banner">
+          <span class="banner-icon">&#9888;</span>
+          <span class="banner-text">{{ restartNotice }}</span>
+        </div>
+        <div v-if="globalSaving" class="save-bar">
+          <span class="saving-text">保存中...</span>
+        </div>
+      </div>
+
+      <!-- 加载中/未知状态 -->
+      <div v-else class="loading-state">加载全局配置状态...</div>
     </div>
   </div>
 </template>
@@ -437,5 +869,214 @@ select.setting-input option {
 .btn-confirm:hover {
   background: var(--color-warning, #ffc107);
   color: #1a1a1a;
+}
+
+/* ============ 顶层 tab ============ */
+.tabs-bar {
+  display: flex;
+  gap: var(--space-4);
+  border-bottom: 1px solid var(--color-border);
+  margin-bottom: var(--space-16);
+}
+.tabs-bar button {
+  padding: var(--space-6) var(--space-12);
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-out);
+}
+.tabs-bar button:hover {
+  color: var(--color-text);
+}
+.tabs-bar button.active {
+  color: var(--color-primary);
+  border-bottom-color: var(--color-primary);
+}
+
+/* ============ 我的模型：私有/全局开关 ============ */
+.setting-row-with-toggle {
+  flex-wrap: wrap;
+}
+.setting-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+}
+.seg-toggle {
+  display: inline-flex;
+  border: 1px solid var(--color-border-hover);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+.seg-toggle button {
+  padding: var(--space-2) var(--space-8);
+  background: transparent;
+  border: none;
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-out);
+}
+.seg-toggle button.active {
+  background: var(--color-primary);
+  color: #fff;
+}
+.global-placeholder {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  padding: var(--space-2) var(--space-6);
+  background: var(--color-surface);
+  border-radius: var(--radius-md);
+  min-width: 140px;
+  text-align: center;
+}
+
+/* ============ 全局配置 tab ============ */
+.password-hint {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  line-height: 1.6;
+  margin-bottom: var(--space-10);
+}
+.password-form {
+  display: flex;
+  gap: var(--space-6);
+  align-items: center;
+  flex-wrap: wrap;
+}
+.password-form .setting-input {
+  flex: 1;
+  min-width: 180px;
+  width: auto;
+}
+.form-error {
+  color: var(--color-danger, #e53935);
+  font-size: var(--text-xs);
+  margin-top: var(--space-4);
+}
+.btn-primary {
+  padding: var(--space-3) var(--space-12);
+  border: 1px solid var(--color-primary);
+  border-radius: var(--radius-md);
+  background: var(--color-primary);
+  color: #fff;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-out);
+  white-space: nowrap;
+}
+.btn-primary:hover:not(:disabled) {
+  opacity: 0.9;
+}
+.btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.btn-link {
+  background: transparent;
+  border: none;
+  color: var(--color-primary);
+  font-size: var(--text-xs);
+  cursor: pointer;
+  padding: var(--space-2) var(--space-4);
+  text-decoration: underline;
+}
+.btn-link.btn-danger {
+  color: var(--color-danger, #e53935);
+}
+.empty-hint {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  padding: var(--space-10) 0;
+}
+.key-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  margin-bottom: var(--space-10);
+}
+.key-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-6) var(--space-8);
+  background: var(--color-surface);
+  border-radius: var(--radius-md);
+  gap: var(--space-8);
+  flex-wrap: wrap;
+}
+.key-info {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  flex-wrap: wrap;
+}
+.key-type-badge {
+  font-size: var(--text-xs);
+  padding: var(--space-1) var(--space-4);
+  border-radius: var(--radius-sm);
+  background: var(--color-primary-light);
+  color: var(--color-primary);
+  font-weight: var(--weight-semibold);
+  text-transform: uppercase;
+}
+.key-model {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--color-text);
+}
+.key-base {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+.key-env {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+.key-env.set {
+  color: var(--color-success, #43a047);
+}
+.key-actions {
+  display: flex;
+  gap: var(--space-4);
+}
+.key-form {
+  margin-top: var(--space-10);
+  padding: var(--space-12);
+  background: var(--color-surface);
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+.form-title {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  margin-bottom: var(--space-4);
+}
+.form-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+}
+.form-row label {
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+  min-width: 70px;
+}
+.form-row .setting-input {
+  flex: 1;
+  width: auto;
+}
+.form-actions {
+  display: flex;
+  gap: var(--space-6);
+  justify-content: flex-end;
+  margin-top: var(--space-4);
 }
 </style>
