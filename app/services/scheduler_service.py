@@ -155,6 +155,20 @@ class SchedulerService:
         # 启动时重算所有启用任务的 next_run（上次崩溃遗留的 running 状态清掉）
         now = time.time()
         for task in self._tasks.values():
+            # 升级迁移：无 user_id 的旧任务（升级前创建）无法定位 per-user 模型，
+            # 执行会回退全局 agent 撞 Connection error。直接禁用，避免到点报错；
+            # 前端列表展示 last_error 提示用户重建。
+            if task.get("enabled", True) and not task.get("user_id"):
+                name = task.get("name", task["id"])
+                logger.warning("scheduled task '%s' (%s) disabled: missing user_id (pre-upgrade)",
+                               name, task["id"])
+                task["enabled"] = False
+                task["next_run_at"] = None
+                task["last_status"] = "interrupted"
+                task["last_error"] = "升级后任务缺少创建者信息，请删除并重建任务以关联您的模型配置"
+                await self._db.scheduled_task_update(task["id"], task)
+                continue
+
             if task.get("enabled", True):
                 task["last_status"] = task.get("last_status")  # 保留历史
                 # 重启恢复：若上次正在执行（running），标记为 interrupted
@@ -220,6 +234,9 @@ class SchedulerService:
         name = task.get("name", task_id)
         payload = task.get("payload", {})
         kind = payload.get("kind")
+        # 创建者 user_id：message/reminder 执行时按它解析 per-user 模型，
+        # 避免回退全局 agent（其 httpx 客户端会被 per-user 构建误关 → Connection error）
+        user_id = task.get("user_id", "")
         now = time.time()
 
         # 标记开始执行
@@ -232,9 +249,9 @@ class SchedulerService:
             if kind == "tool":
                 await self._execute_tool_payload(payload)
             elif kind == "message":
-                await self._execute_message_payload(payload, name)
+                await self._execute_message_payload(payload, name, user_id)
             elif kind == "reminder":
-                await self._execute_reminder_payload(payload, name)
+                await self._execute_reminder_payload(payload, name, user_id)
             else:
                 raise ValueError(f"unknown payload kind: {kind}")
 
@@ -268,15 +285,24 @@ class SchedulerService:
             raise RuntimeError(f"tool {resolved} returned failure: {result.get('error', result)}")
         logger.info("scheduled tool %s result: %s", resolved, result.get("result"))
 
-    async def _execute_message_payload(self, payload: dict, task_name: str) -> None:
+    async def _execute_message_payload(self, payload: dict, task_name: str, user_id: str = "") -> None:
         """执行 message payload：往主会话发一句，复用 Dispatcher.dispatch。
 
         不新建独立 agent 会话——就是定时器替你"说一句话"进对话流，
         结果自然进会话历史（与 WS 聊天走同一入口）。
+
+        user_id 必须有值：dispatch 据此解析 per-user agent（用户自己的 chat key）。
+        无 user_id 时拒绝执行——否则会回退全局 agent，其 httpx 客户端被 per-user
+        构建误关后必现 Connection error（即本 bug 的根因）。旧任务由 _load_tasks
+        打标禁用，正常不会走到这；此早返回是兜底防线。
         """
         message = str(payload.get("message", "")).strip()
         if not message:
             raise ValueError("payload.message is required")
+
+        if not user_id:
+            logger.warning("scheduled message task '%s' has no user_id, refusing to run", task_name)
+            raise RuntimeError("任务缺少 user_id，无法定位 per-user 模型（请删除并重建任务）")
 
         dispatcher = self._dispatcher_ref[0]
         if dispatcher is None:
@@ -292,11 +318,12 @@ class SchedulerService:
             request_id=rid,
             session_id=session_id,
         )
-        logger.info("scheduled message task '%s' -> session %s: %s", task_name, session_id, message[:120])
-        instructions = await dispatcher.dispatch(event)
+        logger.info("scheduled message task '%s' [user=%s] -> session %s: %s",
+                    task_name, user_id, session_id, message[:120])
+        instructions = await dispatcher.dispatch(event, user_id=user_id)
         logger.info("scheduled message task '%s' dispatched, %d instructions", task_name, len(instructions))
 
-    async def _execute_reminder_payload(self, payload: dict, task_name: str) -> None:
+    async def _execute_reminder_payload(self, payload: dict, task_name: str, user_id: str = "") -> None:
         """执行 reminder payload：直接调 LLM 生成一句提醒，写进主会话。
 
         与 message 的核心区别：
@@ -309,6 +336,12 @@ class SchedulerService:
         payload 字段：
         - intent: 提醒意图简述（如"下班提醒"）
         - original: 用户创建时的原话（如"在18点27分提醒我下班"），优先用这个
+
+        注：reminder 走 self._llm_chat_client（全局 LlmChatClient，不经 dispatcher），
+        目前未接 per-user 模型——属"全局 agent 重构"范畴，本轮不动。
+        实际影响面为零：前端 ScheduledTasksView.vue 的 buildPayload() 把"提醒我"
+        也发成 kind=message（仅加"提醒我："前缀），reminder 分支当前 UI 不触发。
+        user_id 参数在此预留，待后续 reminder per-user 化时使用。
         """
         intent = str(payload.get("intent", "")).strip()
         original = str(payload.get("original", "")).strip()
@@ -378,6 +411,9 @@ class SchedulerService:
         now = time.time()
         task.setdefault("name", "未命名任务")
         task.setdefault("enabled", True)
+        # 创建者 user_id：执行时按它解析 per-user 模型。路由层已注入；
+        # setdefault 兼容旧测试/未传场景（空串表示无归属，_load_tasks 会打标禁用）
+        task.setdefault("user_id", "")
         task["id"] = task_id
         task["created_at"] = now_ms
         task["updated_at"] = now_ms

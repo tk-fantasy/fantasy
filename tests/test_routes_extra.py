@@ -370,11 +370,14 @@ class TestSchedulerCreateTask:
             schedule={"kind": "every", "every_seconds": 60},
             payload={"kind": "message", "message": "hi"},
         )
-        result = await scheduler_routes.create_scheduled_task(payload, container=container)
+        current_user = {"user_id": "u1", "username": "tester"}
+        result = await scheduler_routes.create_scheduled_task(payload, current_user, container)
         assert result.data == {"id": "new"}
         # add_task 收到 name="我的任务"
         call_args = container.scheduler_service.add_task.call_args[0][0]
         assert call_args["name"] == "我的任务"
+        # 创建者 user_id 必须被注入，执行时据此解析 per-user 模型
+        assert call_args["user_id"] == "u1"
 
     @pytest.mark.asyncio
     async def test_create_auto_name_when_empty(self):
@@ -391,8 +394,10 @@ class TestSchedulerCreateTask:
             schedule={"kind": "every", "every_seconds": 60},
             payload={"kind": "message", "message": "提醒内容"},
         )
-        result = await scheduler_routes.create_scheduled_task(payload, container=container)
+        current_user = {"user_id": "u1", "username": "tester"}
+        result = await scheduler_routes.create_scheduled_task(payload, current_user, container)
         call_args = container.scheduler_service.add_task.call_args[0][0]
         # 自动生成的 name 非空
         assert call_args["name"]
         assert "提醒内容" in call_args["name"] or "每" in call_args["name"]
+        assert call_args["user_id"] == "u1"

@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends
 
 from ..container import AppContainer, get_container
 from ..core.api_models import ApiResponse
+from ..core.auth import get_current_user
 from ..schema.api_schemas import (
     ScheduledTaskCreateRequest,
     ScheduledTaskEnabledRequest,
@@ -43,6 +44,7 @@ async def list_scheduled_tasks(
 @router.post("/scheduled-tasks")
 async def create_scheduled_task(
     payload: ScheduledTaskCreateRequest,
+    current_user: dict = Depends(get_current_user),
     container: AppContainer = Depends(get_container),
 ) -> ApiResponse[dict]:
     svc = container.scheduler_service
@@ -64,11 +66,14 @@ async def create_scheduled_task(
             pl_desc = str(pl.get("kind", ""))[:20]
         name = f"{sched_desc} · {pl_desc}" if pl_desc else sched_desc
 
+    # 记录创建者 user_id：执行时按它解析 per-user 模型，避免回退全局 agent
+    # （全局 agent 的 httpx 客户端会被 per-user 构建误关，导致 Connection error）
     task = await svc.add_task({
         "name": name,
         "schedule": payload.schedule,
         "payload": payload.payload,
         "enabled": payload.enabled,
+        "user_id": current_user["user_id"],
     })
     return ApiResponse(data=task)
 
