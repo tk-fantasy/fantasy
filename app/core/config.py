@@ -120,6 +120,25 @@ def get_config(path: str, default: Any = None) -> Any:
     return current
 
 
+def _safe_backup_config() -> None:
+    """把当前 config.json 备份到 .json.bak（用 copy 而非 rename）。
+
+    Docker bind-mount 下 os.rename 会报 "Device or resource busy"，
+    改用读+写拷贝内容，避免移动 bind-mount 的目录条目。
+    """
+    if not CONFIG_PATH.exists():
+        return
+    backup_path = CONFIG_PATH.with_suffix('.json.bak')
+    try:
+        backup_path.write_text(
+            CONFIG_PATH.read_text(encoding="utf-8"), encoding="utf-8"
+        )
+    except OSError:
+        # 备份失败不阻塞写入，只记日志
+        import logging
+        logging.getLogger(__name__).warning("Failed to backup config.json", exc_info=True)
+
+
 def update_config_section(section: str, values: dict[str, Any]) -> dict[str, Any]:
     """运行时更新某个配置段:写入 config.json 并同步内存 CONFIG。"""
     global CONFIG
@@ -131,12 +150,8 @@ def update_config_section(section: str, values: dict[str, Any]) -> dict[str, Any
         # 写磁盘前清理 llm_keys 中的明文 api_key（旧代码遗留，密钥应只存 .env）
         for key_entry in file_config.get("llm_keys", []):
             key_entry.pop("api_key", None)
-        # 备份当前配置（如果备份文件已存在则先删除）
-        if CONFIG_PATH.exists():
-            backup_path = CONFIG_PATH.with_suffix('.json.bak')
-            if backup_path.exists():
-                backup_path.unlink()
-            CONFIG_PATH.rename(backup_path)
+        # 备份当前配置（copy 而非 rename，兼容 Docker bind-mount）
+        _safe_backup_config()
         atomic_write(
             CONFIG_PATH,
             json.dumps(file_config, ensure_ascii=False, indent=2) + "\n",
@@ -206,3 +221,57 @@ def delete_llm_key(key_id: str) -> list[dict[str, Any]]:
     keys = [k for k in (get_config("llm_keys", []) or []) if k.get("id") != key_id]
     update_memory_config("llm_keys", keys)
     return keys
+
+
+def save_global_llm_keys(keys: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """整体替换 config.json 的顶层数组 llm_keys（全局共享 key）。
+
+    与 upsert_llm_key 不同：本函数把结果写回 config.json 磁盘，使其跨重启持久化；
+    upsert_llm_key 只更新内存，依赖启动时从用户 DB 回填。
+
+    约定：config.json 的 llm_keys 不存明文 api_key，只存 api_key_env（密钥进 .env）。
+    因此写入前剥离每项的 api_key 字段。
+
+    Args:
+        keys: 完整的 llm_keys 数组（每项含 id/base_url/model/type/chat_path/embed_path/api_key_env）
+
+    Returns:
+        写入磁盘的 keys 数组（已剥离明文 api_key）
+    """
+    global CONFIG
+    # 剥离明文 api_key（只保留 api_key_env），避免密钥落 config.json
+    sanitized: list[dict[str, Any]] = []
+    for k in keys:
+        item = dict(k)
+        item.pop("api_key", None)
+        # 确保有 api_key_env：未提供则按 id 自动生成
+        env_name = str(item.get("api_key_env", "")).strip()
+        if not env_name and item.get("id"):
+            env_name = f"LLM_KEY_{str(item['id']).upper().replace('-', '_')}"
+            item["api_key_env"] = env_name
+        sanitized.append(item)
+
+    with _config_write_lock:
+        file_config = _load_file_config()
+        file_config["llm_keys"] = sanitized
+        # 备份当前配置（copy 而非 rename，兼容 Docker bind-mount）
+        _safe_backup_config()
+        atomic_write(
+            CONFIG_PATH,
+            json.dumps(file_config, ensure_ascii=False, indent=2) + "\n",
+        )
+        # 同步内存（整体替换，不 merge）
+        CONFIG["llm_keys"] = sanitized
+    return sanitized
+
+
+def get_secondary_password_hash() -> str:
+    """读取 config.json 中 security.secondary_password_hash（全局 key 配置的二级密码）。
+
+    未设置返回空串。"""
+    return str(get_config("security.secondary_password_hash", "") or "")
+
+
+def set_secondary_password_hash(password_hash: str) -> None:
+    """写入二级密码哈希到 config.json 的 security section（持久化）。"""
+    update_config_section("security", {"secondary_password_hash": password_hash})

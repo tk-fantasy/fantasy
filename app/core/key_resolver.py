@@ -167,6 +167,15 @@ async def resolve_key_for_role_user(role: str, user_id: str) -> dict[str, Any] |
     except (json.JSONDecodeError, TypeError):
         providers = {}
 
+    # 0. use_global flag：chat/summary/stt 角色可显式声明"用全局 key"，
+    # 此处返回 None 让调用方回退到 resolve_key_for_role(全局)。
+    # 必须在 key_id 查找与 auto-select 之前判断——否则 auto-select 会拦下
+    # 用户已有的同类型 per-user key，导致"切到全局"无效。
+    if isinstance(providers, dict):
+        role_provider = providers.get(role) or {}
+        if isinstance(role_provider, dict) and role_provider.get("use_global"):
+            return None
+
     # 1. 按 providers 绑定查找
     key_id = providers.get(role, {}).get("key_id") if isinstance(providers, dict) else None
     key_entry = None

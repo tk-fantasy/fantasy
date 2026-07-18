@@ -80,6 +80,39 @@ class LLMSettingsRequest(BaseModel):
     max_concurrency: int = 8
     thinking: Any | None = None
     multimodal: Any | None = None
+    # chat/summary/stt 角色可切到"用全局 key"。True=该角色走全局兜底，
+    # False/未设=走 per-user（用户自己的 key）。详见 key_resolver.use_global。
+    use_global: bool | None = None
+
+
+class SecondaryPasswordSetupRequest(BaseModel):
+    """POST /global/password — 首次设置全局配置二级密码。"""
+    password: str = Field(min_length=6, max_length=128)
+
+
+class SecondaryPasswordVerifyRequest(BaseModel):
+    """POST /global/password/verify — 验证二级密码（每次写全局 key 时附带）。"""
+    password: str = Field(min_length=1, max_length=128)
+
+
+class GlobalLLMKeyRequest(BaseModel):
+    """POST /global/llm_keys — 新增/更新全局 LLM Key。"""
+    base_url: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+    type: str = ""
+    api_key: str = ""  # 编辑时留空 = 不改密钥
+    id: str = ""
+    password: str = ""  # 二级密码（除首次设置外必填）
+
+
+class GlobalLLMSettingsRequest(BaseModel):
+    """POST /global/llm/settings — 写全局 providers 到 config.json。"""
+    role: str = ""
+    key_id: str = ""
+    max_concurrency: int = 8
+    thinking: Any | None = None
+    multimodal: Any | None = None
+    password: str = ""
 
 
 class VisionFocusRequest(BaseModel):
