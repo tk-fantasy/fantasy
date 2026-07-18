@@ -174,11 +174,33 @@ class TestSchedulerExecution:
             "name": "提醒",
             "schedule": {"kind": "every", "every_seconds": 60},
             "payload": {"kind": "message", "message": "该起床了"},
+            "user_id": "u1",
         })
         await svc._execute_task(task)
         dispatcher.dispatch.assert_awaited_once()
+        # dispatch 必须带上创建者 user_id，走 per-user agent（而非全局 agent 兜底）
+        assert dispatcher.dispatch.call_args.kwargs.get("user_id") == "u1"
         session_store.list_summaries.assert_awaited()
         assert task["last_status"] == "success"
+
+    @pytest.mark.asyncio
+    async def test_message_payload_no_user_id_refuses(self):
+        """无 user_id 的 message 任务应拒绝执行（避免回退全局 agent 撞 Connection error）。
+
+        旧任务由 _load_tasks 打标禁用，正常不会执行；此测试覆盖 _execute_task 直接
+        被调时的兜底防线。
+        """
+        svc, db, _, dispatcher, session_store = _make_service()
+        task = await svc.add_task({
+            "name": "提醒",
+            "schedule": {"kind": "every", "every_seconds": 60},
+            "payload": {"kind": "message", "message": "该起床了"},
+            # 故意不传 user_id
+        })
+        await svc._execute_task(task)
+        dispatcher.dispatch.assert_not_awaited()
+        assert task["last_status"] == "failed"
+        assert "user_id" in (task["last_error"] or "")
 
     @pytest.mark.asyncio
     async def test_message_payload_no_session_skips(self):
@@ -188,6 +210,7 @@ class TestSchedulerExecution:
             "name": "提醒",
             "schedule": {"kind": "every", "every_seconds": 60},
             "payload": {"kind": "message", "message": "该起床了"},
+            "user_id": "u1",
         })
         await svc._execute_task(task)
         dispatcher.dispatch.assert_not_awaited()
@@ -287,6 +310,52 @@ class TestSchedulerExecution:
         assert task["enabled"] is False
         assert task["next_run_at"] is None
         assert task["last_status"] == "success"
+
+
+# ---------------------------------------------------------------------------
+# _load_tasks — 升级迁移：无 user_id 旧任务打标禁用
+# ---------------------------------------------------------------------------
+
+class TestSchedulerLoadTasksMigration:
+    @pytest.mark.asyncio
+    async def test_pre_upgrade_task_without_user_id_disabled(self):
+        """升级前创建的任务（无 user_id）启动时应被禁用，避免到点回退全局 agent 报错。"""
+        svc, db, *_ = _make_service()
+        # 模拟 DB 里有一条升级前的旧任务：无 user_id、enabled=True
+        db.scheduled_tasks_all = AsyncMock(return_value=[{
+            "id": "old-task",
+            "name": "旧任务",
+            "schedule": {"kind": "every", "every_seconds": 60},
+            "payload": {"kind": "message", "message": "hi"},
+            "enabled": True,
+            # 注意：没有 user_id 字段
+        }])
+        await svc._load_tasks()
+        task = svc._tasks["old-task"]
+        assert task["enabled"] is False
+        assert task["next_run_at"] is None
+        assert task["last_status"] == "interrupted"
+        assert "创建者" in (task["last_error"] or "")
+        # 禁用状态已持久化
+        db.scheduled_task_update.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_task_with_user_id_loaded_normally(self):
+        """升级后带 user_id 的任务正常载入，不被迁移逻辑误伤。"""
+        svc, db, *_ = _make_service()
+        db.scheduled_tasks_all = AsyncMock(return_value=[{
+            "id": "new-task",
+            "name": "新任务",
+            "schedule": {"kind": "every", "every_seconds": 60},
+            "payload": {"kind": "message", "message": "hi"},
+            "enabled": True,
+            "user_id": "u1",
+        }])
+        await svc._load_tasks()
+        task = svc._tasks["new-task"]
+        assert task["enabled"] is True
+        assert task["next_run_at"] is not None
+        assert task["last_status"] != "interrupted"
 
 
 # ---------------------------------------------------------------------------
