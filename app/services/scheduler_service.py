@@ -308,7 +308,7 @@ class SchedulerService:
         if dispatcher is None:
             raise RuntimeError("dispatcher not available")
 
-        session_id = await self._resolve_main_session_id()
+        session_id = await self._resolve_main_session_id(user_id)
         if session_id is None:
             raise RuntimeError("无可用会话，无法投递定时消息（请先在聊天页创建会话）")
 
@@ -337,11 +337,8 @@ class SchedulerService:
         - intent: 提醒意图简述（如"下班提醒"）
         - original: 用户创建时的原话（如"在18点27分提醒我下班"），优先用这个
 
-        注：reminder 走 self._llm_chat_client（全局 LlmChatClient，不经 dispatcher），
-        目前未接 per-user 模型——属"全局 agent 重构"范畴，本轮不动。
-        实际影响面为零：前端 ScheduledTasksView.vue 的 buildPayload() 把"提醒我"
-        也发成 kind=message（仅加"提醒我："前缀），reminder 分支当前 UI 不触发。
-        user_id 参数在此预留，待后续 reminder per-user 化时使用。
+        per-user 化：按 task.user_id 解析 chat role 的 per-user key（与 message 同 role，
+        避免语气/能力不一致），无配置回退全局 self._llm_chat_client。
         """
         intent = str(payload.get("intent", "")).strip()
         original = str(payload.get("original", "")).strip()
@@ -349,10 +346,11 @@ class SchedulerService:
         if not source:
             raise ValueError("payload.intent 或 payload.original 至少填一个")
 
-        if self._llm_chat_client is None:
-            raise RuntimeError("llm_chat_client 未注入，无法执行 reminder（检查 scheduler 装配）")
+        client = await self._resolve_reminder_client(user_id)
+        if client is None:
+            raise RuntimeError("无可用的 LLM 客户端，无法执行 reminder（user_id=%s 无 per-user key 且全局 llm_chat_client 未注入）" % user_id)
 
-        session_id = await self._resolve_main_session_id()
+        session_id = await self._resolve_main_session_id(user_id)
         if session_id is None:
             raise RuntimeError("无可用会话，无法投递定时提醒（请先在聊天页创建会话）")
 
@@ -375,7 +373,7 @@ class SchedulerService:
         messages.extend(session.model_messages)
         messages.append({"role": "user", "content": directive})
 
-        reply = await self._llm_chat_client.chat(messages, timeout=60)
+        reply = await client.chat(messages, timeout=60)
         reply = str(reply).strip()
         if not reply:
             raise RuntimeError("LLM 返回空回复，reminder 未生成提醒文本")
@@ -385,16 +383,40 @@ class SchedulerService:
         session.model_messages.append({"role": "assistant", "content": reply})
         await self._session_store.store_session(session)
 
-        logger.info("scheduled reminder task '%s' -> session %s, reply: %s",
-                    task_name, session_id, reply[:120])
+        logger.info("scheduled reminder task '%s' [user=%s] -> session %s, reply: %s",
+                    task_name, user_id, session_id, reply[:120])
 
-    async def _resolve_main_session_id(self) -> str | None:
+    async def _resolve_reminder_client(self, user_id: str = "") -> Any | None:
+        """按 user_id 解析 reminder 用的 per-user chat 客户端，无配置回退全局。
+
+        与 message 同 role（chat），避免 reminder 走 summary 模型导致语气/能力与主对话不一致。
+        仿 summarization_service._resolve_summary_client，但多覆盖 _enabled=True
+        （全局 chat 关着时，per-user 有 key 也得能跑，否则 LlmBaseClient.post_json 会拦"LLM 未启用"）。
+        """
+        if user_id:
+            try:
+                from ..core.key_resolver import resolve_key_for_role_user
+                key_info = await resolve_key_for_role_user("chat", user_id)
+                if key_info and key_info.get("api_key"):
+                    from ..clients.llm_chat_client import LlmChatClient
+                    client = LlmChatClient(role="chat")
+                    client._api_key = key_info["api_key"]
+                    client._base_url = key_info["base_url"]
+                    client._model = key_info["model"]
+                    client._enabled = True  # per-user 有 key 即启用，不受全局 llm.enabled 开关影响
+                    return client
+            except Exception:
+                logger.debug("Failed to resolve per-user reminder client, using global", exc_info=True)
+        return self._llm_chat_client
+
+    async def _resolve_main_session_id(self, user_id: str = "") -> str | None:
         """取最近更新的会话作为主会话；无则返回 None。
 
-        定时消息任务需要一个会话来承接——取最近活跃的会话最符合直觉
-        （用户最后聊的那个窗口）。若没有任何会话，跳过并记日志。
+        定时消息/提醒任务需要一个会话来承接——取该用户最近活跃的会话最符合直觉
+        （用户最后聊的那个窗口）。传 user_id 时按用户过滤，避免多用户场景拿错会话；
+        user_id 为空时取全局最近活跃（向后兼容）。
         """
-        summaries = await self._session_store.list_summaries()
+        summaries = await self._session_store.list_summaries(user_id)
         if not summaries:
             return None
         # list_summaries 已按 updated_at 倒序，第一个就是最近活跃的
