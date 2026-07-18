@@ -106,10 +106,12 @@ function buildPayload() {
   const k = form.value.payloadKind
   const content = (form.value.content || '').trim()
   if (!content) throw new Error('请填写内容')
-  // 提醒我：消息前缀「提醒我：」，到点 Agent 看到后会回应式提醒
-  // 我发消息：原样发出，到点 Agent 按指令执行（开灯/查新闻/…）
-  const message = k === 'reminder' ? `提醒我：${content}` : content
-  return { kind: 'message', message }
+  // 提醒我：走 reminder 链路，绕开 ReAct，AI 主动开口说一句话（不碰工具/不建任务）
+  // 我发消息：走 message 链路，原样注入 dispatch，AI 按 ReAct 执行（开灯/查新闻/…）
+  if (k === 'reminder') {
+    return { kind: 'reminder', intent: content, original: content }
+  }
+  return { kind: 'message', message: content }
 }
 
 // ===== 任务 CRUD =====
@@ -203,10 +205,12 @@ function formatSchedule(schedule) {
 
 function formatPayload(payload) {
   if (!payload) return ''
+  if (payload.kind === 'reminder') {
+    // reminder 链路：绕开 ReAct，AI 主动开口提醒
+    return `提醒：${payload.original || payload.intent || ''}`
+  }
   if (payload.kind === 'message') {
-    const msg = payload.message || ''
-    if (msg.startsWith('提醒我：')) return `提醒：${msg.slice(4)}`
-    return `发消息：${msg}`
+    return `发消息：${payload.message || ''}`
   }
   if (payload.kind === 'tool') {
     const input = payload.tool_input || {}
@@ -236,9 +240,8 @@ function statusClass(task) {
 function getDefaultTaskIcon(task) {
   const p = task.payload
   if (!p) return '⏰'
-  if (p.kind === 'message') {
-    return (p.message || '').startsWith('提醒我：') ? '🔔' : '📤'
-  }
+  if (p.kind === 'reminder') return '🔔'
+  if (p.kind === 'message') return '📤'
   if (p.kind === 'tool') return '⚡'
   return '⏰'
 }

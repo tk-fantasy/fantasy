@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -309,6 +309,128 @@ class TestSchedulerExecution:
         await svc._execute_task(task)
         assert task["enabled"] is False
         assert task["next_run_at"] is None
+        assert task["last_status"] == "success"
+
+
+# ---------------------------------------------------------------------------
+# reminder per-user 化 + 会话隔离
+# ---------------------------------------------------------------------------
+
+class TestReminderPerUser:
+    """reminder 链路 per-user 化：按 task.user_id 解析 chat key，无配置回退全局。"""
+
+    @pytest.mark.asyncio
+    async def test_reminder_uses_per_user_chat_key_when_configured(self):
+        """有 user_id 且用户有 per-user chat key → 构造 per-user LlmChatClient，不调全局。"""
+        from app.services.session_store import SessionState
+        svc, db, _, _, session_store = _make_service()
+        session = SessionState(session_id="sess-1", request_id="r1")
+        session_store.get_or_create = AsyncMock(return_value=session)
+        session_store.store_session = AsyncMock()
+
+        per_user_key = {
+            "api_key": "per-user-secret",
+            "base_url": "https://per-user.example.com/v1",
+            "model": "per-user-model",
+        }
+
+        task = await svc.add_task({
+            "name": "提醒",
+            "schedule": {"kind": "every", "every_seconds": 60},
+            "payload": {"kind": "reminder", "intent": "下班", "original": "提醒下班"},
+            "user_id": "u-per-user",
+        })
+
+        with patch("app.core.key_resolver.resolve_key_for_role_user",
+                   new=AsyncMock(return_value=per_user_key)):
+            with patch("app.clients.llm_chat_client.LlmChatClient") as MockClient:
+                mock_instance = MagicMock()
+                mock_instance.chat = AsyncMock(return_value="该下班啦～")
+                MockClient.return_value = mock_instance
+
+                await svc._execute_task(task)
+
+        # per-user client 被构造（role=chat）
+        MockClient.assert_called_with(role="chat")
+        # per-user client 的 chat 被调，全局 _llm_chat_client 不该被调
+        mock_instance.chat.assert_awaited_once()
+        svc._llm_chat_client.chat.assert_not_awaited()
+        # per-user key 覆盖了私有字段
+        assert mock_instance._api_key == "per-user-secret"
+        assert mock_instance._base_url == "https://per-user.example.com/v1"
+        assert mock_instance._model == "per-user-model"
+        assert mock_instance._enabled is True  # 关键坑：_enabled 必须覆盖
+        assert task["last_status"] == "success"
+
+    @pytest.mark.asyncio
+    async def test_reminder_falls_back_to_global_when_no_per_user_key(self):
+        """有 user_id 但用户无 per-user chat key → 回退全局 _llm_chat_client。"""
+        from app.services.session_store import SessionState
+        svc, db, _, _, session_store = _make_service()
+        session = SessionState(session_id="sess-1", request_id="r1")
+        session_store.get_or_create = AsyncMock(return_value=session)
+        session_store.store_session = AsyncMock()
+
+        task = await svc.add_task({
+            "name": "提醒",
+            "schedule": {"kind": "every", "every_seconds": 60},
+            "payload": {"kind": "reminder", "intent": "下班"},
+            "user_id": "u-no-config",
+        })
+
+        # resolve_key_for_role_user 返回 None（用户无配置）
+        with patch("app.core.key_resolver.resolve_key_for_role_user",
+                   new=AsyncMock(return_value=None)):
+            await svc._execute_task(task)
+
+        # 全局 client 被调
+        svc._llm_chat_client.chat.assert_awaited_once()
+        assert task["last_status"] == "success"
+
+    @pytest.mark.asyncio
+    async def test_reminder_no_user_id_uses_global(self):
+        """无 user_id（旧任务兜底）→ 直接走全局 _llm_chat_client。"""
+        from app.services.session_store import SessionState
+        svc, db, _, _, session_store = _make_service()
+        session = SessionState(session_id="sess-1", request_id="r1")
+        session_store.get_or_create = AsyncMock(return_value=session)
+        session_store.store_session = AsyncMock()
+
+        task = await svc.add_task({
+            "name": "提醒",
+            "schedule": {"kind": "every", "every_seconds": 60},
+            "payload": {"kind": "reminder", "intent": "下班"},
+            # 故意不设 user_id
+        })
+
+        await svc._execute_task(task)
+        svc._llm_chat_client.chat.assert_awaited_once()
+        assert task["last_status"] == "success"
+
+    @pytest.mark.asyncio
+    async def test_reminder_resolves_session_with_user_id(self):
+        """reminder 取会话时按 user_id 过滤（多用户隔离）。"""
+        from app.services.session_store import SessionState
+        svc, db, _, _, session_store = _make_service()
+        session = SessionState(session_id="sess-u1", request_id="r1")
+        session_store.get_or_create = AsyncMock(return_value=session)
+        session_store.store_session = AsyncMock()
+        # 覆盖 list_summaries 以检查 user_id 参数
+        session_store.list_summaries = AsyncMock(return_value=[{"id": "sess-u1"}])
+
+        task = await svc.add_task({
+            "name": "提醒",
+            "schedule": {"kind": "every", "every_seconds": 60},
+            "payload": {"kind": "reminder", "intent": "下班"},
+            "user_id": "u1",
+        })
+
+        with patch("app.core.key_resolver.resolve_key_for_role_user",
+                   new=AsyncMock(return_value=None)):
+            await svc._execute_task(task)
+
+        # list_summaries 必须带 user_id 参数
+        session_store.list_summaries.assert_awaited_once_with("u1")
         assert task["last_status"] == "success"
 
 
