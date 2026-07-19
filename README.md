@@ -74,6 +74,13 @@ docker compose ps                 # 四个容器都 Up 即可（aether, aether-h
 >
 > 仓库**不包含** HA 的运行时状态文件（onboarding/auth/entity_registry 等），每次 clone 都是干净的 HA，需走完上述 onboarding 才能使用。`ha_config/.storage/core.config` 保留默认地理位置/时区，`ha_config/mqtt/*.yaml` 是模拟器设备声明，由 HA 启动时自动加载。
 
+> **内置演示设备**：仓库自带 11 个虚拟设备（3 灯 / 1 空调 / 1 窗帘 / 1 风扇 / 1 加湿器 / 2 传感器 / 2 插座），声明在 `ha_config/mqtt/*.yaml`，由 `aether-simulator` 容器通过 MQTT 上报状态。目的是让没有真实智能家居设备的用户也能立刻体验完整的 AI 控制流程（聊天开灯、调空调等）。
+>
+> **接真实 HA 设备时如何处理演示设备**：
+> - 方式一（推荐）：在 HA UI「设置 → 设备与服务 → MQTT」里禁用对应实体，或直接删除 `ha_config/mqtt/*.yaml` 后重启 HA 容器
+> - 方式二：在 `docker-compose.yml` 注释掉 `simulator` 服务和 `aether` 的 `depends_on: simulator`，再 `docker compose up -d`
+> - 方式三：保留演示设备，Aether 会同时看到真实设备和演示设备，聊天时用设备名区分即可
+
 - 应用日志：`docker compose logs -f aether`
 - 停止：`docker compose down`（数据保留在 Docker volume 和 `logs/` 挂载目录）
 

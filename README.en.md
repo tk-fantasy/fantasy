@@ -74,6 +74,13 @@ Open `http://localhost:8010`. On first run you'll go through a setup wizard:
 >
 > The repo **does not ship** HA runtime state files (onboarding / auth / entity_registry etc.) — every clone starts with a clean HA that must go through the onboarding above. `ha_config/.storage/core.config` keeps default location/timezone, and `ha_config/mqtt/*.yaml` are simulator device declarations auto-loaded by HA on startup.
 
+> **Built-in demo devices**: the repo ships 11 virtual devices (3 lights / 1 AC / 1 curtain / 1 fan / 1 humidifier / 2 sensors / 2 plugs) declared in `ha_config/mqtt/*.yaml`, with state published by the `aether-simulator` container via MQTT. The goal is to let users without real smart-home hardware experience the full AI control flow (chat to turn on lights, adjust AC, etc.) out of the box.
+>
+> **How to handle demo devices when connecting your real HA**:
+> - Option 1 (recommended): disable the corresponding entities in HA UI (Settings → Devices & Services → MQTT), or delete `ha_config/mqtt/*.yaml` and restart the HA container.
+> - Option 2: comment out the `simulator` service and `aether`'s `depends_on: simulator` in `docker-compose.yml`, then `docker compose up -d`.
+> - Option 3: keep the demo devices — Aether will see both real and demo devices; refer to them by name in chat.
+
 - App logs: `docker compose logs -f aether`
 - Stop: `docker compose down` (data persists in Docker volumes and the mounted `logs/` directory)
 
