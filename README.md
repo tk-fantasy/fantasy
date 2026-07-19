@@ -62,7 +62,17 @@ docker compose ps                 # 四个容器都 Up 即可（aether, aether-h
 2. LLM 模型配置（对话/视觉/嵌入/摘要，至少配对话模型）
 3. Home Assistant 连接 —— 需要先到 `http://localhost:8123` 完成账号注册并创建长期访问令牌
 
-> **HA 首次初始化**：打开 `http://localhost:8123` → 创建管理员账号 → 登录后左下角头像 → 长期访问令牌 → 创建令牌 → 复制 JWT 粘贴到引导向导第 3 步
+> **HA 首次初始化**（新用户必读）：
+> 1. 打开 `http://localhost:8123` → 创建管理员账号（onboarding 流程，会要求填姓名/密码/位置）
+> 2. **配置 MQTT 集成**（让模拟器设备能上报到 HA）：
+>    ```bash
+>    docker exec aether-ha python /config/add_mqtt_config.py
+>    docker compose restart homeassistant
+>    ```
+>    脚本会自动创建指向 mosquitto 容器的 MQTT 集成（broker=`mqtt`、port=`1884`、user=`aether`）。也可在 HA UI 的「设置 → 设备与服务 → 添加集成 → MQTT」手动配置。
+> 3. 登录 HA 后左下角头像 → 长期访问令牌 → 创建令牌 → 复制 JWT 粘贴到引导向导第 3 步
+>
+> 仓库**不包含** HA 的运行时状态文件（onboarding/auth/entity_registry 等），每次 clone 都是干净的 HA，需走完上述 onboarding 才能使用。`ha_config/.storage/core.config` 保留默认地理位置/时区，`ha_config/mqtt/*.yaml` 是模拟器设备声明，由 HA 启动时自动加载。
 
 - 应用日志：`docker compose logs -f aether`
 - 停止：`docker compose down`（数据保留在 Docker volume 和 `logs/` 挂载目录）
@@ -151,7 +161,7 @@ app/
 ├── schema/              # 请求/响应 Schema
 └── data/                # SQLite 库、JWT 密钥、emoji 向量索引（运行时生成）
 frontend/                # Vue 3 + Vite 前端
-ha_config/               # Home Assistant 配置（挂载到 HA 容器 /config）
+ha_config/               # Home Assistant 配置（挂载到 HA 容器 /config；只跟踪配置模板，运行时状态由 HA 生成）
 mosquitto/               # Mosquitto MQTT 配置
 tests/                   # 后端 pytest（740+ 测试）
 frontend/tests/          # 前端 vitest

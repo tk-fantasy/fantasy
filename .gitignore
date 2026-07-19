@@ -33,14 +33,17 @@ ha_config/.ha_run.lock
 ha_config/.simulator.lock
 ha_config/secrets.yaml
 
-# HA .storage — 只保留核心配置文件，其余全部忽略
+# HA .storage — 只保留可复用的配置模板，运行时状态全部忽略。
+# 跟踪：core.config（地理位置/时区/语言，合理默认值）
+# 忽略：onboarding（首次注册标记）、auth（用户凭证）、core.config_entries
+#       （集成连接，含 MQTT broker）、core.entity_registry / core.device_registry
+#       （运行时生成的实体/设备映射）、lovelace_dashboards（仪表盘）等。
+# 这些是 HA 实例绑定的运行时状态，跨实例复制会导致：
+#   - onboarding 标记完成但无管理员账号（用户看到"欢迎回家"却无法登录）
+#   - MQTT broker 指向不存在的服务名
+#   - 实体 ID 冲突、JWT 密钥不匹配、长期令牌失效
 ha_config/.storage/*
 !ha_config/.storage/core.config
-!ha_config/.storage/core.config_entries
-!ha_config/.storage/core.device_registry
-!ha_config/.storage/core.entity_registry
-!ha_config/.storage/lovelace_dashboards
-!ha_config/.storage/onboarding
 
 # HA 品牌图标缓存（运行时下载，体积大）
 ha_config/.cache/
