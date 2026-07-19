@@ -155,7 +155,10 @@ async function submitLLMConfig() {
       }
     }
 
-    finishSetup()
+    // LLM 配置已保存，前进到 HA 配置步骤（不直接 finishSetup：
+    // 后端 setup_complete 要求 LLM + HA 都配好，直接跳 /chat 会被
+    // Loading 拦截回 /setup，导致 wizard 重挂载回步骤 1，用户以为数据丢了）
+    currentStep.value = 3
   } catch (e) {
     error.value = e.message
   } finally {
@@ -212,6 +215,29 @@ function nextStep() {
     submitHAConfig()
   }
 }
+
+// 挂载时查 setup status，已完成的步骤自动跳过。
+// 避免用户重填已保存的家庭信息/LLM key（重填 LLM key 会在 .env 和 llm_keys
+// 数组里产生重复条目，因为 _generate_key_id 每次生成新的随机 id）。
+onMounted(async () => {
+  try {
+    const res = await fetch('/api/setup/status')
+    if (!res.ok) return
+    const json = await res.json()
+    const d = json.data || {}
+    // 三项都完成 → 不该停在 wizard，直接进系统
+    if (d.has_home_info && d.has_llm_key && d.ha_configured) {
+      router.replace('/chat')
+      return
+    }
+    // 跳到第一个未完成的步骤：家庭 → LLM → HA
+    if (d.has_home_info) {
+      currentStep.value = d.has_llm_key ? 3 : 2
+    }
+  } catch (e) {
+    // 查询失败不阻塞，留在步骤 1 让用户从头走
+  }
+})
 </script>
 
 <template>
@@ -347,7 +373,7 @@ function nextStep() {
           :disabled="loading || !canNext"
           @click="nextStep"
         >
-          {{ loading ? '处理中...' : (currentStep === 2 ? '完成配置' : '下一步') }}
+          {{ loading ? '处理中...' : (currentStep === 3 ? '完成配置' : '下一步') }}
         </button>
       </div>
     </div>
