@@ -16,6 +16,16 @@ services:
       - "1884:1884"
     volumes:
       - ./mosquitto/config:/mosquitto/config
+      - ./mosquitto/init.sh:/mosquitto/init.sh:ro
+    # entrypoint：首次启动自动生成 passwd（passwd 被 .gitignore 排除，
+    # 新用户 clone 后没有，mosquitto 会启动失败）
+    entrypoint: ["/bin/sh", "/mosquitto/init.sh"]
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_sub -h 127.0.0.1 -p 1884 -u aether -P aether -t '__healthcheck__' -C 1 -W 3 || exit 0"]
+      interval: 5s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
     restart: "no"
 
   homeassistant:
@@ -27,6 +37,9 @@ services:
       - ./ha_config:/config
     environment:
       TZ: Asia/Shanghai
+    depends_on:
+      mqtt:
+        condition: service_healthy
     restart: "no"
 
   aether:
@@ -51,9 +64,12 @@ services:
       # 语义图构建产物
       - ./app/sg/output:/aether/app/sg/output
     depends_on:
-      - mqtt
-      - homeassistant
-      - simulator
+      mqtt:
+        condition: service_healthy
+      homeassistant:
+        condition: service_started
+      simulator:
+        condition: service_started
     restart: "no"
 
   simulator:
@@ -65,7 +81,8 @@ services:
     volumes:
       - ./ha_config/ha_simulator.py:/sim/ha_simulator.py:ro
     depends_on:
-      - mqtt
+      mqtt:
+        condition: service_healthy
     restart: "no"
 
 volumes:
