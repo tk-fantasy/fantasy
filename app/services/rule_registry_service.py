@@ -29,6 +29,7 @@ class AutomationRule:
     action_descriptions: list[str] = field(default_factory=list)  # 动作的人类可读描述
     cooldown_seconds: int = 10                           # 防重复触发冷却
     last_triggered_at: float = 0.0                       # 上次触发时间(秒级)
+    user_id: str = ""                                    # 创建者，用于 per-user LLM key 解析；空表示老规则回退全局
 
     def to_dict(self) -> dict:
         return {
@@ -45,6 +46,7 @@ class AutomationRule:
             "last_triggered_at": self.last_triggered_at,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+            "user_id": self.user_id,
         }
 
 
@@ -81,6 +83,7 @@ class RuleRegistryService:
                             action_descriptions=item.get("action_descriptions", []),
                             cooldown_seconds=int(item.get("cooldown_seconds", 10)),
                             last_triggered_at=float(item.get("last_triggered_at", 0.0)),
+                            user_id=str(item.get("user_id", "")),
                         )
                     )
             logger.info("Loaded %d rules from database", len(rules_data))
@@ -108,7 +111,7 @@ class RuleRegistryService:
         """异步插入新规则到 SQLite。"""
         try:
             db = Database.get()
-            self._spawn_task(db.rules_insert(rule.id, rule.to_dict()))
+            self._spawn_task(db.rules_insert(rule.id, rule.to_dict(), rule.user_id))
         except RuntimeError:
             pass
 
@@ -126,7 +129,7 @@ class RuleRegistryService:
         if not task.cancelled() and task.exception() is not None:
             logger.error("Background DB task failed: %s", task.exception(), exc_info=task.exception())
 
-    def add_rule(self, rule: dict) -> dict:
+    def add_rule(self, rule: dict, user_id: str = "") -> dict:
         now = int(time.time() * 1000)
         normalized = AutomationRule(
             id=str(rule.get("id") or uuid.uuid4()),
@@ -142,6 +145,7 @@ class RuleRegistryService:
             action_descriptions=rule.get("action_descriptions", []),
             cooldown_seconds=int(rule.get("cooldown_seconds", 10)),
             last_triggered_at=0.0,
+            user_id=str(user_id or rule.get("user_id", "")),
         )
         with self._lock:
             self._rules.append(normalized)
