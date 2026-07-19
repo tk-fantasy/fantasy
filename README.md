@@ -1,5 +1,7 @@
 # Aether
 
+[English](README.en.md) | [中文](README.md)
+
 > 一个接入了大模型（LLM）的智能家居 AI 管家：用自然语言控制设备、视觉感知环境、定时自动化、语义知识图谱检索，前端是 Vue 3 单页应用，后端是 FastAPI。
 
 ## 它能做什么
@@ -151,7 +153,7 @@ app/
 frontend/                # Vue 3 + Vite 前端
 ha_config/               # Home Assistant 配置（挂载到 HA 容器 /config）
 mosquitto/               # Mosquitto MQTT 配置
-tests/                   # 后端 pytest（66+ 测试）
+tests/                   # 后端 pytest（740+ 测试）
 frontend/tests/          # 前端 vitest
 docs/                    # 用户层 + 技术层文档（按功能分类）
 ```
