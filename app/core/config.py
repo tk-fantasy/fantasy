@@ -140,7 +140,14 @@ def _safe_backup_config() -> None:
 
 
 def update_config_section(section: str, values: dict[str, Any]) -> dict[str, Any]:
-    """运行时更新某个配置段:写入 config.json 并同步内存 CONFIG。"""
+    """运行时更新某个配置段:写入 config.json 并同步内存 CONFIG。
+
+    注意：环境变量覆盖（HA_URL / HA_TOKEN / LLM_* 等）只在启动时跑一次
+    （_load_env_override）。本函数把用户填的值合并进内存 CONFIG 后，会
+    冲掉启动时的环境变量覆盖。为此调用后重新应用一次环境变量覆盖，保证
+    内存 CONFIG 始终以环境变量为准（Docker 部署下 HA_URL 指向 compose
+    服务名，用户在 UI 填的 localhost 不该覆盖它）。
+    """
     global CONFIG
     values = dict(values)
 
@@ -157,6 +164,8 @@ def update_config_section(section: str, values: dict[str, Any]) -> dict[str, Any
             json.dumps(file_config, ensure_ascii=False, indent=2) + "\n",
         )
         CONFIG = _deep_merge(CONFIG, {section: values})
+        # 重新应用环境变量覆盖，防止用户填的值冲掉 HA_URL 等启动时覆盖
+        CONFIG = _deep_merge(CONFIG, _load_env_override())
     return file_config[section]
 
 
