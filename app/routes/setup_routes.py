@@ -148,12 +148,19 @@ async def setup_ha(
     if not url or not ha_token:
         return ApiResponse(code="invalid_input", message="URL 和 Token 不能为空", data=None)
 
-    # 写入 config.json 并同步内存
+    # 写入 config.json 并同步内存（写用户填的原始 url，保留意图：
+    # 非 Docker 环境下用户填的 localhost 是对的，不该被环境变量改写）
     update_config_section("ha", {"url": url, "token": ha_token})
+
+    # 测试连接：Docker 部署下 HA_URL 环境变量（compose 服务名 http://homeassistant:8123）
+    # 优先于用户填的 url —— 容器内 localhost 不通宿主，用户填 localhost 会连不上。
+    # 非 Docker 环境没设 HA_URL，回退到用户填的 url。
+    import os
+    effective_url = (os.getenv("HA_URL") or url).strip().rstrip("/")
 
     # 重建 ha_client 连接并测试
     ha_client = container.ha_client
-    ha_client._base_url = url.rstrip("/")
+    ha_client._base_url = effective_url
     ha_client._token = ha_token
 
     ha_connected = False
@@ -163,10 +170,11 @@ async def setup_ha(
         entity_count = len(states)
         ha_connected = entity_count > 0
     except Exception as e:
-        logger.warning("HA connection test failed: %s", e)
+        logger.warning("HA connection test failed (effective_url=%s): %s", effective_url, e)
 
     return ApiResponse(data={
         "ha_connected": ha_connected,
         "entity_count": entity_count,
-        "url": url,
+        "url": effective_url,
+        "url_overridden_by_env": effective_url != url.rstrip("/"),
     })
