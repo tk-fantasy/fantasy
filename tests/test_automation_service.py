@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import time
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -205,3 +205,138 @@ class TestBuildConditionContext:
             result = await svc._build_condition_context()
             assert "天气" not in result
             assert svc._weather_cache is None
+
+
+# ---------------------------------------------------------------------------
+# context-only 路径 per-user 化：按 rule.user_id 解析 chat key，老规则回退全局
+# ---------------------------------------------------------------------------
+
+class TestAutomationEvaluatePerUser:
+    """automation_service.evaluate 的 context-only 路径 per-user 化测试。
+
+    与 scheduler_service.TestReminderPerUser 同一模式：
+    - 规则带 user_id + 用户有 per-user chat key → 构造 per-user LlmChatClient
+    - 规则带 user_id + 用户无配置 → 回退全局 self._chat_client
+    - 规则无 user_id（老规则）→ 直接走全局，resolve 不被调
+    - vision 路径不受 per-user 影响（用 vision_service，不调 chat client）
+    """
+
+    def _make_svc_with_global_chat(self, registry):
+        """构造 AutomationService，全局 chat client 预置为 mock（lazy init 不触发）。"""
+        svc = AutomationService(registry)
+        # 预置全局 chat client，避免 lazy init 走真实 LlmChatClient 构造
+        global_chat = MagicMock()
+        global_chat.chat = AsyncMock(return_value="1")
+        svc._chat_client = global_chat
+        return svc, global_chat
+
+    @pytest.mark.asyncio
+    async def test_context_only_uses_per_user_chat_key(self):
+        """规则带 user_id + 用户有 per-user chat key → 构造 per-user client，全局不被调。"""
+        registry = MagicMock()
+        registry.list_rules.return_value = [
+            {
+                "id": "r1", "name": "晚上关灯", "condition": "晚上10点后",
+                "actions": [], "enabled": True, "cooldown_seconds": 0,
+                "last_triggered_at": 0, "user_id": "u-per-user",
+            }
+        ]
+        svc, global_chat = self._make_svc_with_global_chat(registry)
+
+        per_user_key = {
+            "api_key": "per-user-secret",
+            "base_url": "https://per-user.example.com/v1",
+            "model": "per-user-model",
+        }
+
+        with patch("app.core.key_resolver.resolve_key_for_role_user",
+                   new=AsyncMock(return_value=per_user_key)):
+            with patch("app.clients.llm_chat_client.LlmChatClient") as MockClient:
+                mock_instance = MagicMock()
+                mock_instance.chat = AsyncMock(return_value="1")
+                MockClient.return_value = mock_instance
+
+                # patch _build_condition_context 避免触发外部时间/天气调用
+                with patch.object(svc, "_build_condition_context", AsyncMock(return_value="时间:23:00")):
+                    await svc.evaluate(frames=None)
+
+        MockClient.assert_called_with(role="chat")
+        mock_instance.chat.assert_awaited()
+        global_chat.chat.assert_not_awaited()
+        # per-user key 覆盖了私有字段
+        assert mock_instance._api_key == "per-user-secret"
+        assert mock_instance._base_url == "https://per-user.example.com/v1"
+        assert mock_instance._model == "per-user-model"
+        assert mock_instance._enabled is True
+
+    @pytest.mark.asyncio
+    async def test_context_only_falls_back_to_global_when_no_per_user_key(self):
+        """规则带 user_id 但用户无 per-user chat key → 回退全局 self._chat_client。"""
+        registry = MagicMock()
+        registry.list_rules.return_value = [
+            {
+                "id": "r1", "name": "晚上关灯", "condition": "晚上10点后",
+                "actions": [], "enabled": True, "cooldown_seconds": 0,
+                "last_triggered_at": 0, "user_id": "u-no-config",
+            }
+        ]
+        svc, global_chat = self._make_svc_with_global_chat(registry)
+
+        with patch("app.core.key_resolver.resolve_key_for_role_user",
+                   new=AsyncMock(return_value=None)):
+            with patch.object(svc, "_build_condition_context", AsyncMock(return_value="时间:23:00")):
+                await svc.evaluate(frames=None)
+
+        global_chat.chat.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_context_only_rule_without_user_id_uses_global(self):
+        """老规则 user_id='' → 直接走全局 self._chat_client，resolve 不被调。"""
+        registry = MagicMock()
+        registry.list_rules.return_value = [
+            {
+                "id": "r1", "name": "晚上关灯", "condition": "晚上10点后",
+                "actions": [], "enabled": True, "cooldown_seconds": 0,
+                "last_triggered_at": 0,  # 故意不设 user_id
+            }
+        ]
+        svc, global_chat = self._make_svc_with_global_chat(registry)
+
+        with patch("app.core.key_resolver.resolve_key_for_role_user",
+                   new=AsyncMock(return_value=None)) as mock_resolve:
+            with patch.object(svc, "_build_condition_context", AsyncMock(return_value="时间:23:00")):
+                await svc.evaluate(frames=None)
+
+        mock_resolve.assert_not_awaited()
+        global_chat.chat.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_vision_path_not_affected_by_per_user(self):
+        """有 frames 时走 vision_service，不调 chat client（vision 路径不 per-user）。"""
+        registry = MagicMock()
+        registry.list_rules.return_value = [
+            {
+                "id": "r1", "name": "有人开灯", "condition": "桌上有鼠标",
+                "actions": [], "enabled": True, "cooldown_seconds": 0,
+                "last_triggered_at": 0, "user_id": "u-per-user",
+            }
+        ]
+        vision = MagicMock()
+        vision.encode_frames_b64 = AsyncMock(return_value="base64data")
+        vision.evaluate_condition = AsyncMock(return_value=0)  # 不触发动作
+        svc = AutomationService(registry, vision_service=vision)
+        # 预置全局 chat client（vision 路径不该调它）
+        global_chat = MagicMock()
+        global_chat.chat = AsyncMock(return_value="1")
+        svc._chat_client = global_chat
+
+        with patch("app.core.key_resolver.resolve_key_for_role_user",
+                   new=AsyncMock(return_value=None)) as mock_resolve:
+            with patch.object(svc, "_build_condition_context", AsyncMock(return_value="时间:23:00")):
+                await svc.evaluate(frames=[[1, 2, 3]])
+
+        # vision 路径走 vision_service，不调 chat client，不调 resolve
+        vision.evaluate_condition.assert_awaited()
+        global_chat.chat.assert_not_awaited()
+        mock_resolve.assert_not_awaited()
+

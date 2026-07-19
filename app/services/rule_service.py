@@ -48,6 +48,29 @@ class RuleService:
         """注入 HA 完整设备数据提供者，用于校验动作参数。"""
         self._ha_devices_provider = provider
 
+    async def _resolve_client(self, user_id: str = "") -> LlmChatClient:
+        """按 user_id 解析 per-user chat client；无配置则回退全局 self._client。
+
+        与 scheduler_service._resolve_reminder_client 同一模式：
+        resolve_key_for_role_user 拿到 per-user key → 构造独立 LlmChatClient，
+        覆盖 _api_key/_base_url/_model/_enabled=True（关键：_enabled=True 绕过全局 llm.enabled 开关）。
+        """
+        if user_id:
+            try:
+                from ..core.key_resolver import resolve_key_for_role_user
+                from ..clients.llm_chat_client import LlmChatClient as _LlmChatClient
+                key_info = await resolve_key_for_role_user("chat", user_id)
+                if key_info and key_info.get("api_key"):
+                    client = _LlmChatClient(role="chat")
+                    client._api_key = key_info["api_key"]
+                    client._base_url = key_info["base_url"]
+                    client._model = key_info["model"]
+                    client._enabled = True
+                    return client
+            except Exception:
+                logger.debug("Failed to resolve per-user rule client, using global", exc_info=True)
+        return self._client
+
     def _parse_ha_catalog(self, catalog: str) -> list[dict]:
         """从 catalog 字符串解析出设备列表 [{entity_id, name, domain}]"""
         devices = []
@@ -138,8 +161,11 @@ class RuleService:
         
         return errors
 
-    async def build_rule(self, text: str) -> dict:
-        if not self._client.enabled:
+    async def build_rule(self, text: str, user_id: str = "") -> dict:
+        # 先按 user_id 解析 per-user client（无配置回退全局 self._client），
+        # 再检查 enabled —— per-user client 解析成功时 _enabled=True，可绕过全局占位符 key 的禁用态
+        client = await self._resolve_client(user_id)
+        if not client.enabled:
             return self._fallback_rule(text)
 
         # 获取 HA 设备目录（用于 prompt）
@@ -217,7 +243,7 @@ class RuleService:
 
         # 重试循环
         for attempt in range(MAX_RETRIES + 1):
-            content = await self._client.chat(messages, 20)
+            content = await client.chat(messages, 20)
             parsed = self._parse_json(content)
             if not parsed:
                 if attempt < MAX_RETRIES:

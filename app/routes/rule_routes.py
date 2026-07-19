@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends
 
 from ..container import AppContainer, get_container
 from ..core.api_models import ApiResponse
+from ..core.auth import get_current_user
 from ..core.exceptions import AppException
 from ..schema.api_schemas import RuleCreateRequest, RulePayloadRequest, RuleEnabledRequest
 
@@ -19,9 +20,11 @@ router = APIRouter()
 async def build_rule(
     payload: RuleCreateRequest,
     container: AppContainer = Depends(get_container),
+    current_user: dict = Depends(get_current_user),
 ) -> ApiResponse[dict]:
+    user_id = current_user.get("user_id", "")
     text = payload.text
-    rule = await container.rule_service.build_rule(text)
+    rule = await container.rule_service.build_rule(text, user_id=user_id)
     condition = str(rule.get("condition", "")).strip()
     if not condition:
         return ApiResponse(
@@ -29,7 +32,7 @@ async def build_rule(
             message="无法从输入中解析出有效的视觉条件",
             data=None,
         )
-    stored = container.rule_registry_service.add_rule(rule)
+    stored = container.rule_registry_service.add_rule(rule, user_id=user_id)
     return ApiResponse(data=stored)
 
 
@@ -42,6 +45,7 @@ async def list_rules(container: AppContainer = Depends(get_container)) -> ApiRes
 async def create_rule(
     payload: RulePayloadRequest,
     container: AppContainer = Depends(get_container),
+    current_user: dict = Depends(get_current_user),
 ) -> ApiResponse[dict]:
     condition = payload.condition.strip()
     if not condition:
@@ -53,7 +57,7 @@ async def create_rule(
     rule_dict = payload.model_dump()
     rule_dict.setdefault("enabled", True)
     rule_dict.setdefault("cooldown_seconds", 10)
-    return ApiResponse(data=container.rule_registry_service.add_rule(rule_dict))
+    return ApiResponse(data=container.rule_registry_service.add_rule(rule_dict, user_id=current_user.get("user_id", "")))
 
 
 @router.post("/rules/{rule_id}/enabled")

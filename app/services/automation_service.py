@@ -79,8 +79,13 @@ class AutomationService:
 
         if use_context_only:
             # 纯上下文评估：用 chat LLM 根据时间+天气判断条件（并发评估所有规则）
+            # 每条规则按其 user_id 解析 per-user chat client（老规则 user_id='' 回退全局）
             eval_tasks = [
-                self._evaluate_context_only(str(rule.get("condition", "")), context_info)
+                self._evaluate_context_only(
+                    str(rule.get("condition", "")),
+                    context_info,
+                    str(rule.get("user_id", "")),
+                )
                 for rule in vision_rules
             ]
             try:
@@ -213,12 +218,40 @@ class AutomationService:
         logger.info("Action succeeded: %s", resolved)
         return {"tool": resolved, "result": result}
 
-    async def _evaluate_context_only(self, condition: str, context: str) -> int:
-        """用 chat LLM 根据时间+天气上下文判断条件是否成立。返回 0/1。"""
+    async def _resolve_chat_client(self, user_id: str = ""):
+        """按 user_id 解析 per-user chat client；无配置或 user_id 为空则回退全局 self._chat_client。
+
+        与 scheduler_service._resolve_reminder_client 同一模式：
+        resolve_key_for_role_user 拿到 per-user key → 构造独立 LlmChatClient，
+        覆盖 _api_key/_base_url/_model/_enabled=True（绕过全局 llm.enabled 占位符禁用态）。
+        老规则 user_id='' 直接走全局，保持原行为。
+        """
+        if user_id:
+            try:
+                from ..core.key_resolver import resolve_key_for_role_user
+                key_info = await resolve_key_for_role_user("chat", user_id)
+                if key_info and key_info.get("api_key"):
+                    from ..clients.llm_chat_client import LlmChatClient
+                    client = LlmChatClient(role="chat")
+                    client._api_key = key_info["api_key"]
+                    client._base_url = key_info["base_url"]
+                    client._model = key_info["model"]
+                    client._enabled = True
+                    return client
+            except Exception:
+                logger.debug("Failed to resolve per-user automation chat client, using global", exc_info=True)
+        # 回退全局：lazy init 一次，后续复用
         if self._chat_client is None:
             from ..clients.llm_chat_client import LlmChatClient
             self._chat_client = LlmChatClient(role="chat")
-        client = self._chat_client
+        return self._chat_client
+
+    async def _evaluate_context_only(self, condition: str, context: str, user_id: str = "") -> int:
+        """用 chat LLM 根据时间+天气上下文判断条件是否成立。返回 0/1。
+
+        user_id 非空时尝试用 per-user chat key；空（老规则）或解析失败时回退全局。
+        """
+        client = await self._resolve_chat_client(user_id)
         prompt = (
             f"当前环境信息：\n{context}\n\n"
             f"请判断以下条件是否成立，只回复 1（成立）或 0（不成立）：\n{condition}"
