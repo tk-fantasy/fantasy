@@ -40,6 +40,8 @@ const llmForms = ref({
 const activeRole = ref('chat')
 
 // Step 3: Home Assistant
+// 默认 localhost（本地开发场景）；Docker 部署时后端会用 HA_URL 环境变量覆盖，
+// 用户填什么都不影响实际连接，所以保留 localhost 作为最直观的默认值。
 const haForm = ref({
   url: 'http://localhost:8123',
   token: '',
@@ -192,7 +194,13 @@ async function submitHAConfig() {
     if (json.data.ha_connected) {
       finishSetup()
     } else {
-      error.value = `配置已保存，但 HA 连接失败（${json.data.entity_count || 0} 个实体）。请检查 URL 和 Token 是否正确。`
+      // Docker 环境下后端会用 HA_URL 环境变量覆盖用户填的 url，
+      // 这里把实际用的 url 显示出来，避免用户困惑"我填的 localhost 怎么变成 homeassistant"
+      const effectiveUrl = json.data.url || haForm.value.url
+      const overridden = json.data.url_overridden_by_env
+      error.value = `配置已保存，但 HA 连接失败（${json.data.entity_count || 0} 个实体）。` +
+        (overridden ? `后端已用 HA_URL 环境变量覆盖为 ${effectiveUrl}，仍连不上。` : `实际访问地址：${effectiveUrl}。`) +
+        ' 请检查 Token 是否正确、HA 服务是否已启动。'
     }
   } catch (e) {
     error.value = e.message
@@ -342,7 +350,7 @@ onMounted(async () => {
           <div class="form-group">
             <label>HA 地址</label>
             <input v-model="haForm.url" type="text" placeholder="http://localhost:8123" />
-            <p class="form-hint">Docker 部署通常填 http://localhost:8123</p>
+            <p class="form-hint">本地开发填 <code>http://localhost:8123</code>；Docker 部署下后端会用 <code>HA_URL</code> 环境变量自动覆盖，填什么都能连。</p>
           </div>
 
           <div class="form-group">
