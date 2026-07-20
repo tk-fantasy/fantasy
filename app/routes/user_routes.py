@@ -12,6 +12,7 @@ from ..core.auth import get_current_user, create_access_token, create_refresh_to
 from ..core.config import get_config, update_memory_config, write_secrets
 from ..core.database import Database
 from ..core.exceptions import AppException
+from ..core.roles import PER_USER_ROLES
 from ..schema.api_schemas import UserLLMKeysRequest, UserProvidersRequest, UserSwitchRequest
 
 logger = logging.getLogger(__name__)
@@ -145,10 +146,16 @@ async def save_user_llm_keys(
 
     keys = payload.keys
 
-    # 保存到 DB
-    await db.user_setting_set(user["id"], "llm_keys", json.dumps(keys, ensure_ascii=False))
+    # per-user DB 仅存 PER_USER_ROLES（chat/summary/stt）；
+    # vision/embed 全局共享，不进用户 DB（否则全局 .env 丢失后运行时
+    # 无法回退，RAG/语义图/emoji 全部 401）。update_memory_config /
+    # write_secrets 仍用完整 keys，保持全局 CONFIG 的 embed/vision 不被冲掉。
+    per_user_keys = [k for k in keys if k.get("type") in PER_USER_ROLES]
 
-    # 如果是当前用户，同时更新内存配置（不写 config.json）
+    # 保存到 DB（仅 per-user 角色）
+    await db.user_setting_set(user["id"], "llm_keys", json.dumps(per_user_keys, ensure_ascii=False))
+
+    # 如果是当前用户，同时更新内存配置（不写 config.json）—— 用完整 keys
     if user["id"] == current_user["user_id"]:
         update_memory_config("llm_keys", keys)
 
@@ -168,7 +175,7 @@ async def save_user_llm_keys(
         except Exception as e:
             logger.warning("Failed to reload LLM clients: %s", e)
 
-    return ApiResponse(data={"saved": True, "count": len(keys)})
+    return ApiResponse(data={"saved": True, "count": len(per_user_keys)})
 
 
 @router.get("/users/{username}/providers")

@@ -16,6 +16,9 @@ from ..core.config import get_config
 logger = logging.getLogger(__name__)
 
 DEFAULT_INDEX_PATH = Path(__file__).resolve().parent.parent / "data" / "emoji_index.json"
+# 首次创建用种子：rebuild_index 在 emoji_index.json 不存在时从此加载
+# char/code/name 元数据（不含向量），再逐个 embed 生成完整索引。
+SEED_PATH = Path(__file__).resolve().parent.parent / "data" / "emoji_seed.json"
 
 
 class EmojiService:
@@ -164,9 +167,20 @@ class EmojiService:
             loop = asyncio.get_running_loop()
             existing = await loop.run_in_executor(None, self._load_file, path)
         except FileNotFoundError:
-            self._rebuild_message = f"索引文件不存在: {path}，无法获取 emoji 列表"
-            logger.error("Emoji rebuild aborted: %s not found", path)
-            return
+            # 首次创建：索引文件不存在时从内置种子加载 emoji 元数据（char/code/name），
+            # 再走下面的正常 embed 流程生成完整索引。
+            if not SEED_PATH.exists():
+                self._rebuild_message = f"索引与种子均不存在: {path}，无法获取 emoji 列表"
+                logger.error("Emoji rebuild aborted: neither index nor seed found")
+                return
+            try:
+                loop = asyncio.get_running_loop()
+                existing = await loop.run_in_executor(None, self._load_file, SEED_PATH)
+                logger.info("Emoji seed loaded: %d emojis (first-time build)", len(existing))
+            except Exception:
+                self._rebuild_message = f"种子数据读取失败: {SEED_PATH}"
+                logger.exception("Emoji rebuild aborted: seed load failed")
+                return
 
         self._rebuild_running = True
         self._rebuild_total = len(existing)

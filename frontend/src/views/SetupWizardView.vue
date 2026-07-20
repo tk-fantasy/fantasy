@@ -129,7 +129,11 @@ async function submitLLMConfig() {
         const result = await testRes.json()
         // 获取刚创建的 key
         const newKey = result.data?.find(k => k.type === role.key)
-        if (newKey) {
+        // 仅 per-user 角色（chat/summary/stt）需同步到用户 DB；
+        // vision/embed 全局共享，已由上面的 POST /api/llm_keys 存入全局，
+        // 不进 per-user 保存（否则全局 .env 丢失后运行时无法回退）。
+        const PER_USER_ROLES = ['chat', 'summary', 'stt']
+        if (newKey && PER_USER_ROLES.includes(role.key)) {
           keysToSave.push({
             id: newKey.id,
             base_url: form.base_url,
