@@ -332,6 +332,25 @@ async def lifespan(_: FastAPI):
     except Exception as e:
         logger.warning("Failed to load global LLM keys: %s", e)
 
+    # 启动自愈：全局 llm_keys 非空但某些角色 key 无效（空/占位符）时，
+    # 从 per-user DB 找第一个有该角色有效明文 api_key 的用户条目恢复。
+    # 场景：wizard 把 embed/vision key 同时写进全局 .env（env 引用）和
+    # per-user DB（明文）；容器重建后 .env 丢失/占位符 → 全局解析为空，
+    # 但 per-user DB 的明文 key 还在。此处一次性恢复，避免 RAG/语义图/emoji 401。
+    try:
+        from .core.key_healing import heal_global_keys_from_user_db
+        healed = await heal_global_keys_from_user_db()
+        if healed:
+            # 自愈改了内存 CONFIG + env，但 LLM client 实例在自愈前已创建
+            # （bootstrap.py 模块级），_api_key 还是占位符。reload 让它们重读。
+            try:
+                _container.reload_all_clients()
+                logger.info("Reloaded LLM clients after healing %d keys", len(healed))
+            except Exception as e:
+                logger.warning("Failed to reload clients after key healing: %s", e)
+    except Exception as e:
+        logger.warning("Failed to heal global LLM keys from user DB: %s", e)
+
     # 加载视觉关注指令（支持新多条格式 + 旧单条迁移）
     db = Database.get()
     saved_focuses = await db.kv_get("vision_focuses")
