@@ -1,19 +1,90 @@
-# Aether
+<div align="center">
 
-[English](README.en.md) | [中文](README.md)
+# 🏠 Aether
 
-> 一个接入了大模型（LLM）的智能家居 AI 管家：用自然语言控制设备、视觉感知环境、定时自动化、语义知识图谱检索，前端是 Vue 3 单页应用，后端是 FastAPI。
+**接入大模型的智能家居 AI 管家**
 
-## 它能做什么
+用自然语言控制设备 · 视觉感知环境 · 定时自动化 · 语义知识图谱检索
 
-- **AI 对话控制设备** —— 对接 Home Assistant，自然语言开灯 / 调空调 / 拉窗帘，调用前先��� `verify_action` 只读校验
-- **摄像头视觉感知** —— RTSP / USB 接入，运动检测触发视觉推理，关注项可配置
-- **定时任务与自动化规则** —— 自然语言生成 cron 触发时间，任务名自动生成，规则引擎按条件联动设备
-- **语义知识图谱（RAG）** —— 文档向量化 + faiss 检索 + 实体共现构图，3D 可视化，embed 模型变更后自动检测 + 一键重建
-- **MCP 工具生态** —— 内置天气 / 网页搜索 / 设备控制工具，可接外部 MCP Server
-- **多用户 + JWT 鉴权** —— 每用户独立 LLM Key 管理，会话隔离，支持一键清空历史会话
+[English](README.en.md) | 中文
 
-## 架构与端口
+[![Docker](https://img.shields.io/badge/Docker-一键部署-2496ED?logo=docker&logoColor=white)](#快速开始docker推荐)
+[![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)](requirements.txt)
+[![Vue](https://img.shields.io/badge/Vue_3-前端-4FC08D?logo=vue.js&logoColor=white)](frontend)
+[![FastAPI](https://img.shields.io/badge/FastAPI-后端-009688?logo=fastapi&logoColor=white)](app)
+[![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
+
+<br/>
+
+<img src="docs/images/Home.png" alt="Aether 主界面 — AI 对话控制设备" width="720"/>
+
+</div>
+
+---
+
+## ✨ 界面一览
+
+<table>
+<tr>
+  <td align="center"><b>🏠 聊天主页</b></td>
+  <td align="center"><b>⚙️ 基础设置</b></td>
+</tr>
+<tr>
+  <td><img src="docs/images/Home.png" alt="聊天主页" width="400"/></td>
+  <td><img src="docs/images/Settings.png" alt="基础设置" width="400"/></td>
+</tr>
+<tr>
+  <td align="center"><b>🔧 高级设置</b></td>
+  <td align="center"><b>🤖 模型管理</b></td>
+</tr>
+<tr>
+  <td><img src="docs/images/advence.png" alt="高级设置" width="400"/></td>
+  <td><img src="docs/images/models.png" alt="模型管理" width="400"/></td>
+</tr>
+<tr>
+  <td align="center"><b>💡 设备控制</b></td>
+  <td align="center"><b>⏰ 定时任务</b></td>
+</tr>
+<tr>
+  <td><img src="docs/images/device.png" alt="设备控制" width="400"/></td>
+  <td><img src="docs/images/schedule.png" alt="定时任务" width="400"/></td>
+</tr>
+<tr>
+  <td align="center"><b>🔄 自动化规则</b></td>
+  <td align="center"><b>👁️ 视觉感知</b></td>
+</tr>
+<tr>
+  <td><img src="docs/images/auto_task.png" alt="自动化规则" width="400"/></td>
+  <td><img src="docs/images/vision.png" alt="视觉感知" width="400"/></td>
+</tr>
+<tr>
+  <td align="center"><b>🎯 关注项配置</b></td>
+  <td align="center"><b>🧠 语义图谱生成</b></td>
+</tr>
+<tr>
+  <td><img src="docs/images/focus.png" alt="关注项配置" width="400"/></td>
+  <td><img src="docs/images/sg_generate.png" alt="语义图谱生成" width="400"/></td>
+</tr>
+<tr>
+  <td colspan="2" align="center"><b>💬 对话生成效果</b></td>
+</tr>
+<tr>
+  <td colspan="2"><img src="docs/images/generate_show.png" alt="对话生成效果" width="400"/></td>
+</tr>
+</table>
+
+---
+
+## 🛠️ 它能做什么
+
+- **🧠 AI 对话控制设备** —— 对接 Home Assistant，自然语言开灯 / 调空调 / 拉窗帘，调用前先走 `verify_action` 只读校验
+- **👁️ 摄像头视觉感知** —— RTSP / USB 接入，运动检测触发视觉推理，关注项可配置
+- **⏰ 定时任务与自动化规则** —— 自然语言生成 cron 触发时间，任务名自动生成，规则引擎按条件联动设备
+- **📊 语义知识图谱（RAG）** —— 文档向量化 + faiss 检索 + 实体共现构图，3D 可视化，embed 模型变更后自动检测 + 一键重建
+- **🔌 MCP 工具生态** —— 内置天气 / 网页搜索 / 设备控制工具，可接外部 MCP Server
+- **👤 多用户 + JWT 鉴权** —— 每用户独立 LLM Key 管理，会话隔离，支持一键清空历史会话
+
+## 🏗️ 架构与端口
 
 | 服务 | 端口 | 说明 |
 |------|------|------|
@@ -36,7 +107,7 @@
                                                      └──────────────┘
 ```
 
-## 快速开始（Docker，推荐）
+## 🚀 快速开始（Docker，推荐）
 
 一条 `docker compose up` 起全部三个服务。前置准备：
 
@@ -86,7 +157,7 @@ docker compose ps                 # 四个容器都 Up 即可（aether, aether-h
 
 > **摄像头**：默认走 RTSP 网络流（`vision.rtsp_url`），容器无需特殊设备权限，只要摄像头 IP 在容器网络可达。若改用本地 USB 摄像头，需在 `aether` 服务加 `devices: ["/dev/video0:/dev/video0"]`（仅 Linux 主机）。
 
-## 本地开发（不走 Docker）
+## 💻 本地开发（不走 Docker）
 
 适合改代码时热重载。后端用 uvicorn，前端用 Vite 开发服务器：
 
@@ -109,7 +180,7 @@ npm run build
 
 > 生产部署用 Docker：`docker compose up -d`，然后浏览器访问 `http://localhost:8010`。停止用 `docker compose down`。
 
-## 从外面远程访问（Tailscale）
+## 🌐 从外面远程访问（Tailscale）
 
 Aether 默认只在家里局域网用。想在外面用手机访问，**不要做端口转发暴露公网**，用 Tailscale（基于 WireGuard 的点对点 VPN）更安全——只有你自己 Tailscale 网络里的设备能连进来。
 
@@ -131,7 +202,7 @@ New-NetFirewallRule -DisplayName "Aether Backend 8010 (Tailscale only)" `
 
 详细步骤、防火墙 profile 踩坑、故障排查见 [`docs/01-安装部署/Tailscale远程访问与防火墙配置.md`](docs/01-安装部署/Tailscale远程访问与防火墙配置.md)。后端 CORS 已预放行 Tailscale `100.64.0.0/10` 网段（`app/main.py` 的 `allow_origin_regex`）。
 
-## 配置文件
+## ⚙️ 配置文件
 
 | 文件 | 作用 | 是否进版本库 |
 |------|------|:---:|
@@ -151,7 +222,7 @@ New-NetFirewallRule -DisplayName "Aether Backend 8010 (Tailscale only)" `
 
 > LLM 密钥推荐用「高级」页面的 API Keys 卡片管理，会自动写入 `.env` 并持久化到数据库。
 
-## 项目结构
+## 📁 项目结构
 
 ```
 app/
@@ -175,7 +246,7 @@ frontend/tests/          # 前端 vitest
 docs/                    # 用户层 + 技术层文档（按功能分类）
 ```
 
-## 测试
+## 🧪 测试
 
 ```bash
 # 后端
@@ -187,7 +258,7 @@ pytest tests/test_dispatcher.py   # 单个模块
 cd frontend && npm test
 ```
 
-## 文档
+## 📚 文档
 
 详细文档在 `docs/` 下，按功能分类：
 
@@ -198,10 +269,10 @@ cd frontend && npm test
 - `docs/05-摄像头视觉/` —— 摄像头接入、关注项配置、运动检测
 - `docs/06-集成扩展/` —— Exa 搜索、MQTT 接入、外部 MCP
 - `docs/07-个性化/` —— Emoji 自定义、家庭信息与主题
-- `docs/08-运维排查/` —— API 鉴权、日志���查、健康检查
+- `docs/08-运维排查/` —— API 鉴权、日志排查、健康检查
 - `docs/tech/` —— 架构概述、API/MCP 参考、调度/自动化引擎、视觉子系统、配置参考
 
-## 界面导航
+## 🗺️ 界面导航
 
 侧边栏四个入口，其余功能通过斜杠命令到达：
 
@@ -211,3 +282,11 @@ cd frontend && npm test
 | **设置** | 家庭信息、地区、深色模式 |
 | **高级** | 系统级配置页面：天气 API、Exa 搜索、视觉参数、HA 连接、助手角色、API Keys（点击卡片弹出 modal 编辑），以及 Emoji 索引重建、文档向量重建 |
 | **监控** | 系统监控页面，也可在聊天输入 `/monitor` 跳转 |
+
+---
+
+<div align="center">
+
+**Built with ❤️ by [Aether Demo](https://github.com/Aether-Demo)**
+
+</div>
