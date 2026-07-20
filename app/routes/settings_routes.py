@@ -55,10 +55,9 @@ async def _sync_llm_keys_to_current_user(current_user: dict) -> None:
     写入 DB 时把实际 api_key 也存入 api_key 字段（从 env 读取），
     供 per-user 解析使用。明文 key 仅存于本地 SQLite，不会返回前端。
 
-    仅同步 PER_USER_ROLES（chat/summary/stt）：vision/embed 全局共享，
-    不进 per-user DB。否则 wizard 跑完后 embed key 会以明文冗余进
-    per-user DB，而全局 .env 丢失时运行时无法回退（embed_client 走
-    全局解析，不读 per-user），表现为 RAG/语义图/emoji 全部 401。
+    注：vision/embed 也会同步进 per-user DB 作为"全局 key 备份"——
+    全局 .env 丢失时，启动自愈逻辑（main.py）会从 per-user DB 恢复
+    全局 key。这是"将错就错"的容错策略，不再强制过滤。
     """
     try:
         import os
@@ -67,8 +66,6 @@ async def _sync_llm_keys_to_current_user(current_user: dict) -> None:
         from ..core.config import get_config
         db = Database.get()
         keys = copy.deepcopy(get_config("llm_keys", []))
-        # 仅保留 per-user 角色，剔除 vision/embed（全局共享，不该进用户 DB）
-        keys = [k for k in keys if k.get("type") in PER_USER_ROLES]
         for k in keys:
             env_name = k.get("api_key_env", "")
             if env_name and not k.get("api_key"):
