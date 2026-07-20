@@ -77,9 +77,10 @@ async def rebuild_emoji_index(
 ) -> ApiResponse[dict]:
     """触发 emoji 向量索引重建（后台异步执行）。
 
-    从现有索引文件读取 emoji 元数据（char/code/name），用 embed client
-    重新生成每个 emoji 的语义向量，写回文件后重新加载。
-    需要先在设置页配置 embed LLM Key。
+    索引文件存在时，从现有索引读取 emoji 元数据（char/code/name），
+    用 embed client 重新生成每个 emoji 的语义向量；
+    索引文件不存在时，从内置种子（app/data/emoji_seed.json）加载元数据，
+    首次创建完整索引。需先在设置页配置全局 embed LLM Key。
     """
     service = container.emoji_service
 
