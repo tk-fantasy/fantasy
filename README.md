@@ -297,6 +297,8 @@ pytest tests/test_dispatcher.py   # 单个模块
 cd frontend && npm test
 ```
 
+CI 通过 GitHub Actions 在每次 push 和 pull request 时自动运行 `pytest -m "not slow"`。
+
 ## 📚 文档
 
 详细文档在 `docs/` 下，按功能分类：
