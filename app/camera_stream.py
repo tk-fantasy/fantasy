@@ -477,11 +477,27 @@ class CameraStream:
         backend_name = "rtsp"
         safe_url = self._sanitize_url(url)
         logger.info("Opening network stream: %s", safe_url)
-        # 强制 RTSP 媒体流走 TCP。默认 UDP RTP 在 Docker 桥��网络下会被 NAT 丢弃，
+        # 强制 RTSP 媒体流走 TCP。默认 UDP RTP 在 Docker 桥接网络下会被 NAT 丢弃，
         # 表现为信令端口 554 通但 30s 拿不到一帧。TCP 牺牲少许延迟换可靠性，
         # 对视觉推理场景完全可接受。可通过 vision.rtsp_transport 改回 udp。
         transport = str(get_config("vision.rtsp_transport", "tcp")).strip().lower() or "tcp"
-        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = f"rtsp_transport;{transport}"
+        # 低延迟参数：RTSP over TCP 默认会用几 MB 的 socket 缓冲攒帧，cap.read()
+        # 拿到的是几秒前的旧帧 → 预览延迟 10-20s、视觉推理识别的是旧画面。
+        # 这些参数让 ffmpeg 尽量透传，不主动缓冲：
+        #   - buffer_size  : TCP 接收缓冲压到 256KB（默认几 MB），减少积压
+        #   - max_delay    : 解复用层最多等 100μs 重排，超时就交出当前帧
+        #   - fflags+nobuffer : 启动时不预填缓冲（默认预填 1-3 秒用于分析流格式）
+        #   -fflags+discardcorrupt : 偶发损坏帧直接丢弃，避免花屏污染推理
+        # CAP_PROP_BUFFERSIZE 对 RTSP/HTTP 无效（只管本地摄像头），所以必须走
+        # OPENCV_FFMPEG_CAPTURE_OPTIONS 这条路。规则引擎的 get_recent_frames(3)
+        # 取的是 _frame_buffer 里按 frame_interval_ms 存的帧，不受此影响反而更准。
+        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
+            f"rtsp_transport;{transport}"
+            f"|buffer_size;256k"
+            f"|max_delay;100000"
+            f"|fflags;nobuffer+discardcorrupt"
+            f"|flags;low_delay"
+        )
         cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
         if not cap.isOpened():
             cap.release()
