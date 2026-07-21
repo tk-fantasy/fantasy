@@ -161,67 +161,150 @@ async function loadAll() {
 // ===== 天气保存 =====
 const weatherSaving = ref(false)
 const weatherSaved = ref(false)
+// probe 结果：null | { status: 'success' | 'fail', reason?, detail? }
+const weatherProbeResult = ref(null)
 async function saveWeather() {
   weatherSaving.value = true
   weatherSaved.value = false
+  weatherProbeResult.value = null
   try {
-    await apiPost('/api/weather/config', weatherConfig.value)
+    const data = await apiPost('/api/weather/config', weatherConfig.value)
+    // 后端 probe 失败返回 200 + data.saved=false（不抛错），这里检查
+    if (data && data.saved === false) {
+      weatherProbeResult.value = { status: 'fail', reason: data.reason || 'error', detail: data.detail || '' }
+      return
+    }
     await loadAll()
     weatherSaved.value = true
     setTimeout(() => { weatherSaved.value = false }, 2000)
   } catch (e) {
+    // schema 格式错误走这里（422）
+    weatherProbeResult.value = { status: 'fail', reason: 'bad_format', detail: e?.message || String(e) }
     console.error('Failed to save weather config:', e)
   } finally {
     weatherSaving.value = false
   }
 }
 
+// ===== 天气测试连接 =====
+const weatherTesting = ref(false)
+async function testWeather() {
+  weatherTesting.value = true
+  weatherProbeResult.value = null
+  try {
+    const data = await apiPost('/api/weather/test', {})
+    if (data && data.connected) {
+      weatherProbeResult.value = { status: 'success' }
+    } else {
+      weatherProbeResult.value = { status: 'fail', reason: data?.reason || 'error', detail: data?.detail || '' }
+    }
+  } catch (e) {
+    weatherProbeResult.value = { status: 'fail', reason: 'error', detail: String(e) }
+  } finally {
+    weatherTesting.value = false
+  }
+}
+
 // ===== Exa 保存 =====
 const exaSaving = ref(false)
 const exaSaved = ref(false)
+const exaProbeResult = ref(null)
 async function saveExa() {
   exaSaving.value = true
   exaSaved.value = false
+  exaProbeResult.value = null
   try {
-    await apiPost('/api/advanced/config', { web_search: webSearchConfig.value })
+    const data = await apiPost('/api/advanced/config', { web_search: webSearchConfig.value })
+    if (data && data.saved === false) {
+      exaProbeResult.value = { status: 'fail', reason: data.reason || 'error', detail: data.detail || '' }
+      return
+    }
     await loadAll()
     exaSaved.value = true
     setTimeout(() => { exaSaved.value = false }, 2000)
   } catch (e) {
+    exaProbeResult.value = { status: 'fail', reason: 'bad_format', detail: e?.message || String(e) }
     console.error('Failed to save exa config:', e)
   } finally {
     exaSaving.value = false
   }
 }
 
+// ===== Exa 测试连接 =====
+const exaTesting = ref(false)
+async function testExa() {
+  exaTesting.value = true
+  exaProbeResult.value = null
+  try {
+    const data = await apiPost('/api/advanced/test/exa', {})
+    if (data && data.connected) {
+      exaProbeResult.value = { status: 'success' }
+    } else {
+      exaProbeResult.value = { status: 'fail', reason: data?.reason || 'error', detail: data?.detail || '' }
+    }
+  } catch (e) {
+    exaProbeResult.value = { status: 'fail', reason: 'error', detail: String(e) }
+  } finally {
+    exaTesting.value = false
+  }
+}
+
 // ===== 视觉保存 =====
 const visionSaving = ref(false)
 const visionSaved = ref(false)
+const visionProbeResult = ref(null)
 async function saveVision() {
   visionSaving.value = true
   visionSaved.value = false
+  visionProbeResult.value = null
   try {
-    await apiPost('/api/advanced/config', {
+    const data = await apiPost('/api/advanced/config', {
       vision: visionConfig.value,
       rtsp_password: rtspPassword.value,
     })
+    if (data && data.saved === false) {
+      visionProbeResult.value = { status: 'fail', reason: data.reason || 'error', detail: data.detail || '' }
+      return
+    }
     rtspPassword.value = ''
     await loadAll()
     visionSaved.value = true
     setTimeout(() => { visionSaved.value = false }, 2000)
   } catch (e) {
+    visionProbeResult.value = { status: 'fail', reason: 'bad_format', detail: e?.message || String(e) }
     console.error('Failed to save vision config:', e)
   } finally {
     visionSaving.value = false
   }
 }
 
+// ===== 视觉/RTSP 测试连接 =====
+const visionTesting = ref(false)
+async function testVision() {
+  visionTesting.value = true
+  visionProbeResult.value = null
+  try {
+    const data = await apiPost('/api/advanced/test/rtsp', {})
+    if (data && data.connected) {
+      visionProbeResult.value = { status: 'success' }
+    } else {
+      visionProbeResult.value = { status: 'fail', reason: data?.reason || 'error', detail: data?.detail || '' }
+    }
+  } catch (e) {
+    visionProbeResult.value = { status: 'fail', reason: 'error', detail: String(e) }
+  } finally {
+    visionTesting.value = false
+  }
+}
+
 // ===== PTZ 云台保存 =====
+const ptzProbeResult = ref(null)
 async function savePtz() {
   ptzSaving.value = true
   ptzSaved.value = false
+  ptzProbeResult.value = null
   try {
-    await apiPost('/api/ptz/config', {
+    const data = await apiPost('/api/ptz/config', {
       enabled: ptzConfig.value.enabled,
       ip: ptzConfig.value.ip,
       port: ptzConfig.value.port,
@@ -230,14 +313,38 @@ async function savePtz() {
       speed: ptzConfig.value.speed,
       step_ms: ptzConfig.value.step_ms,
     })
+    if (data && data.saved === false) {
+      ptzProbeResult.value = { status: 'fail', reason: data.reason || 'error', detail: data.detail || '' }
+      return
+    }
     ptzPassword.value = ''
     await loadAll()
     ptzSaved.value = true
     setTimeout(() => { ptzSaved.value = false }, 2000)
   } catch (e) {
+    ptzProbeResult.value = { status: 'fail', reason: 'bad_format', detail: e?.message || String(e) }
     console.error('Failed to save PTZ config:', e)
   } finally {
     ptzSaving.value = false
+  }
+}
+
+// ===== PTZ 测试连接 =====
+const ptzTesting = ref(false)
+async function testPtz() {
+  ptzTesting.value = true
+  ptzProbeResult.value = null
+  try {
+    const data = await apiPost('/api/ptz/test', {})
+    if (data && data.connected) {
+      ptzProbeResult.value = { status: 'success' }
+    } else {
+      ptzProbeResult.value = { status: 'fail', reason: data?.reason || 'error', detail: data?.detail || '' }
+    }
+  } catch (e) {
+    ptzProbeResult.value = { status: 'fail', reason: 'error', detail: String(e) }
+  } finally {
+    ptzTesting.value = false
   }
 }
 
@@ -589,6 +696,24 @@ onUnmounted(() => {
           </label>
           <input v-model="weatherConfig.private_key" type="password" class="setting-input" placeholder="Ed25519 私钥" />
         </div>
+        <div class="setting-row test-row">
+          <label class="setting-label">
+            <span class="label-text">连接测试</span>
+            <span class="label-desc">验证和风凭证是否正确</span>
+          </label>
+          <div class="test-actions">
+            <button class="btn-test" :disabled="weatherTesting || !weatherConfig.host" @click="testWeather">
+              {{ weatherTesting ? '测试中...' : '测试' }}
+            </button>
+            <span v-if="weatherProbeResult?.status === 'success'" class="test-result success">✅ 连接成功</span>
+            <span v-else-if="weatherProbeResult?.status === 'fail'" class="test-result fail">
+              <template v-if="weatherProbeResult.reason === 'unauthorized'">❌ 凭证无效或已过期（请检查 kid/sub/private_key）</template>
+              <template v-else-if="weatherProbeResult.reason === 'unreachable'">❌ 地址不可达（请检查 host）</template>
+              <template v-else-if="weatherProbeResult.reason === 'bad_format'">❌ 格式错误：{{ weatherProbeResult.detail }}</template>
+              <template v-else>❌ 连接失败：{{ weatherProbeResult.detail || '未知错误' }}</template>
+            </span>
+          </div>
+        </div>
         <div class="modal-save-bar">
           <button class="btn-primary" :class="{ saved: weatherSaved }" @click="saveWeather" :disabled="weatherSaving">
             {{ weatherSaving ? '保存中...' : weatherSaved ? '已保存' : '保存' }}
@@ -604,6 +729,23 @@ onUnmounted(() => {
             <span class="label-desc">留空则匿名调用 Exa MCP（有速率限制）</span>
           </label>
           <input v-model="webSearchConfig.exa.api_key" type="password" class="setting-input" placeholder="exa api key" />
+        </div>
+        <div class="setting-row test-row">
+          <label class="setting-label">
+            <span class="label-text">连接测试</span>
+            <span class="label-desc">验证 Exa API key 是否有效（留空测匿名）</span>
+          </label>
+          <div class="test-actions">
+            <button class="btn-test" :disabled="exaTesting" @click="testExa">
+              {{ exaTesting ? '测试中...' : '测试' }}
+            </button>
+            <span v-if="exaProbeResult?.status === 'success'" class="test-result success">✅ 连接成功</span>
+            <span v-else-if="exaProbeResult?.status === 'fail'" class="test-result fail">
+              <template v-if="exaProbeResult.reason === 'unauthorized'">❌ API key 无效或被拒</template>
+              <template v-else-if="exaProbeResult.reason === 'unreachable'">❌ Exa 服务不可达</template>
+              <template v-else>❌ 连接失败：{{ exaProbeResult.detail || '未知错误' }}</template>
+            </span>
+          </div>
         </div>
         <div class="modal-save-bar">
           <button class="btn-primary" :class="{ saved: exaSaved }" @click="saveExa" :disabled="exaSaving">
@@ -648,6 +790,25 @@ onUnmounted(() => {
             <span class="label-desc">防止频繁调用视觉模型</span>
           </label>
           <input v-model.number="visionConfig.min_infer_interval_seconds" type="number" step="0.5" class="setting-input narrow" />
+        </div>
+        <div class="setting-row test-row">
+          <label class="setting-label">
+            <span class="label-text">连接测试</span>
+            <span class="label-desc">验证 RTSP 凭证（会临时占一路流）</span>
+          </label>
+          <div class="test-actions">
+            <button class="btn-test" :disabled="visionTesting || !visionConfig.rtsp_url" @click="testVision">
+              {{ visionTesting ? '测试中...' : '测试' }}
+            </button>
+            <span v-if="visionProbeResult?.status === 'success'" class="test-result success">✅ 连接成功</span>
+            <span v-else-if="visionProbeResult?.status === 'fail'" class="test-result fail">
+              <template v-if="visionProbeResult.reason === 'unauthorized'">❌ 凭证无效或路径错（端口可达但无法开流）</template>
+              <template v-else-if="visionProbeResult.reason === 'unreachable'">❌ 摄像头地址不可达</template>
+              <template v-else-if="visionProbeResult.reason === 'busy'">❌ 单流被占用（请先停掉其他客户端）</template>
+              <template v-else-if="visionProbeResult.reason === 'bad_format'">❌ 格式错误：{{ visionProbeResult.detail }}</template>
+              <template v-else>❌ 连接失败：{{ visionProbeResult.detail || '未知错误' }}</template>
+            </span>
+          </div>
         </div>
         <div class="modal-save-bar">
           <button class="btn-primary" :class="{ saved: visionSaved }" @click="saveVision" :disabled="visionSaving">
@@ -706,6 +867,24 @@ onUnmounted(() => {
             <span class="label-desc">点一下转多长时间</span>
           </label>
           <input v-model.number="ptzConfig.step_ms" type="number" class="setting-input narrow" />
+        </div>
+        <div class="setting-row test-row">
+          <label class="setting-label">
+            <span class="label-text">连接测试</span>
+            <span class="label-desc">验证 ONVIF 凭证是否正确</span>
+          </label>
+          <div class="test-actions">
+            <button class="btn-test" :disabled="ptzTesting || !ptzConfig.ip" @click="testPtz">
+              {{ ptzTesting ? '测试中...' : '测试' }}
+            </button>
+            <span v-if="ptzProbeResult?.status === 'success'" class="test-result success">✅ 连接成功</span>
+            <span v-else-if="ptzProbeResult?.status === 'fail'" class="test-result fail">
+              <template v-if="ptzProbeResult.reason === 'unauthorized'">❌ 凭证无效（用户名/密码错）</template>
+              <template v-else-if="ptzProbeResult.reason === 'unreachable'">❌ 摄像头地址不可达（请检查 IP/端口）</template>
+              <template v-else-if="ptzProbeResult.reason === 'bad_format'">❌ 格式错误：{{ ptzProbeResult.detail }}</template>
+              <template v-else>❌ 连接失败：{{ ptzProbeResult.detail || '未知错误' }}</template>
+            </span>
+          </div>
         </div>
         <div class="modal-save-bar">
           <button class="btn-primary" :class="{ saved: ptzSaved }" @click="savePtz" :disabled="ptzSaving">

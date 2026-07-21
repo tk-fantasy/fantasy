@@ -41,12 +41,26 @@ class HomeInfoRequest(BaseModel):
 # --------------- Weather ---------------
 
 class WeatherConfigRequest(BaseModel):
-    """天气 API 配置保存请求。"""
+    """天气 API 配置保存请求。
+
+    格式校验把明显错误的输入挡在 schema 层（422），避免浪费一次网络 probe。
+    host 必须是合法域名（如 qkhapi.example.com）；kid/sub 非空时必须是
+    由字母数字组成的和风项目 ID。
+    """
 
     host: str = Field(min_length=1, description="和风天气 API 主机")
     kid: str = Field(min_length=1, description="API Key / Public ID")
     sub: str = Field(min_length=1, description="订阅类型")
     private_key: str = Field(default="", description="私钥（为空则保留原值）")
+
+    @field_validator("host")
+    @classmethod
+    def _host_must_be_domain(cls, v: str) -> str:
+        v = v.strip()
+        # 合法域名：labels 点分，每段字母数字-，有至少一个点（排斥 IP/中文/带协议）
+        if not re.match(r"^[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?)+$", v):
+            raise ValueError("host 必须是合法域名（如 xxx.qweatherapi.com），不能带 http:// 或中文")
+        return v
 
 
 class UserSwitchRequest(BaseModel):
@@ -135,8 +149,20 @@ class VisionFocusesUpdateRequest(BaseModel):
 # --------------- 高级配置 ---------------
 
 class ExaConfig(BaseModel):
-    """Exa 网页搜索配置。api_key 留空则匿名调用 Exa MCP。"""
+    """Exa 网页搜索配置。api_key 留空则匿名调用 Exa MCP。
+
+    api_key 非空时长度必须 ≥ 20（Exa 的 key 都是 UUID-like 长串），
+    把明显错的（粘了几个字符、中文等）挡在 schema 层。
+    """
     api_key: str = ""
+
+    @field_validator("api_key")
+    @classmethod
+    def _api_key_length_if_present(cls, v: str) -> str:
+        v = v.strip()
+        if v and len(v) < 20:
+            raise ValueError("Exa api_key 长度异常（合法 key 通常 ≥ 20 字符），请检查是否复制完整")
+        return v
 
 
 class WebSearchConfig(BaseModel):
@@ -160,6 +186,15 @@ class VisionConfig(BaseModel):
     rtsp_username: str = ""
     # 注意：rtsp_password 不在此处（避免明文落 config.json），
     # 走 AdvancedConfigRequest.rtsp_password 顶层字段，由路由写 .env
+
+    @field_validator("rtsp_url")
+    @classmethod
+    def _rtsp_url_must_be_valid_if_present(cls, v: str) -> str:
+        v = v.strip()
+        # 留空 = 走 USB，跳过校验
+        if v and not v.startswith("rtsp://"):
+            raise ValueError("rtsp_url 必须以 rtsp:// 开头（USB 摄像头请留空）")
+        return v
 
 
 class RAGConfig(BaseModel):
@@ -287,6 +322,9 @@ class PtzConfigRequest(BaseModel):
 
     密码走顶层 password 字段，路由层写 .env（PTZ_PASSWORD 变量），
     config.json 只存变量名 password_env。留空表示不修改。
+
+    ip 非空时必须是合法 IPv4（排斥中文、域名、带协议的 URL），把明显错的
+    输入挡在 schema 层，避免浪费一次 ONVIF probe。
     """
     enabled: bool = False
     ip: str = ""
@@ -295,6 +333,19 @@ class PtzConfigRequest(BaseModel):
     password: str = ""
     speed: float = 0.5
     step_ms: int = 300
+
+    @field_validator("ip")
+    @classmethod
+    def _ip_must_be_ipv4_if_present(cls, v: str) -> str:
+        v = v.strip()
+        # 留空 = 未配置，跳过
+        if not v:
+            return v
+        # 简单 IPv4 校验：四段数字 0-255
+        parts = v.split(".")
+        if len(parts) != 4 or not all(p.isdigit() and 0 <= int(p) <= 255 for p in parts):
+            raise ValueError("ip 必须是合法 IPv4 地址（如 192.168.1.100），不能带 http:// 或中文")
+        return v
 
 
 # --------------- Model Test ---------------
