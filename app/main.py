@@ -355,7 +355,10 @@ async def lifespan(_: FastAPI):
     # 但 weather_service.get_weather() 读的是全局 config.json 的 home 段，两边不通导致天气组件空白。
     # 此处把已存在 DB 里的 home_info 镜像到 config.json 的 home 段（仅当 config 没有完整 home 时）。
     # 跟上面 LLM keys 的迁移模式一致：DB 仍是兼容性 fallback，config.json 是新真源。
+    # 注意：本函数体内 LLM keys 迁移块有局部 `from .core.config import update_config_section`，
+    # 会让 Python 把 update_config_section 当成本函数的局部变量；只能走模块全限定名绕开。
     try:
+        from . import core as _core  # noqa: WPS433 — 绕开局部 import 作用域陷阱
         db = Database.get()
         home_config = get_config("home", {}) or {}
         home_complete = bool(home_config.get("city") or home_config.get("district"))
@@ -371,7 +374,7 @@ async def lifespan(_: FastAPI):
                     continue
                 if not (home_data.get("city") or home_data.get("district")):
                     continue
-                update_config_section("home", {
+                _core.config.update_config_section("home", {
                     "home_name": home_data.get("home_name", ""),
                     "owner_name": home_data.get("owner_name", ""),
                     "province": home_data.get("province", ""),
