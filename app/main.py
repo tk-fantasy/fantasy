@@ -33,7 +33,7 @@ from .agents.dispatcher import Dispatcher
 from .bootstrap import initialize_services
 from .container import AppContainer, get_container, init_container
 from .core import ApiResponse, CameraStateModel, Database, HealthData
-from .core.config import get_config
+from .core.config import get_config, update_config_section
 from .core.rate_limit import global_limiter
 from .core.tracing import RequestIdFilter, new_request_id, set_request_id
 from .mcp.web_tools import close_http_client as close_web_http_client
@@ -350,6 +350,41 @@ async def lifespan(_: FastAPI):
                 logger.warning("Failed to reload clients after key healing: %s", e)
     except Exception as e:
         logger.warning("Failed to heal global LLM keys from user DB: %s", e)
+
+    # 一次性迁移 home_info：历史代码把家庭地址按 per-user 存进了 DB（user_settings.home_info），
+    # 但 weather_service.get_weather() 读的是全局 config.json 的 home 段，两边不通导致天气组件空白。
+    # 此处把已存在 DB 里的 home_info 镜像到 config.json 的 home 段（仅当 config 没有完整 home 时）。
+    # 跟上面 LLM keys 的迁移模式一致：DB 仍是兼容性 fallback，config.json 是新真源。
+    try:
+        db = Database.get()
+        home_config = get_config("home", {}) or {}
+        home_complete = bool(home_config.get("city") or home_config.get("district"))
+        if not home_complete:
+            all_users = await db.user_list_all()
+            for user in all_users:
+                home_info_json = await db.user_setting_get(user["id"], "home_info")
+                if not home_info_json:
+                    continue
+                try:
+                    home_data = json.loads(home_info_json)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                if not (home_data.get("city") or home_data.get("district")):
+                    continue
+                update_config_section("home", {
+                    "home_name": home_data.get("home_name", ""),
+                    "owner_name": home_data.get("owner_name", ""),
+                    "province": home_data.get("province", ""),
+                    "city": home_data.get("city", ""),
+                    "district": home_data.get("district", ""),
+                })
+                logger.info(
+                    "Migrated home_info from user '%s' DB to config.json (city=%s)",
+                    user["username"], home_data.get("city"),
+                )
+                break
+    except Exception as e:
+        logger.warning("Failed to migrate home_info from user DB to config.json: %s", e)
 
     # 加载视觉关注指令（支持新多条格式 + 旧单条迁移）
     db = Database.get()
