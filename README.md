@@ -324,6 +324,39 @@ cd frontend && npm test
 
 ---
 
+## 🤝 贡献者
+
+感谢所有为 Aether 贡献代码的人 ✨
+
+<!-- ALL-CONTRIBUTORS-LIST:START - Do not remove or modify this section -->
+<!-- prettier-ignore-start -->
+<!-- markdownlint-disable -->
+<table>
+  <tr>
+    <td align="center">
+      <a href="https://github.com/tk-fantasy">
+        <img src="https://avatars.githubusercontent.com/u/tk-fantasy" width="80px;" alt="tk-fantasy"/>
+        <br />
+        <sub><b>tk-fantasy</b></sub>
+      </a>
+      <br />
+      <a href="#maintenance" title="Maintenance">🚧</a>
+      <a href="https://github.com/tk-fantasy/fantasy/commits?author=tk-fantasy" title="Code">💻</a>
+      <a href="https://github.com/tk-fantasy/fantasy/commits?author=tk-fantasy" title="Documentation">📖</a>
+    </td>
+  </tr>
+</table>
+<!-- markdownlint-restore -->
+<!-- prettier-ignore-end -->
+<!-- ALL-CONTRIBUTORS-LIST:END -->
+
+> 欢迎提交 Issue 和 PR！新增贡献者可通过 [`all-contributors` bot](https://allcontributors.org/) 自动添加：
+> ```
+> @all-contributors please add @username for code, doc, ideas
+> ```
+
+---
+
 <div align="center">
 
 **Built with ❤️ by [Aether Demo](https://github.com/Aether-Demo)**
