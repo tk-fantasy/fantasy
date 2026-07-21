@@ -15,7 +15,7 @@
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 
 <br/>
-<img src="docs/images/Home.png" alt="Aether" width="720"/>
+<img src="docs/images/Home.webp" alt="Aether" width="720"/>
 <br/>
 
 </div>
@@ -29,7 +29,7 @@
 Aether 的核心交互界面。输入自然语言即可控制家中设备——"把客厅灯关掉"、"空调调到 26 度"，AI 会理解你的意图并执行操作。左侧聊天区域支持多轮对话，快捷斜杠命令帮你快速跳转到设备管理、定时任务等功能。
 
 <br/>
-<img src="docs/images/Home.png" alt="聊天主页" width="720"/>
+<img src="docs/images/Home.webp" alt="聊天主页" width="720"/>
 <br/>
 
 ### ⚙️ 基础设置 — 个性化你的家
@@ -37,7 +37,7 @@ Aether 的核心交互界面。输入自然语言即可控制家中设备——"
 配置家庭名称、主人称呼、所在地区等信息。Aether 会根据这些信息提供更贴合你生活的服务。同时可以在这里切换深色/浅色主题，让界面随你喜好变化。
 
 <br/>
-<img src="docs/images/Settings.png" alt="基础设置" width="720"/>
+<img src="docs/images/Settings.webp" alt="基础设置" width="720"/>
 <br/>
 
 ### 🔧 高级设置 — 系统级配置中心
@@ -45,7 +45,7 @@ Aether 的核心交互界面。输入自然语言即可控制家中设备——"
 集中管理所有底层配置：天气 API 密钥、Exa 搜索引擎、摄像头视觉参数、Home Assistant 连接信息、助手角色设定。每个配置项以卡片形式呈现，点击即可弹出编辑面板。还支持 Emoji 索引重建和文档向量重建。
 
 <br/>
-<img src="docs/images/advence.png" alt="高级设置" width="720"/>
+<img src="docs/images/advence.webp" alt="高级设置" width="720"/>
 <br/>
 
 ### 🤖 模型管理 — 灵活对接各大模型
@@ -53,7 +53,7 @@ Aether 的核心交互界面。输入自然语言即可控制家中设备——"
 可视化管理所有 LLM 模型配置。分别设置**对话模型**、**视觉模型**、**嵌入模型**和**摘要模型**，支持切换不同供应商（OpenAI、Claude、DeepSeek 等）。每用户可独立配置自己的 API Key，实现多用户隔离。
 
 <br/>
-<img src="docs/images/models.png" alt="模型管理" width="720"/>
+<img src="docs/images/models.webp" alt="模型管理" width="720"/>
 <br/>
 
 ### 💡 设备控制 — 一目了明的设备面板
@@ -61,7 +61,7 @@ Aether 的核心交互界面。输入自然语言即可控制家中设备——"
 展示所有接入 Home Assistant 的智能设备及其实时状态。灯光的亮度色温、空调的温度模式、窗帘的开关进度——所有状态可视化呈现。也可以直接从面板操控设备，无需打开聊天。
 
 <br/>
-<img src="docs/images/device.png" alt="设备控制" width="720"/>
+<img src="docs/images/device.webp" alt="设备控制" width="720"/>
 <br/>
 
 ### ⏰ 定时任务 — 自然语言创建定时
@@ -69,7 +69,7 @@ Aether 的核心交互界面。输入自然语言即可控制家中设备——"
 用自然语言描述你想定时执行的事情，Aether 自动解析并生成 cron 表达式。"每天早上 7 点开窗帘"、"工作日晚上 10 点关掉所有灯"——说一句话就帮你建好定时任务，任务名也会自动生成。
 
 <br/>
-<img src="docs/images/schedule.png" alt="定时任务" width="720"/>
+<img src="docs/images/schedule.webp" alt="定时任务" width="720"/>
 <br/>
 
 ### 🔄 自动化规则 — 条件联动，智能决策
@@ -77,7 +77,7 @@ Aether 的核心交互界面。输入自然语言即可控制家中设备——"
 创建基于条件的自动化规则：温度高于 30 度自动开空调、检测到运动时打开玄关灯。支持多条件组合和多重动作，让家真正"活"起来。所有规则按创建者隔离，多用户互不干扰。
 
 <br/>
-<img src="docs/images/auto_task.png" alt="自动化规则" width="720"/>
+<img src="docs/images/auto_task.webp" alt="自动化规则" width="720"/>
 <br/>
 
 ### 👁️ 视觉感知 — 让 AI 看懂你的家
@@ -85,7 +85,7 @@ Aether 的核心交互界面。输入自然语言即可控制家中设备——"
 接入 RTSP 网络摄像头或 USB 摄像头，AI 实时分析画面内容。支持运动检测自动触发视觉推理，当画面出现异常时主动通知你。可以在聊天中直接询问摄像头"看到了什么"。
 
 <br/>
-<img src="docs/images/vision.png" alt="视觉感知" width="720"/>
+<img src="docs/images/vision.webp" alt="视觉感知" width="720"/>
 <br/>
 
 ### 🎯 关注项配置 — 告诉 AI 你关心什么
@@ -93,7 +93,7 @@ Aether 的核心交互界面。输入自然语言即可控制家中设备——"
 自定义视觉系统关注的对象和区域。可以指定特定区域（如门口、窗户）或特定物体（如人、宠物、包裹）。只有关注项出现时才触发通知，避免无意义的频繁报警。
 
 <br/>
-<img src="docs/images/focus.png" alt="关注项配置" width="720"/>
+<img src="docs/images/focus.webp" alt="关注项配置" width="720"/>
 <br/>
 
 ### 🧠 语义图谱 — 知识可视化
@@ -101,7 +101,7 @@ Aether 的核心交互界面。输入自然语言即可控制家中设备——"
 基于 RAG 技术构建的语义知识图谱。将文档和设备信息向量化后进行实体抽取和关系分析，生成可交互的 3D 图谱。通过 faiss 向量检索快速定位相关信息，支持一键重建索引。
 
 <br/>
-<img src="docs/images/sg_generate.png" alt="语义图谱" width="720"/>
+<img src="docs/images/sg_generate.webp" alt="语义图谱" width="720"/>
 <br/>
 
 ### 💬 对话生成效果 — 流式输出的丝滑体验
@@ -109,7 +109,7 @@ Aether 的核心交互界面。输入自然语言即可控制家中设备——"
 AI 回复采用流式输出，逐字显示如同真人打字。支持 Markdown 格式渲染，代码块高亮，让对话既智能又美观。设备控制结果以结构化卡片呈现，操作结果一目了然。
 
 <br/>
-<img src="docs/images/generate_show.png" alt="对话生成效果" width="720"/>
+<img src="docs/images/generate_show.webp" alt="对话生成效果" width="720"/>
 <br/>
 
 ---
