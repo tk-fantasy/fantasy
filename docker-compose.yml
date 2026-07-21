@@ -30,7 +30,8 @@ services:
 
   homeassistant:
     container_name: aether-ha
-    image: ghcr.io/home-assistant/home-assistant:stable
+    # 国内拉 ghcr.io 经常超时，改用 Docker Hub 镜像（homeassistant/home-assistant 是官方同步发布）
+    image: homeassistant/home-assistant:stable
     ports:
       - "8123:8123"
     volumes:

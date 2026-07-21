@@ -21,7 +21,8 @@ FROM python:3.11-slim AS runtime
 
 # OpenCV 运行时依赖：opencv-python 需要 libGL / libglib，slim 镜像默认没有
 # （本项目用 RTSP 网络流，无需 GUI；若改用 opencv-python-headless 可省去 libgl1）
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# 国内 apt 镜像（容器内访问 deb.debian.org 易超时，Debian 12 sources 在 .sources 文件里）
+RUN sed -i "s@http://deb.debian.org@http://mirrors.tuna.tsinghua.edu.cn@g" /etc/apt/sources.list.d/debian.sources && apt-get update && apt-get install -y --no-install-recommends \
         libgl1 \
         libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
