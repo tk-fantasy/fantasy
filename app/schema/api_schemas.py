@@ -1,6 +1,7 @@
 """通用 API 请求 Pydantic 模型。"""
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
@@ -230,9 +231,26 @@ class ChatRequest(BaseModel):
 # --------------- Home Assistant ---------------
 
 class HAConfigRequest(BaseModel):
-    """POST /ha/config 请求体。"""
+    """POST /ha/config 请求体。
+
+    token 可选：留空表示「不修改」（前端 saveHa 在用户没重填 token 时不传该字段）。
+    传了就必须是 HA Long-Lived Access Token（JWT 格式：三段点分、以 eyJ 开头），
+    路由层 set_ha_config 还会用它真连一次 HA 验证，通过才落盘。
+    这个约束是因为历史上发生过整段页面中文文本被当 token 存进 config.json，
+    导致 HA 回 401 且 httpx 编码 header 时 ASCII 崩溃。
+    """
     url: str = Field(min_length=1)
-    token: str = Field(min_length=1)
+    token: str = ""
+
+    @field_validator("token")
+    @classmethod
+    def _token_must_be_jwt_if_present(cls, v: str) -> str:
+        # 空值 = 不修改，放行；非空必须是 JWT 三段点分格式
+        if v and not re.match(
+            r"^eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$", v
+        ):
+            raise ValueError("token 必须是 HA Long-Lived Access Token（eyJ 开头的 JWT）")
+        return v
 
 
 class HAServiceCallRequest(BaseModel):

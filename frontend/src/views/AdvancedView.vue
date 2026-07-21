@@ -81,6 +81,7 @@ const haConfig = ref({ url: '', token_set: false, token_preview: '' })
 const haTokenInput = ref('')
 const haSaving = ref(false)
 const haTesting = ref(false)
+// null | { status: 'success' | 'fail', reason?: 'unauthorized' | 'unreachable' | 'error', detail?: string }
 const haTestResult = ref(null)
 
 // 助手角色
@@ -264,10 +265,15 @@ async function testHa() {
     const res = await fetch('/api/ha/test', { method: 'POST' })
     const json = await res.json()
     const data = json.data || json || {}
-    haTestResult.value = data.connected ? 'success' : 'fail'
+    if (data.connected) {
+      haTestResult.value = { status: 'success' }
+    } else {
+      // 后端区分 unauthorized（Token 错）/ unreachable（URL 不通）/ error（其他）
+      haTestResult.value = { status: 'fail', reason: data.reason || 'error', detail: data.detail || '' }
+    }
   } catch (e) {
     console.error('Failed to test HA:', e)
-    haTestResult.value = 'fail'
+    haTestResult.value = { status: 'fail', reason: 'error', detail: String(e) }
   } finally {
     haTesting.value = false
   }
@@ -733,8 +739,12 @@ onUnmounted(() => {
             <button class="btn-test" :disabled="haTesting || !haConfig.url" @click="testHa">
               {{ haTesting ? '测试中...' : '测试' }}
             </button>
-            <span v-if="haTestResult === 'success'" class="test-result success">连接成功</span>
-            <span v-else-if="haTestResult === 'fail'" class="test-result fail">连接失败</span>
+            <span v-if="haTestResult?.status === 'success'" class="test-result success">✅ 连接成功</span>
+            <span v-else-if="haTestResult?.status === 'fail'" class="test-result fail">
+              <template v-if="haTestResult.reason === 'unauthorized'">❌ Token 无效或已过期（URL 可达，请检查 Token）</template>
+              <template v-else-if="haTestResult.reason === 'unreachable'">❌ HA 地址不可达（请检查 URL）</template>
+              <template v-else>❌ 连接失败：{{ haTestResult.detail || '未知错误' }}</template>
+            </span>
           </div>
         </div>
         <div class="modal-save-bar">
