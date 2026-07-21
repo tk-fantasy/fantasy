@@ -10,9 +10,27 @@
  */
 import { ref } from 'vue'
 
+/**
+ * 麦克风/录音 API 是否可用。
+ * 浏览器只在「安全上下文」暴露 navigator.mediaDevices：
+ *   - https:// 任意主机
+ *   - http://localhost / 127.0.0.1
+ *   - file://
+ * 用 http://<局域网IP> 访问时（如部署场景）navigator.mediaDevices 是 undefined，
+ * 直接调 getUserMedia 会抛 "Cannot read properties of undefined (reading 'getUserMedia')"，
+ * 这种底层 TypeError 对用户毫无意义，所以在 toggle 里提前拦截并给中文提示。
+ */
+const voiceAvailable = ref(
+  typeof navigator !== 'undefined'
+    && !!navigator.mediaDevices
+    && typeof navigator.mediaDevices.getUserMedia === 'function'
+)
+
 export function useVoiceInput({ onResult, onError } = {}) {
   const recording = ref(false)
   const transcribing = ref(false)
+  // 暴露可用性，调用方可用它把麦克风按钮置灰/加 tooltip
+  const available = voiceAvailable
 
   let mediaRecorder = null
   let stream = null
@@ -21,6 +39,18 @@ export function useVoiceInput({ onResult, onError } = {}) {
   async function toggle() {
     if (recording.value) {
       stop()
+      return
+    }
+    // 非安全上下文（HTTP 非 localhost）：navigator.mediaDevices 不存在
+    if (!available.value) {
+      const scheme = typeof window !== 'undefined' && window.location
+        ? window.location.protocol
+        : 'unknown'
+      onError?.(new Error(
+        window.isSecureContext === false
+          ? `麦克风不可用：当前为 ${scheme} 非安全上下文，浏览器只允许 HTTPS 或 localhost 使用麦克风`
+          : '当前浏览器不支持麦克风录音（navigator.mediaDevices 不可用）'
+      ))
       return
     }
     try {
@@ -78,5 +108,5 @@ export function useVoiceInput({ onResult, onError } = {}) {
     }
   }
 
-  return { recording, transcribing, toggle, stop }
+  return { recording, transcribing, toggle, stop, available }
 }

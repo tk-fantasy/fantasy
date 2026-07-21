@@ -132,4 +132,12 @@ async def video_feed(request: Request, container: AppContainer = Depends(get_con
     return StreamingResponse(
         container.camera_stream.mjpeg_generator(),
         media_type="multipart/x-mixed-replace; boundary=frame",
+        headers={
+            # 禁止任何中间层（Nginx/uvicorn/浏览器代理）缓冲这个流：
+            # MJPEG 是实时帧流，缓冲会导致浏览器看到几秒甚至几十秒前的旧画面。
+            "X-Accel-Buffering": "no",
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Connection": "close",
+        },
     )
