@@ -1,4 +1,9 @@
-"""高级配置路由 — 管理系统级参数（网页搜索、视觉、RAG）和 Embed 状态。"""
+"""高级配置路由 — 管理系统级参数（网页搜索、视觉、RAG）和 Embed 状态。
+
+保存策略（跟 HA 一致）：用户填了新凭证时，先用候选凭证真连一次服务，
+probe 通过才落盘。杜绝「脏凭证存进去、下次使用才发现不工作」。
+留空字段跳过 probe（表示「不修改」）。
+"""
 from __future__ import annotations
 
 import logging
@@ -9,7 +14,8 @@ from fastapi import APIRouter, Depends
 from ..container import AppContainer, get_container
 from ..core.api_models import ApiResponse
 from ..core.config import get_config, update_config_section, write_secrets
-from ..schema.api_schemas import AdvancedConfigRequest
+from ..schema.api_schemas import AdvancedConfigRequest, VisionConfig
+from ..services.config_probes import probe_exa, probe_rtsp
 
 logger = logging.getLogger(__name__)
 
@@ -30,33 +36,73 @@ async def get_advanced_config() -> ApiResponse[dict]:
     })
 
 
+def _resolve_rtsp_password_for_probe(new_password: str) -> str:
+    """拿到 probe 要用的密码：优先用户新填的，否则从 .env 读现有的。
+
+    跟 CameraStream._resolve_rtsp_url 一致：config.json 只存变量名，
+    真密码在 .env 的 RTSP_PASSWORD。
+    """
+    pwd = (new_password or "").strip()
+    if pwd:
+        return pwd
+    return os.getenv("RTSP_PASSWORD", "")
+
+
 @router.post("/advanced/config")
 async def set_advanced_config(
     payload: AdvancedConfigRequest,
 ) -> ApiResponse[dict]:
-    """保存高级配置。"""
+    """保存高级配置。
+
+    凭证类字段（Exa api_key / RTSP url+密码）填了新值时，先用候选值 probe
+    一次，probe 失败拒绝落盘并返回 reason，前端据此展示差异化错误。
+    """
+    # ---- Exa ----
     if payload.web_search is not None:
         exa_data = payload.web_search.model_dump()
+        new_api_key = (exa_data.get("exa", {}).get("api_key", "") or "").strip()
+        # 只有用户填了新 key 才 probe（留空 = 匿名/不修改，跳过）
+        if new_api_key:
+            result = await probe_exa(new_api_key)
+            if not result.ok:
+                logger.warning("Exa config save rejected: %s (%s)", result.reason, result.detail)
+                return ApiResponse(
+                    code="probe_failed",
+                    message=result.detail,
+                    data={"saved": False, "section": "exa", **result.to_dict()},
+                )
         update_config_section("web_search", exa_data)
-        logger.info("Web search config updated: api_key_set=%s", bool(exa_data.get("api_key")))
+        logger.info("Web search config updated: api_key_set=%s", bool(new_api_key))
 
+    # ---- Vision / RTSP ----
     if payload.vision is not None:
-        # 摄像头源：RTSP URL + 用户名进 config.json，密码单独走 .env
         vision_data = payload.vision.model_dump()
-        # 固定变量名，保证 _resolve_rtsp_url 能读到
-        if vision_data.get("rtsp_url"):
+        rtsp_url = (vision_data.get("rtsp_url", "") or "").strip()
+        # 配了 RTSP URL 才 probe（留空 = 走 USB，不验证）
+        if rtsp_url:
+            username = (vision_data.get("rtsp_username", "") or "").strip()
+            password = _resolve_rtsp_password_for_probe(payload.rtsp_password)
+            result = await probe_rtsp(rtsp_url, username, password)
+            if not result.ok:
+                logger.warning("RTSP config save rejected: %s (%s)", result.reason, result.detail)
+                return ApiResponse(
+                    code="probe_failed",
+                    message=result.detail,
+                    data={"saved": False, "section": "rtsp", **result.to_dict()},
+                )
+            # 固定变量名，保证 _resolve_rtsp_url 能读到
             vision_data["rtsp_password_env"] = "RTSP_PASSWORD"
             # 自动从 RTSP URL 提取 IP → 同步到 ptz.ip（同一摄像头）
             from ..services.ptz_service import extract_host_from_url
 
-            host = extract_host_from_url(vision_data["rtsp_url"])
+            host = extract_host_from_url(rtsp_url)
             if host:
                 update_config_section("ptz", {"ip": host})
                 logger.info("PTZ ip auto-synced from RTSP URL: %s", host)
         update_config_section("vision", vision_data)
         logger.info(
             "Vision config updated: rtsp_url_set=%s",
-            bool(vision_data.get("rtsp_url")),
+            bool(rtsp_url),
         )
 
     # RTSP 密码：留空表示不修改，非空才写 .env
@@ -71,6 +117,49 @@ async def set_advanced_config(
         logger.info("RAG config updated")
 
     return ApiResponse(data={"saved": True})
+
+
+@router.post("/advanced/test/exa")
+async def test_exa_connection() -> ApiResponse[dict]:
+    """测试 Exa 连接（用当前已保存的 api_key）。
+
+    前端「测试连接」按钮调用。api_key 为空时测匿名调用是否通。
+    """
+    api_key = str(get_config("web_search.exa.api_key", "") or "")
+    result = await probe_exa(api_key)
+    if not result.ok:
+        logger.warning("Exa test failed: %s (%s)", result.reason, result.detail)
+    return ApiResponse(
+        code="probe_failed" if not result.ok else "ok",
+        message=result.detail,
+        data={"connected": result.ok, **result.to_dict()},
+    )
+
+
+@router.post("/advanced/test/rtsp")
+async def test_rtsp_connection() -> ApiResponse[dict]:
+    """测试 RTSP 连接（用当前已保存的 url/username/password）。
+
+    前端「测试连接」按钮调用。注意：probe 会临时占一路流，如果当前
+    摄像头 worker 已在拉同一路流（单流摄像头），probe 可能失败。
+    """
+    rtsp_url = str(get_config("vision.rtsp_url", "") or "").strip()
+    if not rtsp_url:
+        return ApiResponse(
+            code="probe_failed",
+            message="未配置 RTSP URL",
+            data={"connected": False, "reason": "bad_format", "detail": "未配置 RTSP URL"},
+        )
+    username = str(get_config("vision.rtsp_username", "") or "").strip()
+    password = os.getenv("RTSP_PASSWORD", "")
+    result = await probe_rtsp(rtsp_url, username, password)
+    if not result.ok:
+        logger.warning("RTSP test failed: %s (%s)", result.reason, result.detail)
+    return ApiResponse(
+        code="probe_failed" if not result.ok else "ok",
+        message=result.detail,
+        data={"connected": result.ok, **result.to_dict()},
+    )
 
 
 @router.get("/advanced/embed-status")
