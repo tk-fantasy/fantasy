@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 
+import httpx
 from fastapi import APIRouter, Depends, Query
 
 from ..container import AppContainer, get_container
@@ -108,16 +109,56 @@ async def get_ha_config() -> ApiResponse[dict]:
     )
 
 
+def _classify_ha_error(e: Exception) -> dict:
+    """把 HA 调用异常分类成前端可读的 reason。
+
+    返回 {"reason": "unauthorized"|"unreachable"|"error", "detail": str}，
+    供 /ha/test 和 /ha/config 保存前预校验共用。
+    """
+    if isinstance(e, httpx.HTTPStatusError):
+        if e.response.status_code in (401, 403):
+            return {"reason": "unauthorized", "detail": "Token 无效或已过期（URL 可达，请检查 Token）"}
+        return {"reason": "error", "detail": f"HA 返回 HTTP {e.response.status_code}"}
+    if isinstance(e, (httpx.ConnectError, httpx.TimeoutException, httpx.UnsupportedProtocol)):
+        return {"reason": "unreachable", "detail": f"HA 地址不可达：{e}"}
+    return {"reason": "error", "detail": str(e)}
+
+
 @router.post("/ha/config")
 async def set_ha_config(payload: HAConfigRequest, container: AppContainer = Depends(get_container)) -> ApiResponse[dict]:
-    url = payload.url.strip()
-    token = payload.token
-    current = get_config("ha", {})
-    updates: dict = {}
-    if url:
-        updates["url"] = url.rstrip("/")
-    if token is not None:
-        updates["token"] = str(token).strip()
+    """保存 HA 配置。
+
+    安全策略：用户传了新 token 时，先用 (url, token) 建临时 client 连一次 HA
+    /api/，验证通过才写入 config.json。这样从根上杜绝「存进去的 token 连不上」
+    ——用户在页面上误填旧 token / 错 token / 脏文本时，保存会被拒绝而不是把
+    好配置覆盖成坏的。
+    """
+    url = payload.url.strip().rstrip("/")
+    new_token = str(payload.token).strip() if payload.token is not None else None
+
+    # 只传了 url（没传 token）：用现有 token 验证 url 是否可达
+    # 传了 token：必须验证新 token 真的能连上 HA 才允许保存
+    verify_token = new_token if new_token else get_config("ha.token", "")
+    if verify_token:
+        probe = HomeAssistantClient(base_url=url, token=verify_token)
+        try:
+            await probe.get_states()
+        except Exception as e:
+            await probe.close()
+            info = _classify_ha_error(e)
+            logger.warning("HA config save rejected: %s (%s)", info["reason"], info["detail"])
+            return ApiResponse(
+                code="ha_error",
+                message=info["detail"],
+                data={"saved": False, **info},
+            )
+        finally:
+            await probe.close()
+
+    # 验证通过，写盘
+    updates: dict = {"url": url}
+    if new_token:
+        updates["token"] = new_token
     new_cfg = update_config_section("ha", updates)
     old_client = container.ha_client_ref[0]
     new_client = HomeAssistantClient()
@@ -127,6 +168,7 @@ async def set_ha_config(payload: HAConfigRequest, container: AppContainer = Depe
     token_val = new_cfg.get("token", "")
     return ApiResponse(
         data={
+            "saved": True,
             "url": new_cfg.get("url", "http://localhost:8123"),
             "token_set": bool(token_val),
             "token_preview": (token_val[:4] + "****" + token_val[-4:]) if len(token_val) >= 8 else ("****" if token_val else ""),
@@ -136,13 +178,24 @@ async def set_ha_config(payload: HAConfigRequest, container: AppContainer = Depe
 
 @router.post("/ha/test")
 async def test_ha_connection(container: AppContainer = Depends(get_container)) -> ApiResponse[dict]:
+    """测试 HA 连接。区分 Token 无效 (401) 和地址不可达 (连接/DNS/超时)，
+    前端据此给出针对性提示，避免用户误判是 URL 问题还是 Token 问题。
+    """
     try:
         states = await container.ha_client.get_states()
         count = len(states)
         return ApiResponse(data={"connected": True, "entity_count": count})
     except Exception as e:
-        logger.exception("HA test connection failed")
-        raise AppException(str(e), code="ha_error", http_status=502)
+        info = _classify_ha_error(e)
+        if info["reason"] != "error":
+            logger.warning("HA test failed: %s", info["detail"])
+        else:
+            logger.exception("HA test connection failed")
+        return ApiResponse(
+            code="ha_error",
+            message=info["detail"],
+            data={"connected": False, **info},
+        )
 
 
 @router.post("/models/test")
