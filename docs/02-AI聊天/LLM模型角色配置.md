@@ -67,6 +67,12 @@ Aether 不只用一个模型，而是按**角色**分配不同模型——聊天
 
 所以一家人共用一个 Aether 实例，每个人可以配自己的模型和密钥，互不干扰。
 
+### 5.1 运行时按用户解析
+
+`chat` / `summary` / `stt` 三个角色在**运行时**也按 `user_id` 解析（不只是存储隔离）——主对话 agent、Validator（重试校验）、定时任务 reminder、自动化规则的 `build_rule` 与 context-only 评估，都调 `resolve_key_for_role_user("chat", user_id)` 拿当前用户的 chat key 构建专用客户端（缓存在 `Dispatcher._user_agents` / `ValidatorAgent._user_llms`）。`vision` / `embed` 角色仍全局共享。
+
+`chat` 角色还可在 `/model` 页切到**全局兜底**（`use_global` 开关）——切到全局后该角色不查 per-user key，直接回退到全局 `config.json` 的 `llm_keys`（全局配置用二级密码保护，详见《LLM API 密钥配置指南》）。
+
 ---
 
 ## 6. 配置建议
@@ -119,6 +125,8 @@ Aether 不只用一个模型，而是按**角色**分配不同模型——聊天
 
 ## 8. 切换模型要重启吗
 
-不用。`/models` 页选完即生效，下一次请求就用新模型了。各服务每次调用都现查 `providers` 映射，不缓存客户端实例（vision/summary/embed 客户端在启动时建好，但密钥池会随 `/keys` 改动 reload）。
+不用。`/models` 页选完即生效，下一次请求就用新模型了。`chat`/`summary`/`stt` 角色按 `user_id` 解析，客户端实例缓存在 `Dispatcher._user_agents`（主对话）和 `ValidatorAgent._user_llms`（重试校验）——主对话重试时用**同用户**的 chat key 校验，避免全局/用户模型不一致误判。改 per-user key 后调 `invalidate_user_agent(user_id)` 让缓存失效，下次重建。vision/summary/embed 客户端在启动时建好，密钥池会随 `/keys` 改动 reload。
 
 > 唯一例外：如果你换了 `vision` 模型，正在跑的摄像头推理可能要等下一帧才用上新模型——不影响聊天。
+>
+> **全局 chat key 热重载**：改全局 `chat` 角色会自动重建主对话 agent（`_rebuild_agent`），少数在飞的请求可能受影响，聊天报错重启服务即可。

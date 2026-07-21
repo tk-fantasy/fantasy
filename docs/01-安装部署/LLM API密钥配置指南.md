@@ -104,10 +104,32 @@ Aether 支持多用户，每个用户的密钥是**独立隔离**的：
 | 存储位置 | 内容 |
 |------|------|
 | `.env` 文件 | 密钥值（敏感，已 gitignore） |
-| 数据库 user_settings | 密钥元数据（base_url/model/type/env 名） |
-| `config.json` 的 `llm_keys` | 全局默认（启动时用，被用户级覆盖） |
+| 数据库 user_settings | per-user 密钥元数据 + **明文 api_key**（base_url/model/type/api_key/env 名） |
+| `config.json` 的 `llm_keys` | 全局 key 元数据（不含明文，明文走 `.env`） |
 
-> 密钥值只存 `.env`，绝不进数据库或 config.json，避免泄露。
+> **说明**：per-user DB 里 `user_settings.llm_keys` 存的是**明文 api_key**（不止元数据）。这是有意设计——当全局 key 失效（如误删 .env、wizard 留下占位符）时，启动自愈会从 per-user DB 找到第一个有效明文 key 自动写回 `.env`，让服务能起来。`.env` 和 DB 文件都已 gitignore，**生产部署建议给 SQLite 文件加文件系统权限**，避免明文密钥被未授权读取。
+
+## 全局配置与二级密码
+
+除了上面讲的 per-user 密钥（每个用户独立），Aether 还有一套**全局 key**——存 `config.json` 的顶层 `llm_keys`，所有用户共享。
+
+**角色策略**：
+
+| 角色 | 归属 |
+|------|------|
+| `vision` / `embed` | 全局共享（历史上就是全局） |
+| `chat` / `summary` / `stt` | per-user 优先；用户可在 `/model` 页切到"全局兜底"（`use_global` 开关） |
+
+**入口**：`/model` 页 → 顶部 **「全局配置」** tab。
+
+**二级密码门禁**：全局 key 影响所有用户的模型和费用，所以修改全局配置要过二级密码：
+
+1. **首次设置**：进入「全局配置」tab，如果是第一次，会让你设置一个二级密码（至少 6 位）。密码哈希存 `config.json` 的 `security.secondary_password_hash`。
+2. **解锁**：之后每次进 tab 要输二级密码解锁，才能改全局 key。
+3. **改全局 key**：增删改全局 key、绑定角色到全局 key，每个写操作都要带二级密码。
+4. **忘记密码**：在解锁页点 **「忘记密码？重置」** 即可清除二级密码（不验证原密码，前端二次确认防误触），清除后回到"未设置"状态，重新设新密码即可。**不需要手改 config.json。**
+
+> 全局对话（chat）key 改完后会**热重载**——自动重建 agent，下一次请求就用新模型。代价是少数在飞的请求可能受影响（httpx 客户端重建瞬间），聊天报错重启服务即可。
 
 ## 出问题了怎么办
 
