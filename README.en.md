@@ -1,17 +1,127 @@
-# Aether
+<div align="center">
 
-[English](README.en.md) | [中文](README.md)
+# 🏠 Aether
 
-> A smart-home AI butler powered by LLMs: control devices in natural language, perceive the environment through cameras, run scheduled automations, and retrieve knowledge via a semantic graph. Backend in FastAPI, frontend in Vue 3.
+**A smart-home AI butler powered by LLMs**
 
-## What it does
+Control devices in natural language · Perceive the environment through cameras · Run scheduled automations · Retrieve knowledge via a semantic graph
 
-- **Conversational device control** — Talks to Home Assistant. Say "turn off the living-room lights and set the AC to 26°C" and it does it. A read-only `verify_action` step runs before any state change so the model can't fire invalid service calls.
-- **Camera vision** — RTSP or USB input. Motion detection triggers on-demand visual reasoning (configurable focus items, e.g. "is the stove on?").
-- **Schedules & automation rules** — Natural-language cron generation, auto task naming, a rule engine that chains devices on conditions (motion → camera → notification).
-- **Semantic knowledge graph (RAG)** — Docs are vectorized with faiss, entities are co-occurrence linked into a graph, visualized in 3D. Auto-detects embed-model changes and offers one-click rebuild.
-- **MCP tool ecosystem** — Built-in weather / web search / device-control tools, plus support for external MCP servers.
-- **Multi-user + JWT auth** — Per-user LLM key management, isolated sessions, per-user model routing with global fallback.
+English | [中文](README.md)
+
+[![Docker](https://img.shields.io/badge/Docker-one_click_deploy-2496ED?logo=docker&logoColor=white)](#-quick-start-docker-recommended)
+[![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)](requirements.txt)
+[![Vue](https://img.shields.io/badge/Vue_3-frontend-4FC08D?logo=vue.js&logoColor=white)](frontend)
+[![FastAPI](https://img.shields.io/badge/FastAPI-backend-009688?logo=fastapi&logoColor=white)](app)
+[![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
+
+<br/>
+<img src="docs/images/Home.webp" alt="Aether" width="720"/>
+<br/>
+
+</div>
+
+---
+
+## 📸 Feature tour
+
+### 🏠 Chat home — your AI butler
+
+Aether's core interface. Type natural language to control your home — "turn off the living-room lights", "set the AC to 26°C" — and the AI understands your intent and executes it. The left panel supports multi-turn conversation, and slash commands let you jump straight to device management, schedules, and more.
+
+<br/>
+<img src="docs/images/Home.webp" alt="Chat home" width="720"/>
+<br/>
+
+### ⚙️ Basic settings — personalize your home
+
+Configure household name, owner's preferred form of address, region, and so on. Aether uses these to tailor its service to your life. You can also switch between dark/light themes here.
+
+<br/>
+<img src="docs/images/Settings.webp" alt="Basic settings" width="720"/>
+<br/>
+
+### 🔧 Advanced settings — the system-level config center
+
+Manage all low-level configuration in one place: weather API keys, Exa search engine, camera vision params, Home Assistant connection, assistant persona. Every config item is a card — click to open an edit panel. Also supports emoji-index rebuild and doc-vector rebuild.
+
+<br/>
+<img src="docs/images/advence.webp" alt="Advanced settings" width="720"/>
+<br/>
+
+### 🤖 Model management — plug into any LLM
+
+Visually manage all LLM model configs. Set up **chat**, **vision**, **embed**, and **summary** models separately, and switch between providers (OpenAI, Claude, DeepSeek, etc.). Each account can configure its own API keys independently without interfering with others.
+
+<br/>
+<img src="docs/images/models.webp" alt="Model management" width="720"/>
+<br/>
+
+### 💡 Device control — a clear device panel
+
+Shows all smart devices connected to Home Assistant and their real-time state. Light brightness and color temperature, AC mode and target temp, curtain position — all visualized. You can also control devices straight from the panel without opening chat.
+
+<br/>
+<img src="docs/images/device.webp" alt="Device control" width="720"/>
+<br/>
+
+### ⏰ Schedules — create timers in natural language
+
+Describe what you want scheduled in natural language and Aether parses it into a cron expression. "Open the curtains at 7 every morning", "Turn off all lights at 10 PM on weekdays" — one sentence and the schedule is created, with an auto-generated task name.
+
+<br/>
+<img src="docs/images/schedule.webp" alt="Schedules" width="720"/>
+<br/>
+
+### 🔄 Automation rules — condition-driven, smart decisions
+
+Create condition-based automation rules: turn on the AC when it's over 30°C, turn on the entry light when motion is detected. Multi-condition combos and multi-step actions make the home truly "alive". Context-only rule evaluation resolves the LLM key by the rule's creator.
+
+<br/>
+<img src="docs/images/auto_task.webp" alt="Automation rules" width="720"/>
+<br/>
+
+### 👁️ Vision — let the AI see your home
+
+Connect an RTSP or USB camera and the AI analyzes the scene in real time. Supports motion-triggered visual reasoning and proactively notifies you when something unusual happens. Ask the camera in chat "what do you see".
+
+<br/>
+<img src="docs/images/vision.webp" alt="Vision" width="720"/>
+<br/>
+
+### 🎯 Focus items — tell the AI what you care about
+
+Customize which objects and areas the vision system watches. You can pin specific regions (doorway, window) or specific objects (person, pet, package). Notifications fire only when a focus item appears, avoiding pointless frequent alerts.
+
+<br/>
+<img src="docs/images/focus.webp" alt="Focus items" width="720"/>
+<br/>
+
+### 🧠 Semantic graph — visualize your knowledge
+
+A semantic knowledge graph built on RAG. Documents and device info are vectorized, then entity extraction and relation analysis produce an interactive 3D graph. faiss vector retrieval pinpoints relevant info fast, with one-click rebuild.
+
+<br/>
+<img src="docs/images/sg_generate.webp" alt="Semantic graph" width="720"/>
+<br/>
+
+### 💬 Conversation — silky streaming output
+
+AI replies stream token-by-token, like a person typing. Markdown rendering with code-block highlighting keeps the chat both smart and pretty. Device-control results show as structured cards so outcomes are clear at a glance.
+
+<br/>
+<img src="docs/images/generate_show.webp" alt="Conversation" width="720"/>
+<br/>
+
+---
+
+## 🛠️ What it does
+
+- **🧠 Conversational device control** — Talks to Home Assistant. Say "turn off the living-room lights and set the AC to 26°C" and it does it. A read-only `verify_action` step runs before any state change so the model can't fire invalid service calls.
+- **👁️ Camera vision** — RTSP / USB input, motion-triggered visual reasoning, configurable focus items.
+- **⏰ Schedules & automation rules** — Natural-language cron generation, auto task naming, a rule engine that chains devices on conditions.
+- **📊 Semantic knowledge graph (RAG)** — Docs vectorized + faiss retrieval + entity co-occurrence graphing, 3D visualization, auto-detect on embed-model change + one-click rebuild.
+- **🔌 MCP tool ecosystem** — Built-in weather / web search / device-control tools, plus support for external MCP servers.
+- **🔐 JWT auth + independent config** — Sessions use JWT, LLM keys are managed independently with isolated sessions, one-click clear of conversation history.
 
 ## Architecture & ports
 
@@ -213,6 +323,20 @@ Four sidebar entries; other features are reachable via slash commands:
 | **Settings** | Household info, region, dark mode. |
 | **Advanced** | System-level config page: weather API, Exa search, vision params, HA connection, assistant persona, API Keys (click a card to edit in a modal), plus emoji-index rebuild and doc-vector rebuild. |
 | **Monitor** | System monitoring page (also reachable via `/monitor` in chat). |
+
+---
+
+## 🤝 Contributing
+
+Issues and PRs are welcome. If you'd like to show up in the contributors list, just open a PR — GitHub identifies contributors automatically by commit email.
+
+---
+
+<div align="center">
+
+**Built with ❤️ by [Aether Demo](https://github.com/Aether-Demo)**
+
+</div>
 
 ## License
 
