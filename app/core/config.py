@@ -35,11 +35,26 @@ def _parse_dotenv(text: str) -> dict[str, str]:
 
 
 def _load_dotenv() -> None:
-    """把 .env 注入 os.environ(不覆盖已存在的真实环境变量)。"""
+    """把容器内 .env 注入 os.environ。
+
+    优先级策略（处理 docker compose env_file 与容器内 .env 不同步的问题）：
+    - 真实环境变量（docker compose 注入的，非空）优先，不覆盖
+    - 容器内 .env 的值用于「补位」：当 os.environ 里某个 key 为空或不存在时，
+      用容器内 .env 的值。这样 write_secrets 写的密码即使没被 docker compose
+      注入，进程启动时也能从容器内 .env 读到。
+
+    背景：docker compose 启动时读宿主机 .env 注入容器环境变量，但
+    write_secrets 写的是容器内 /aether/.env。两者不同步时（如 rebuild 后
+    宿主机 .env 没密码但容器内 .env 有），靠这里补位让密码不丢。
+    """
     if not ENV_PATH.exists():
         return
     for key, value in _parse_dotenv(ENV_PATH.read_text(encoding="utf-8")).items():
-        os.environ.setdefault(key, value)
+        existing = os.environ.get(key, "")
+        # 已存在且非空 → 保留 docker compose 注入的真实值
+        # 不存在或为空 → 用容器内 .env 的值补位
+        if not existing:
+            os.environ[key] = value
 
 
 def write_secrets(env_updates: dict[str, str]) -> None:
