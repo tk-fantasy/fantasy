@@ -401,11 +401,13 @@ async def set_global_password(
     payload: SecondaryPasswordSetupRequest,
     current_user: dict = Depends(get_current_user),
 ) -> ApiResponse[dict]:
-    """首次设置二级密码。若已设置则 409，要求走修改流程（暂未提供修改接口，
-    丢了密码需手改 config.json 删 security.secondary_password_hash）。"""
+    """首次设置二级密码。若已设置则 409，需先调用 DELETE /global/password 重置。
+
+    重置不验证二级密码本身（设计如此——丢了密码的人需要自救），仅验证 JWT。
+    重置后此处可再次设置新密码。"""
     if get_secondary_password_hash():
         raise AppException(
-            "二级密码已设置，无法重复设置。如需重置请手动编辑 config.json",
+            "二级密码已设置，无法重复设置。如需重置请先调用重置接口（DELETE /global/password）",
             code="secondary_password_already_set",
             http_status=409,
         )
@@ -422,6 +424,26 @@ async def verify_global_password(
     """验证二级密码。前端解锁全局配置面板用，无状态（每次写操作都要再带一次密码）。"""
     _verify_secondary_password(payload.password)
     return ApiResponse(data={"verified": True})
+
+
+@router.delete("/global/password")
+async def reset_global_password(
+    current_user: dict = Depends(get_current_user),
+) -> ApiResponse[dict]:
+    """重置（清除）二级密码。
+
+    设计如此——不验证二级密码本身，只验证 JWT：丢了密码的人需要自救入口。
+    前端会有二次确认防止误触。清除后：已配置的全局 key 仍在 config.json 里，
+    但任何修改全局 key 的写操作都会被拒（要求先走 POST /global/password 设置新密码）。"""
+    if not get_secondary_password_hash():
+        raise AppException(
+            "二级密码未设置，无需重置",
+            code="secondary_password_not_set",
+            http_status=409,
+        )
+    set_secondary_password_hash("")
+    logger.info("Secondary password reset", extra={"user_id": current_user["user_id"]})
+    return ApiResponse(data={"reset": True})
 
 
 @router.get("/global/llm_keys")

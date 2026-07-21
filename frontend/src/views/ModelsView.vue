@@ -285,6 +285,37 @@ function exitUnlocked() {
   editingKey.value = null
 }
 
+// 重置（清除）二级密码——丢了密码的自救入口。设计上不验证原密码（谁都能点），
+// 前端二次确认防止误触。清除后回到"未设置"状态，可重新设置新密码。
+async function resetPassword() {
+  if (!confirm(
+    '确定重置二级密码？\n\n' +
+    '· 清除后已配置的全局 key 仍保留，但任何修改全局 key 的操作都会被拒\n' +
+    '· 需要重新设置新二级密码才能继续管理全局配置\n' +
+    '· 此操作不可撤销'
+  )) return
+  passwordError.value = ''
+  try {
+    passwordLoading.value = true
+    const res = await fetch('/api/global/password', {
+      method: 'DELETE',
+      credentials: 'include',
+    })
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}))
+      throw new Error(j.message || `重置失败：HTTP ${res.status}`)
+    }
+    passwordStatus.value = 'unset'
+    passwordInput.value = ''
+    passwordConfirm.value = ''
+    sessionPassword.value = ''
+  } catch (e) {
+    passwordError.value = e.message || '重置失败'
+  } finally {
+    passwordLoading.value = false
+  }
+}
+
 function getGlobalRoleOptions(role) {
   const opts = [{ value: '', label: '-- 未选择 --' }]
   for (const key of globalKeys.value) {
@@ -525,7 +556,7 @@ onMounted(() => {
         <div class="card-title">首次设置全局配置二级密码</div>
         <div class="password-hint">
           全局 key 影响所有用户的模型与费用，请设置一个二级密码用于门禁。
-          密码哈希存 config.json，忘记后需手改 config.json 删除 security.secondary_password_hash 重置。
+          密码哈希存 config.json。如忘记密码，可在下方解锁页点"重置"清除后重新设置。
         </div>
         <div class="password-form">
           <input
@@ -564,6 +595,11 @@ onMounted(() => {
           </button>
         </div>
         <div v-if="passwordError" class="form-error">{{ passwordError }}</div>
+        <div class="password-footer">
+          <button class="btn-link btn-danger" :disabled="passwordLoading" @click="resetPassword">
+            忘记密码？重置
+          </button>
+        </div>
       </div>
 
       <!-- 已解锁：全局 key 管理 + 全局 providers -->
@@ -957,6 +993,10 @@ select.setting-input option {
   color: var(--color-danger, #e53935);
   font-size: var(--text-xs);
   margin-top: var(--space-4);
+}
+.password-footer {
+  margin-top: var(--space-8);
+  text-align: right;
 }
 .btn-primary {
   padding: var(--space-3) var(--space-12);
