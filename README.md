@@ -334,6 +334,6 @@ CI 通过 GitHub Actions 在每次 push 和 pull request 时自动运行 `pytest
 
 <div align="center">
 
-**Built with ❤️ by [Aether Demo](https://github.com/Aether-Demo)**
+**Built with ❤️ by [Aether](https://github.com/tk-fantasy/fantasy)**
 
 </div>

@@ -334,7 +334,7 @@ Issues and PRs are welcome. If you'd like to show up in the contributors list, j
 
 <div align="center">
 
-**Built with ❤️ by [Aether Demo](https://github.com/Aether-Demo)**
+**Built with ❤️ by [Aether](https://github.com/tk-fantasy/fantasy)**
 
 </div>
 
