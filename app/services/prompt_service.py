@@ -152,16 +152,14 @@ async def build_system_prompt(
         logger.debug("Failed to get weather for system prompt", exc_info=True)
 
     if device_controls:
-        if _query_matches_controls(query, device_controls):
-            parts.append(f"\n设备可控项（直接用于 call_service）：\n{device_controls}")
-        else:
-            # query 提到的设备未匹中可控项：注入强约束，防止 LLM 语义近邻误判
-            # （如把用户提到的设备当作另一台功能相近的设备）顶替执行。
-            parts.append(
-                "\n注意：用户提到的设备未在当前可控项中匹配到。"
-                "请先用 get_entities 核实是否真实存在；若不存在，如实告知用户，"
-                "禁止用语义相近的实体顶替执行。"
-            )
+        # 始终注入设备可控项（动态从 HA 拉取，含中文名+entity_id 映射，无硬编码）。
+        # 不再按 query 是否匹配设备名来决定注入与否——否则承接指令（如「设置成加强」，
+        # 用户省略了设备名）会因 query 剥离后匹配不到设备而不注入列表，模型眼前空白，
+        # 只能从训练数据幻觉出英文 entity_id（如 climate.bedroom_humidifier）。
+        # 始终注入后，模型可从历史上下文的设备名反查到真实 entity_id。
+        parts.append(
+            f"\n设备可控项（直接用于 call_service，禁止自行拼写 entity_id）：\n{device_controls}"
+        )
     elif device_catalog:
         parts.append(f"\n当前 Home Assistant 可用设备:\n{device_catalog}")
 

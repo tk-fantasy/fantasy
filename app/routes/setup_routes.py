@@ -63,15 +63,16 @@ async def setup_status(request: Request, container: AppContainer = Depends(get_c
             db = Database.get()
             user_llm_keys = await db.user_setting_get(current_user["user_id"], "llm_keys")
             if user_llm_keys is not None:
-                # 用户有 llm_keys 设置（即使是空数组），不再回退全局
-                user_has_llm_keys_setting = True
                 keys = _json.loads(user_llm_keys)
                 llm_key_count = len(keys)
                 has_llm_key = llm_key_count > 0
+                # 只有用户配置非空，才认定"用户有自己的配置"，不再回退全局。
+                # 空数组（注册时自动埋的占位）应回退全局，避免新用户被卡在 setup。
+                user_has_llm_keys_setting = has_llm_key
         except Exception:
             pass
 
-    # 回退到全局 config（仅当用户没有 llm_keys 设置时）
+    # 回退到全局 config（仅当用户没有非空 llm_keys 设置时）
     if not user_has_llm_keys_setting:
         llm_keys = get_config("llm_keys", [])
         llm_key_count = len(llm_keys)

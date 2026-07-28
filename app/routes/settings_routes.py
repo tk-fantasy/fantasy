@@ -22,6 +22,7 @@ from ..core.config import (
 )
 from ..core.database import Database
 from ..core.exceptions import AppException
+from ..core.key_resolver import resolve_key_for_role, resolve_key_for_role_user
 from ..core.roles import PER_USER_ROLES
 from ..schema.api_schemas import (
     GlobalLLMKeyRequest,
@@ -334,6 +335,72 @@ async def set_llm_settings(
         logger.warning(f"Failed to sync providers to user: {e}")
 
     return ApiResponse(data=result)
+
+
+# /chat 状态条展示的 4 个角色（stt 语音专用，不在此列）
+_LLM_STATUS_ROLES: list[str] = ["chat", "summary", "vision", "embed"]
+
+
+@router.get("/llm/status")
+async def get_llm_status(
+    current_user: dict = Depends(get_current_user),
+) -> ApiResponse[dict]:
+    """各 LLM 角色实际生效的模型配置 + 连通性测试。
+
+    懒加载：前端悬停 /chat 状态条时才调用。对每个角色：
+    1. 按用户解析出实际生效的 key（per-user 优先，空配置回退全局）
+    2. 真实调一次 API（max_tokens=1）验证连通性
+
+    返回 {role: {model, base_url, source, connected, error}}。
+    source 标注 key 来源（global/user），connected 标注测试结果。
+    """
+    user_id = current_user["user_id"]
+    results: dict[str, dict] = {}
+
+    for role in _LLM_STATUS_ROLES:
+        entry: dict = {
+            "model": "",
+            "base_url": "",
+            "source": "global",
+            "connected": False,
+            "error": None,
+        }
+
+        # 1. 解析实际生效的 key（per-user 优先）
+        key_info = None
+        if role in PER_USER_ROLES:
+            key_info = await resolve_key_for_role_user(role, user_id)
+            if key_info:
+                entry["source"] = "user"
+        if not key_info:
+            # 回退全局（vision/embed 本来就走这条；per-user 空配置也回退这里）
+            key_info = resolve_key_for_role(role)
+            entry["source"] = "global"
+
+        if not key_info or not key_info.get("api_key"):
+            entry["error"] = "未配置可用的 API Key"
+            results[role] = entry
+            continue
+
+        entry["model"] = key_info.get("model", "")
+        entry["base_url"] = key_info.get("base_url", "")
+
+        # 2. 真实调用测试连通性
+        test = await test_model_connection(
+            base_url=key_info["base_url"],
+            model=key_info["model"],
+            role=role,
+            api_key=key_info["api_key"],
+            chat_path=key_info.get("chat_path", "/chat/completions"),
+            embed_path=key_info.get("embed_path", "/embeddings"),
+        )
+        entry["connected"] = bool(test.get("ok"))
+        if not entry["connected"]:
+            entry["error"] = test.get("error", "未知错误")
+
+        results[role] = entry
+
+    return ApiResponse(data={"roles": results})
 
 
 # ==================== 全局 LLM Key 配置（二级密码门禁） ====================

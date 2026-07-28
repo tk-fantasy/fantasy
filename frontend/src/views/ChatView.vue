@@ -4,8 +4,35 @@ import { useRouter } from 'vue-router'
 import { SS_CHAT_SESSION } from '../utils/constants'
 import { toolIcon, summarizeToolCall, summarizeToolResult, parseToolResult } from '../utils/toolNames'
 import { useVoiceInput } from '../composables/useVoiceInput'
+import { apiGet } from '../utils/api'
 
 const router = useRouter()
+
+// LLM 模型状态：状态条显示 chat 模型名，悬停时懒加载测试连通性
+// - chatModelName：从 /api/llm/settings 静态读，不耗 API（进页面就显示）
+// - llmStatus：悬停时才调 /api/llm/status 真实测试（含 4 个角色连通结果）
+const chatModelName = ref('')
+const llmStatus = ref(null)        // null=未测 | {roles:{chat:{...},...}}
+const llmStatusLoading = ref(false)
+const showLlmPopover = ref(false)
+let llmStatusLoaded = false        // 悬停过一次后缓存，避免重复测试
+
+// 悬停状态条：首次触发连通性测试（懒加载）
+async function onStatusHover() {
+  if (llmStatusLoaded || llmStatusLoading.value) return
+  llmStatusLoading.value = true
+  try {
+    const data = await apiGet('/api/llm/status')
+    llmStatus.value = data
+    llmStatusLoaded = true
+  } catch (e) {
+    console.error('Failed to load llm status:', e)
+  } finally {
+    llmStatusLoading.value = false
+  }
+}
+
+const ROLE_LABELS = { chat: '对话', summary: '摘要', vision: '视觉', embed: '向量' }
 
 // 计算 video_feed URL（认证通过 cookie 自动处理）
 const videoFeedUrl = ref('')
@@ -697,7 +724,24 @@ async function showGreetingMessage() {
 // ============ Lifecycle ============
 onMounted(async () => {
   connectWS()
-  
+
+  // 静态读取 chat 模型名（不耗 API，仅显示配置）
+  try {
+    const settingsData = await apiGet('/api/llm/settings')
+    const chatProvider = settingsData?.current?.chat
+    if (chatProvider?.key_id) {
+      // 从 llm_keys 列表匹配出 model 名
+      const keysData = await apiGet('/api/llm_keys')
+      const matched = (keysData || []).find(k => k.id === chatProvider.key_id)
+      chatModelName.value = matched?.model || ''
+    } else if (!chatProvider?.use_global) {
+      // 用户未选 key_id 但未切全局 → resolver 会 auto-select，先不显示具体名
+      chatModelName.value = ''
+    }
+  } catch (e) {
+    console.error('Failed to load chat model name:', e)
+  }
+
   // 只有从 Landing 进入时才显示问候
   const shouldShowGreeting = sessionStorage.getItem('aether-show-greeting')
   if (shouldShowGreeting) {
@@ -860,9 +904,44 @@ onUnmounted(() => {
         <button @click="sendMessage" class="send-btn">发送</button>
       </div>
       <div class="voice-error" v-if="voiceError">{{ voiceError }}</div>
-      <div class="connection-status">
+      <div
+        class="connection-status"
+        @mouseenter="showLlmPopover = true; onStatusHover()"
+        @mouseleave="showLlmPopover = false"
+      >
         <span class="ws-dot" :class="{ connected: wsConnected }"></span>
-        <span>{{ wsConnected ? '已连接' : '未连接' }}</span>
+        <span>{{ wsConnected ? '已连接' : '未连接' }}{{ chatModelName && wsConnected ? ' · ' + chatModelName : '' }}</span>
+
+        <!-- 模型连通性浮层（悬停展开，懒加载测试） -->
+        <Transition name="llm-popover">
+          <div v-if="showLlmPopover" class="llm-popover">
+            <div class="llm-popover-title">
+              {{ llmStatusLoading ? '正在测试模型连通性…' : '模型连通状态' }}
+            </div>
+            <div v-if="llmStatus?.roles" class="llm-popover-rows">
+              <div
+                v-for="role in ['chat', 'summary', 'vision', 'embed']"
+                :key="role"
+                class="llm-popover-row"
+              >
+                <span class="llm-role-label">{{ ROLE_LABELS[role] }}</span>
+                <span class="llm-model-name">{{ llmStatus.roles[role]?.model || '未配置' }}</span>
+                <span class="llm-source-tag" :class="llmStatus.roles[role]?.source">
+                  {{ llmStatus.roles[role]?.source === 'user' ? '私有' : '全局' }}
+                </span>
+                <span
+                  class="llm-status-dot"
+                  :class="{
+                    connected: llmStatus.roles[role]?.connected,
+                    failed: llmStatus.roles[role] && !llmStatus.roles[role].connected
+                  }"
+                  :title="llmStatus.roles[role]?.error || ''"
+                ></span>
+              </div>
+            </div>
+            <div v-else-if="!llmStatusLoading" class="llm-popover-empty">暂无数据</div>
+          </div>
+        </Transition>
       </div>
     </div>
 
@@ -1400,6 +1479,7 @@ onUnmounted(() => {
 }
 
 .connection-status {
+  position: relative;
   display: flex;
   align-items: center;
   gap: var(--space-3);
@@ -1417,6 +1497,102 @@ onUnmounted(() => {
 
 .ws-dot.connected {
   background: var(--color-success);
+}
+
+/* 模型连通性浮层 */
+.llm-popover {
+  position: absolute;
+  bottom: calc(100% + var(--space-3));
+  left: 0;
+  z-index: 50;
+  min-width: 280px;
+  padding: var(--space-4);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+}
+
+.llm-popover-title {
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+  margin-bottom: var(--space-3);
+  font-weight: var(--weight-medium);
+}
+
+.llm-popover-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.llm-popover-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: var(--text-xs);
+}
+
+.llm-role-label {
+  width: 32px;
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+}
+
+.llm-model-name {
+  flex: 1;
+  color: var(--color-text);
+  font-family: var(--font-mono, monospace);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.llm-source-tag {
+  padding: 1px 6px;
+  border-radius: var(--radius-full);
+  font-size: 10px;
+  flex-shrink: 0;
+}
+.llm-source-tag.user {
+  background: rgba(74, 124, 112, 0.15);
+  color: var(--color-primary);
+}
+.llm-source-tag.global {
+  background: rgba(120, 120, 120, 0.15);
+  color: var(--color-text-muted);
+}
+
+.llm-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-text-muted);
+  flex-shrink: 0;
+}
+.llm-status-dot.connected {
+  background: var(--color-success);
+}
+.llm-status-dot.failed {
+  background: var(--color-danger);
+}
+
+.llm-popover-empty {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  text-align: center;
+  padding: var(--space-2);
+}
+
+/* popover 进出动画 */
+.llm-popover-enter-active,
+.llm-popover-leave-active {
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+.llm-popover-enter-from,
+.llm-popover-leave-to {
+  opacity: 0;
+  transform: translateY(4px);
 }
 
 @keyframes fadeIn {

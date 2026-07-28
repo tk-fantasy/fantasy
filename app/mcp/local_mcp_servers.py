@@ -220,9 +220,11 @@ def create_verify_action_handler(ha_client):
     不硬编码 service→attribute 映射，而是从 data 参数出发在 attributes 中查找。
     """
     async def handler(parameters: dict, session) -> dict:
-        entity_id = str(parameters.get("entity_id", ""))
-        expected_state = str(parameters.get("expected_state", "") or "")
-        action_desc = str(parameters.get("action_description", "") or "")
+        # 本地模型（Ollama）常在工具参数首尾带空格，导致 entity_id 精确匹配失败。
+        # 在入口统一 strip，避免下游每个比较点都要单独处理。
+        entity_id = str(parameters.get("entity_id", "")).strip()
+        expected_state = str(parameters.get("expected_state", "") or "").strip()
+        action_desc = str(parameters.get("action_description", "") or "").strip()
         data = parameters.get("data") or {}
 
         if not entity_id:

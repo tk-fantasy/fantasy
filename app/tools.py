@@ -110,9 +110,13 @@ def _register_ha_get_entities(deps: ToolDeps) -> None:
 
 def _register_ha_call_service(deps: ToolDeps) -> None:
     async def handler(parameters: dict, session) -> dict:
-        domain = str(parameters.get("domain", ""))
-        service = str(parameters.get("service", ""))
+        # 本地模型（Ollama）常在工具参数首尾带空格，导致 entity_id/domain/service
+        # 精确匹配失败（如 " light.chuang_tou_deng " 校验不存在）。入口统一 strip。
+        domain = str(parameters.get("domain", "")).strip()
+        service = str(parameters.get("service", "")).strip()
         entity_id = parameters.get("entity_id")
+        if isinstance(entity_id, str):
+            entity_id = entity_id.strip()
         data = parameters.get("data") or {}
         if isinstance(data, str):
             try:
