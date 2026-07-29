@@ -14,6 +14,7 @@ from .mcp.mcp_client_manager import MCPClientManager
 from .mcp.tool_executor import ToolExecutor
 from .services.api_key_manager import ApiKeyManager
 from .services.automation_service import AutomationService
+from .services.camera_discovery_service import discovery_service
 from .services.emoji_service import EmojiService
 from .services.ha_service import HAService
 from .services.llm_settings_service import LlmSettingsService
@@ -127,5 +128,8 @@ def initialize_services() -> dict[str, Any]:
 
     # HA 客户端引用（支持热重建）
     services["ha_client_ref"] = [ha_client]
+
+    # ONVIF 摄像头自动发现（无状态,被动调用）
+    services["discovery_service"] = discovery_service
 
     return services

@@ -237,3 +237,53 @@ class TestReplaceUrlHost:
         svc = CameraDiscoveryService()
         out = svc._replace_url_host("rtsp://192.168.1.50/stream", "192.168.1.99")
         assert out == "rtsp://192.168.1.99/stream"
+
+
+class TestCaptureMacOnStartup:
+    """首次 MAC 捕获:有 IP 无 MAC 时用现有 IP 读 MAC 写回 config。"""
+
+    @pytest.mark.asyncio
+    async def test_captures_when_no_mac(self):
+        from app.core import config as cfg
+        cfg.CONFIG["vision"]["device_mac"] = ""
+        cfg.CONFIG["ptz"]["ip"] = "192.168.1.50"
+        svc = CameraDiscoveryService()
+        with patch.object(svc, "read_device_hardware_id", AsyncMock(return_value="aabbccddeeff")), \
+             patch("app.services.camera_discovery_service.update_config_section") as uc:
+            await svc.capture_mac_on_startup()
+        uc.assert_called_once_with("vision", {"device_mac": "aabbccddeeff"})
+
+    @pytest.mark.asyncio
+    async def test_skips_when_mac_already_set(self):
+        from app.core import config as cfg
+        cfg.CONFIG["vision"]["device_mac"] = "aabbccddeeff"
+        cfg.CONFIG["ptz"]["ip"] = "192.168.1.50"
+        svc = CameraDiscoveryService()
+        with patch.object(svc, "read_device_hardware_id", AsyncMock()) as rd, \
+             patch("app.services.camera_discovery_service.update_config_section") as uc:
+            await svc.capture_mac_on_startup()
+        rd.assert_not_called()
+        uc.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_skips_when_no_ip(self):
+        from app.core import config as cfg
+        cfg.CONFIG["vision"]["device_mac"] = ""
+        cfg.CONFIG["ptz"]["ip"] = ""
+        # rtsp_url 也需清空:capture 会从 rtsp_url 兜底提 IP
+        cfg.CONFIG["vision"]["rtsp_url"] = ""
+        svc = CameraDiscoveryService()
+        with patch.object(svc, "read_device_hardware_id", AsyncMock()) as rd:
+            await svc.capture_mac_on_startup()
+        rd.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_capture_failure_does_not_raise(self):
+        """读取失败(设备离线)不影响启动。"""
+        from app.core import config as cfg
+        cfg.CONFIG["vision"]["device_mac"] = ""
+        cfg.CONFIG["ptz"]["ip"] = "192.168.1.50"
+        svc = CameraDiscoveryService()
+        with patch.object(svc, "read_device_hardware_id", AsyncMock(side_effect=Exception("offline"))):
+            # 不抛异常
+            await svc.capture_mac_on_startup()

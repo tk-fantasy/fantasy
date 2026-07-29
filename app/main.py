@@ -108,6 +108,7 @@ ha_service = _services["ha_service"]
 _automation_agent_ref = _services["automation_agent_ref"]
 _ha_catalog_cache_ref = _services["ha_catalog_cache_ref"]
 _ha_client_ref = _services["ha_client_ref"]
+discovery_service = _services["discovery_service"]
 _ha_controls_cache_ref = [""]
 
 # Metrics 服务（轻量内存计数器）
@@ -500,9 +501,21 @@ async def lifespan(_: FastAPI):
     # 注入主事件循环：运动推理通过 run_coroutine_threadsafe 投到主循环跑，
     # httpx 网络等待时释放 GIL，不再像线程池那样抢 GIL 饿死采集线程（修复运动推理时 FPS 崩到 ~1）
     camera_stream.set_event_loop(asyncio.get_running_loop())
+    # 注入 ONVIF 发现服务：worker 掉线连续开流失败时触发发现找回 IP
+    # （discovery_service 未注入则掉线走纯指数退避，向后兼容）
+    camera_stream.set_discovery_service(discovery_service)
     # 注入视觉展示开关初始状态（用户在 /camera 关过则重启后仍保持关闭）
     camera_stream.set_camera_vl_display_enabled(bool(get_config("automation.camera_vl_display_enabled", True)))
     camera_stream.start()
+
+    # 后台捕获摄像头 MAC（首次配对，不阻塞启动）
+    async def _startup_capture_mac():
+        try:
+            await discovery_service.capture_mac_on_startup()
+        except Exception:
+            logger.exception("startup MAC capture failed")
+
+    _background_task_mgr.spawn(_startup_capture_mac(), name="capture_mac")
 
     # 后台任务
     await connect_external_mcp_servers(mcp_client_manager)

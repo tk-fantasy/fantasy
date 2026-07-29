@@ -317,6 +317,56 @@ class CameraDiscoveryService:
             new_netloc = f"{creds}{new_host}"
         return urlunparse(parsed._replace(netloc=new_netloc))
 
+    async def capture_mac_on_startup(self) -> None:
+        """首次 MAC 捕获:有 IP 无 MAC 时,用现有 IP 读一次 MAC 写回 config。
+
+        在 bootstrap 启动时调用(后台,不阻塞启动)。失败不影响启动
+        —— 设备离线时下次掉线会 fallback 到子网全扫。
+        """
+        if not bool(get_config("vision.discovery_enabled", False)):
+            return
+        existing_mac = str(get_config("vision.device_mac", "") or "").strip()
+        if normalize_mac(existing_mac):
+            logger.info("capture_mac: device_mac already set (%s), skip", existing_mac)
+            return
+        # 现有 IP:优先 ptz.ip,其次 rtsp_url
+        ip = str(get_config("ptz.ip", "") or "").strip()
+        if not ip:
+            ip = self._extract_ip_from_rtsp_url(str(get_config("vision.rtsp_url", "") or ""))
+        if not ip:
+            logger.info("capture_mac: no known IP, skip (will full-scan on disconnect)")
+            return
+        port = int(get_config("ptz.port", 80))
+        user = str(get_config("ptz.username", ""))
+        pwd_env = str(get_config("ptz.password_env", ""))
+        pwd = os.getenv(pwd_env, "") if pwd_env else ""
+        if not user or not pwd:
+            logger.info("capture_mac: no ONVIF credentials, skip")
+            return
+        try:
+            hardware_id = await asyncio.wait_for(
+                self.read_device_hardware_id(ip, port, user, pwd),
+                timeout=8.0,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("capture_mac: failed to read from %s: %s (non-fatal)", ip, e)
+            return
+        if hardware_id:
+            update_config_section("vision", {"device_mac": hardware_id})
+            logger.info("capture_mac: stored device_mac=%s from %s", hardware_id, ip)
+        else:
+            logger.warning("capture_mac: device returned empty hardware id at %s", ip)
+
+    async def find_and_apply(self, timeout: float | None = None) -> str | None:
+        """顶层编排:find_camera → apply_found_ip。返回找到的 IP 或 None。
+
+        供 worker 掉线触发和手动发现按钮共用。
+        """
+        found_ip = await self.find_camera(timeout=timeout)
+        if found_ip:
+            await self.apply_found_ip(found_ip)
+        return found_ip
+
 
 # 模块级单例(无状态)。bootstrap / 路由直接 import 用。
 discovery_service = CameraDiscoveryService()

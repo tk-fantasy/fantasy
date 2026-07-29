@@ -9,7 +9,7 @@ import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
-from typing import Callable
+from typing import Any, Callable
 
 import cv2
 import numpy as np
@@ -148,6 +148,15 @@ class CameraStream:
         # 由 set_event_loop 在应用启动时注入（主循环已运行后）。
         self._loop: asyncio.AbstractEventLoop | None = None
         self._infer_futures: list = []  # 跟踪未完成的推理 future，stop 时取消
+
+        # ONVIF 发现服务(掉线时找回 IP)。None 表示未注入,走纯指数退避。
+        self._discovery_service: Any = None
+        # 连续开流失败计数,达到阈值触发一次 discovery
+        self._open_fail_count = 0
+        self._discovery_trigger_threshold = 3
+        # 上次 discovery 触发时间,限流避免短时间内重复扫描
+        self._last_discovery_at = 0.0
+        self._discovery_min_interval = 20.0
 
         self._state = CameraState(
             details={"source": "vision", "enabled": self._recognizer.enabled},
@@ -338,6 +347,10 @@ class CameraStream:
         必须在主循环已运行后调用（如 lifespan startup 里）。
         """
         self._loop = loop
+
+    def set_discovery_service(self, svc: Any) -> None:
+        """注入 ONVIF 发现服务(可选)。未注入则掉线走纯指数退避。"""
+        self._discovery_service = svc
 
     def mjpeg_generator(self):
         boundary = b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"
@@ -578,6 +591,32 @@ class CameraStream:
                             "Unable to open camera, retrying in %.1fs (attempt %d)",
                             backoff, self._consecutive_open_failures,
                         )
+                        # 连续开流失败达到阈值,触发一次 ONVIF 发现找回 IP
+                        # (限流:两次 discovery 至少间隔 _discovery_min_interval)
+                        self._open_fail_count += 1
+                        if (
+                            self._discovery_service is not None
+                            and bool(get_config("vision.discovery_enabled", False))
+                            and self._open_fail_count >= self._discovery_trigger_threshold
+                            and (time.time() - self._last_discovery_at) >= self._discovery_min_interval
+                        ):
+                            self._last_discovery_at = time.time()
+                            self._open_fail_count = 0
+                            self._mark_camera_closed("正在重新发现摄像头…", keep_cache=True)
+                            logger.info(
+                                "Triggering ONVIF discovery after %d open failures",
+                                self._discovery_trigger_threshold,
+                            )
+                            try:
+                                # discovery 是 async,投到主循环跑
+                                if self._loop and not self._loop.is_closed():
+                                    fut = asyncio.run_coroutine_threadsafe(
+                                        self._discovery_service.find_and_apply(),
+                                        self._loop,
+                                    )
+                                    fut.result(timeout=60)  # 等发现完成(上限 60s)
+                            except Exception:
+                                logger.exception("ONVIF discovery triggered from worker failed")
                         time.sleep(backoff)
                         continue
                     # 成功打开，重置失败计数
