@@ -233,3 +233,45 @@ if discovery_enabled and 有 rtsp_url/ip 且 device_mac 为空:
 4. 发现超时未命中时,前端显示「找不到设备」并允许手动填新 IP,手动填后能验证并写入 config。
 5. `discovery_enabled=false` 时行为与现状完全一致(向后兼容)。
 6. 单测覆盖:子网推断、MAC 匹配、两段式扫描、超时、config 回写。
+
+## 9. 真机验证记录(2026-07-29)
+
+实机环境:TP-Link `TL-IPC43CL-V2`(带云台),固件 `1.0.4 Build 260207`,ONVIF 端口 80,网段 `192.168.4.0/24`。
+
+### 9.1 关键修正:TP-Link 的 HardwareId 不是 MAC(原设计假设有误)
+
+原设计(§4.2)假设 ONVIF `GetDeviceInformation.HardwareId` 就是 MAC。**真机读出来是硬件版本号 `2.0`,不是 MAC**;`SerialNumber` 也只返回 MAC 尾 4 字节(`e3dee054`)。若沿用原假设,首次捕获会把 `"2.0"` 存成身份证,以后永远匹配不到。
+
+修正(commit `ccdbf55`):MAC 读取改为三级优先级:
+
+1. **`GetNetworkInterfaces[].Info.HwAddress`** —— 真正的 MAC,最可靠。实测读到 `60-a3-e3-de-e0-54`。跳过 `Enabled=False` 的网卡。
+2. **`GetDeviceInformation.HardwareId`** —— 仅当归一化后是 12 位 hex 才采用(挡掉 `"2.0"` 这类版本号)。
+3. **`GetDeviceInformation.SerialNumber`** —— 兜底(非 MAC 但唯一)。
+
+> 教训:**厂商差异只有真机能暴露**,单测 mock 不到。海康/大华一般也能从 `GetNetworkInterfaces` 拿到 MAC,所以优先级 1 通用。
+
+### 9.2 端到端"换 IP 恢复"测试(真机,通过)
+
+模拟摄像头换 IP:用**错误的旧 IP `.250`**(与真实 `.16` 同网段)推断子网,目标 MAC 用真实值,验证能否找回。
+
+| 环节 | 结果 |
+|------|------|
+| 子网扫描 254 主机(并发 150,0.5s 超时) | **8.2s** 完成 |
+| 筛出端口开放候选 | 7 个(路由器 `.1` + 其他设备 + 摄像头 `.16`) |
+| ONVIF probe + MAC 匹配 | 精确命中 `192.168.4.16` ✓ |
+| `find_camera` 全程耗时 | **10.5s**(远在 30s 超时内) |
+
+结论:即使 config 里的 IP 完全错误,只要摄像头在线 + MAC 存着,**~10 秒找回**,RTSP+PTZ 同步更新后恢复。
+
+### 9.3 实际 config.json 状态(已落盘)
+
+| 字段 | 值 |
+|------|------|
+| `vision.device_mac` | `60-a3-e3-de-e0-54` |
+| `vision.discovery_enabled` | `true` |
+| `vision.discovery_timeout_seconds` | `30` |
+| `vision.discovery_subnet` | `""`(自动推 `/24`) |
+
+### 9.4 待办(需用户实机)
+
+唯一未由开发侧完成的是**真实 DHCP 换 IP 触发**:在路由器后台给摄像头重新分配 IP 或重启路由器,观察 Aether 日志 `Triggering ONVIF discovery` → `find_camera: matched MAC at <新IP>`,确认画面与云台自动恢复。开发侧已用错误旧 IP 等价验证通过。
