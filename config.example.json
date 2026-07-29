@@ -78,7 +78,11 @@
     "read_retry_count": 3,
     "read_retry_interval_seconds": 0.1,
     "release_cooldown_seconds": 0.8,
-    "max_backoff_seconds": 15.0
+    "max_backoff_seconds": 15.0,
+    "device_mac": "",
+    "discovery_enabled": true,
+    "discovery_timeout_seconds": 30,
+    "discovery_subnet": ""
   },
   "automation": {
     "eval_interval_seconds": 10,

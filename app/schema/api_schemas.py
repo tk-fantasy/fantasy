@@ -221,6 +221,23 @@ class AdvancedConfigRequest(BaseModel):
     rtsp_password: str = ""
 
 
+class ManualIpRequest(BaseModel):
+    """POST /discovery/manual-ip 请求体 — 手动填摄像头 IP 兜底。"""
+    ip: str = ""
+
+    @field_validator("ip")
+    @classmethod
+    def _ip_must_be_valid(cls, v: str) -> str:
+        v = v.strip()
+        if v:
+            import ipaddress
+            try:
+                ipaddress.ip_address(v)
+            except ValueError as e:
+                raise ValueError(f"IP 格式错误: {e}") from e
+        return v
+
+
 # --------------- 语义图参数 ---------------
 
 class SgConfigRequest(BaseModel):
