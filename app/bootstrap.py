@@ -79,11 +79,18 @@ def initialize_services() -> dict[str, Any]:
     services["rule_service"] = rule_service
     services["rule_registry_service"] = rule_registry_service
 
+    # Home Assistant 客户端（自动化服务的设备状态门控依赖 ha_service）
+    ha_client = HomeAssistantClient()
+    ha_service = HAService(client=ha_client)
+    services["ha_client"] = ha_client
+    services["ha_service"] = ha_service
+
     # 自动化服务
     automation_service = AutomationService(
         rule_registry_service,
         tool_executor=tool_executor,
         vision_service=vision_service,
+        ha_service=ha_service,
     )
     services["automation_service"] = automation_service
 
@@ -96,13 +103,6 @@ def initialize_services() -> dict[str, Any]:
     llm_settings_service.register_reload_hook(vision_client.reload)
 
     services["llm_settings_service"] = llm_settings_service
-
-    # Home Assistant 客户端
-    ha_client = HomeAssistantClient()
-    ha_service = HAService(client=ha_client)
-
-    services["ha_client"] = ha_client
-    services["ha_service"] = ha_service
 
     # Emoji 搜索服务（embed 客户端 + 向量索引）
     embed_client = LlmChatClient(role="embed")

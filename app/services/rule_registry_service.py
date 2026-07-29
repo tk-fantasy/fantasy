@@ -7,6 +7,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 
+from ..core.config import get_config
 from ..core.database import Database
 from ..core.exceptions import AppException
 from ..utils.async_utils import TaskManager
@@ -26,8 +27,9 @@ class AutomationRule:
     updated_at: int
     name: str = ""                                       # 规则名称
     condition: str = ""                                  # 自然语言条件,如"桌子上有鼠标"
+    type: str = "vision"                                 # 规则类型 time/weather/vision；老规则按 condition 猜
     action_descriptions: list[str] = field(default_factory=list)  # 动作的人类可读描述
-    cooldown_seconds: int = 10                           # 防重复触发冷却
+    cooldown_seconds: int = 5                            # 防重复触发冷却（数据类兜底默认；实际由 config automation.default_cooldown_seconds 驱动）
     last_triggered_at: float = 0.0                       # 上次触发时间(秒级)
     user_id: str = ""                                    # 创建者，用于 per-user LLM key 解析；空表示老规则回退全局
 
@@ -38,6 +40,7 @@ class AutomationRule:
             "trigger": self.trigger,
             "conditions": self.conditions,
             "condition": self.condition,
+            "type": self.type,
             "actions": self.actions,
             "action_descriptions": self.action_descriptions,
             "summary": self.summary,
@@ -57,6 +60,27 @@ class RuleRegistryService:
         self._loaded = False
         # 使用统一的 TaskManager 管理后台任务
         self._task_manager = TaskManager()
+
+    @staticmethod
+    def _guess_type(condition: str) -> str:
+        """老规则无 type 时按 condition 关键词猜路由类型。
+
+        顺序：视觉词→vision；雨/温/天气→weather；点/时/早/晚/夜→time；兜底 vision。
+        「沾视觉一律 vision」：条件涉及画面可见事件就走 VL，time/weather 仅限纯时间/天气条件。
+        """
+        text = (condition or "").strip()
+        if not text:
+            return "vision"
+        vision_words = ("看", "画面", "桌", "人", "坐", "站", "床", "沙发", "屏幕", "键", "鼠", "猫", "书", "杯")
+        if any(w in text for w in vision_words):
+            return "vision"
+        weather_words = ("雨", "温", "天气", "风", "雪", "晴", "阴", "雾")
+        if any(w in text for w in weather_words):
+            return "weather"
+        time_words = ("点", "时", "早", "晚", "夜", "分", "钟")
+        if any(w in text for w in time_words):
+            return "time"
+        return "vision"
 
     async def load_from_db(self) -> None:
         """从 SQLite 加载规则到内存缓存。"""
@@ -80,8 +104,9 @@ class RuleRegistryService:
                             updated_at=int(item.get("updated_at", item.get("created_at", time.time() * 1000))),
                             name=item.get("name", ""),
                             condition=item.get("condition", ""),
+                            type=str(item.get("type") or self._guess_type(item.get("condition", ""))),
                             action_descriptions=item.get("action_descriptions", []),
-                            cooldown_seconds=int(item.get("cooldown_seconds", 10)),
+                            cooldown_seconds=int(item.get("cooldown_seconds", get_config("automation.default_cooldown_seconds", 5))),
                             last_triggered_at=float(item.get("last_triggered_at", 0.0)),
                             user_id=str(item.get("user_id", "")),
                         )
@@ -142,8 +167,9 @@ class RuleRegistryService:
             updated_at=now,
             name=str(rule.get("name", "")),
             condition=str(rule.get("condition", "")),
+            type=str(rule.get("type") or "vision"),
             action_descriptions=rule.get("action_descriptions", []),
-            cooldown_seconds=int(rule.get("cooldown_seconds", 10)),
+            cooldown_seconds=int(rule.get("cooldown_seconds", get_config("automation.default_cooldown_seconds", 5))),
             last_triggered_at=0.0,
             user_id=str(user_id or rule.get("user_id", "")),
         )

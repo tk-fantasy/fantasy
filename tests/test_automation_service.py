@@ -29,6 +29,17 @@ class TestInCooldown:
         rule = {"last_triggered_at": time.time()}
         assert self.svc._in_cooldown(rule, time.time()) is True
 
+    def test_default_cooldown_reads_config(self, monkeypatch):
+        """cooldown 缺省时读 automation.default_cooldown_seconds（P0：10→config 驱动）。"""
+        import app.core.config as cfg
+        monkeypatch.setitem(cfg.CONFIG["automation"], "default_cooldown_seconds", 7)
+        # 3s < 7s → 在冷却内
+        rule_in = {"last_triggered_at": time.time() - 3}
+        assert self.svc._in_cooldown(rule_in, time.time()) is True
+        # 10s > 7s → 过期
+        rule_out = {"last_triggered_at": time.time() - 10}
+        assert self.svc._in_cooldown(rule_out, time.time()) is False
+
 
 class TestResolveToolName:
     def setup_method(self):
@@ -236,7 +247,7 @@ class TestAutomationEvaluatePerUser:
         registry = MagicMock()
         registry.list_rules.return_value = [
             {
-                "id": "r1", "name": "晚上关灯", "condition": "晚上10点后",
+                "id": "r1", "name": "晚上关灯", "condition": "晚上10点后", "type": "time",
                 "actions": [], "enabled": True, "cooldown_seconds": 0,
                 "last_triggered_at": 0, "user_id": "u-per-user",
             }
@@ -275,7 +286,7 @@ class TestAutomationEvaluatePerUser:
         registry = MagicMock()
         registry.list_rules.return_value = [
             {
-                "id": "r1", "name": "晚上关灯", "condition": "晚上10点后",
+                "id": "r1", "name": "晚上关灯", "condition": "晚上10点后", "type": "time",
                 "actions": [], "enabled": True, "cooldown_seconds": 0,
                 "last_triggered_at": 0, "user_id": "u-no-config",
             }
@@ -295,7 +306,7 @@ class TestAutomationEvaluatePerUser:
         registry = MagicMock()
         registry.list_rules.return_value = [
             {
-                "id": "r1", "name": "晚上关灯", "condition": "晚上10点后",
+                "id": "r1", "name": "晚上关灯", "condition": "晚上10点后", "type": "time",
                 "actions": [], "enabled": True, "cooldown_seconds": 0,
                 "last_triggered_at": 0,  # 故意不设 user_id
             }
@@ -316,7 +327,7 @@ class TestAutomationEvaluatePerUser:
         registry = MagicMock()
         registry.list_rules.return_value = [
             {
-                "id": "r1", "name": "有人开灯", "condition": "桌上有鼠标",
+                "id": "r1", "name": "有人开灯", "condition": "桌上有鼠标", "type": "vision",
                 "actions": [], "enabled": True, "cooldown_seconds": 0,
                 "last_triggered_at": 0, "user_id": "u-per-user",
             }
@@ -339,4 +350,199 @@ class TestAutomationEvaluatePerUser:
         vision.evaluate_condition.assert_awaited()
         global_chat.chat.assert_not_awaited()
         mock_resolve.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# P1：按 rule.type 路由（time/weather → chat，vision → VL）
+# ---------------------------------------------------------------------------
+
+class TestRuleTypeRouting:
+    """P1：按 rule.type 路由——time/weather 走 chat，vision 走 VL（替代全局 use_context_only）。"""
+
+    def _make_svc(self, registry, vision=None):
+        svc = AutomationService(registry, vision_service=vision)
+        chat = MagicMock()
+        chat.chat = AsyncMock(return_value="1")
+        svc._chat_client = chat
+        svc._build_condition_context = AsyncMock(return_value="ctx")
+        return svc, chat
+
+    def _rule(self, rtype="vision", cond="桌上有鼠标"):
+        return {
+            "id": "r1", "name": "t", "condition": cond, "type": rtype,
+            "actions": [], "enabled": True, "cooldown_seconds": 0, "last_triggered_at": 0,
+        }
+
+    @pytest.mark.asyncio
+    async def test_time_rule_uses_chat_not_vl(self):
+        registry = MagicMock()
+        registry.list_rules.return_value = [self._rule("time", "晚上10点后")]
+        vision = MagicMock()
+        vision.encode_frames_b64 = AsyncMock(return_value="b64")
+        vision.evaluate_condition = AsyncMock(return_value=1)
+        svc, chat = self._make_svc(registry, vision)
+        await svc.evaluate(frames=[[1, 2, 3]])
+        chat.chat.assert_awaited()              # time 走 chat
+        vision.evaluate_condition.assert_not_awaited()  # 不走 VL
+
+    @pytest.mark.asyncio
+    async def test_weather_rule_uses_chat_not_vl(self):
+        registry = MagicMock()
+        registry.list_rules.return_value = [self._rule("weather", "下雨时")]
+        vision = MagicMock()
+        vision.encode_frames_b64 = AsyncMock(return_value="b64")
+        vision.evaluate_condition = AsyncMock(return_value=1)
+        svc, chat = self._make_svc(registry, vision)
+        await svc.evaluate(frames=[[1, 2, 3]])
+        chat.chat.assert_awaited()              # weather 走 chat
+        vision.evaluate_condition.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_vision_rule_uses_vl_not_chat(self):
+        registry = MagicMock()
+        registry.list_rules.return_value = [self._rule("vision", "桌上有鼠标")]
+        vision = MagicMock()
+        vision.encode_frames_b64 = AsyncMock(return_value="b64")
+        vision.evaluate_condition = AsyncMock(return_value=0)
+        svc, chat = self._make_svc(registry, vision)
+        await svc.evaluate(frames=[[1, 2, 3]])
+        vision.evaluate_condition.assert_awaited()  # vision 走 VL
+        chat.chat.assert_not_awaited()              # 不走 chat
+
+    @pytest.mark.asyncio
+    async def test_vision_rule_no_frames_skipped(self):
+        registry = MagicMock()
+        registry.list_rules.return_value = [self._rule("vision", "桌上有鼠标")]
+        vision = MagicMock()
+        vision.encode_frames_b64 = AsyncMock(return_value="b64")
+        vision.evaluate_condition = AsyncMock(return_value=1)
+        svc, chat = self._make_svc(registry, vision)
+        await svc.evaluate(frames=[])  # 无帧
+        vision.evaluate_condition.assert_not_awaited()  # 无帧跳过 VL 组
+        chat.chat.assert_not_awaited()                    # vision 规则不回退 chat
+
+    @pytest.mark.asyncio
+    async def test_type_missing_defaults_to_vision(self):
+        registry = MagicMock()
+        rule = self._rule()  # 不设 type
+        rule.pop("type")
+        registry.list_rules.return_value = [rule]
+        vision = MagicMock()
+        vision.encode_frames_b64 = AsyncMock(return_value="b64")
+        vision.evaluate_condition = AsyncMock(return_value=0)
+        svc, chat = self._make_svc(registry, vision)
+        await svc.evaluate(frames=[[1, 2, 3]])
+        vision.evaluate_condition.assert_awaited()  # 兜底 vision → VL
+        chat.chat.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# P1：设备状态门控（动作目标态已满足 → 评估前跳过，0 LLM/0 action）
+# ---------------------------------------------------------------------------
+
+class TestDeviceGate:
+    """P1：设备状态门控——按动作推导目标态，cheap HA 查当前态，已在目标态跳过。"""
+
+    def setup_method(self):
+        self.svc = AutomationService.__new__(AutomationService)
+
+    def _action(self, service="turn_off", entity_id="light.l", data=None, domain="light"):
+        return {"mcp_tool_input": {"domain": domain, "service": service, "entity_id": entity_id, "data": data or {}}}
+
+    def test_turn_off_already_off(self):
+        rule = {"actions": [self._action("turn_off", "light.l")]}
+        state_map = {"light.l": {"entity_id": "light.l", "state": "off", "attributes": {}}}
+        assert self.svc._device_already_in_target(rule, state_map) is True
+
+    def test_turn_off_still_on(self):
+        rule = {"actions": [self._action("turn_off", "light.l")]}
+        state_map = {"light.l": {"entity_id": "light.l", "state": "on", "attributes": {}}}
+        assert self.svc._device_already_in_target(rule, state_map) is False
+
+    def test_close_cover_already_closed(self):
+        rule = {"actions": [self._action("close_cover", "cover.c", domain="cover")]}
+        state_map = {"cover.c": {"entity_id": "cover.c", "state": "closed"}}
+        assert self.svc._device_already_in_target(rule, state_map) is True
+
+    def test_close_cover_still_open(self):
+        rule = {"actions": [self._action("close_cover", "cover.c", domain="cover")]}
+        state_map = {"cover.c": {"entity_id": "cover.c", "state": "open"}}
+        assert self.svc._device_already_in_target(rule, state_map) is False
+
+    def test_set_temperature_at_target(self):
+        rule = {"actions": [self._action("set_temperature", "climate.k", {"temperature": 26}, domain="climate")]}
+        state_map = {"climate.k": {"entity_id": "climate.k", "state": "heat", "attributes": {"temperature": 26.0}}}
+        assert self.svc._device_already_in_target(rule, state_map) is True
+
+    def test_set_temperature_off_target(self):
+        rule = {"actions": [self._action("set_temperature", "climate.k", {"temperature": 26}, domain="climate")]}
+        state_map = {"climate.k": {"entity_id": "climate.k", "state": "heat", "attributes": {"temperature": 25.0}}}
+        assert self.svc._device_already_in_target(rule, state_map) is False
+
+    def test_unknown_service_not_skipped(self):
+        # toggle/script 推不出目标态 → 保守不跳过
+        rule = {"actions": [self._action("toggle", "light.l")]}
+        state_map = {"light.l": {"entity_id": "light.l", "state": "off"}}
+        assert self.svc._device_already_in_target(rule, state_map) is False
+
+    def test_missing_entity_not_skipped(self):
+        rule = {"actions": [self._action("turn_off", "light.missing")]}
+        assert self.svc._device_already_in_target(rule, {}) is False
+
+    def test_no_actions_not_skipped(self):
+        assert self.svc._device_already_in_target({"actions": []}, {}) is False
+
+    def test_unavailable_state_not_match(self):
+        rule = {"actions": [self._action("turn_off", "light.l")]}
+        state_map = {"light.l": {"entity_id": "light.l", "state": "unavailable"}}
+        assert self.svc._device_already_in_target(rule, state_map) is False
+
+    def test_multiple_actions_all_in_target(self):
+        rule = {"actions": [
+            self._action("turn_off", "light.a"),
+            self._action("close_cover", "cover.b", domain="cover"),
+        ]}
+        state_map = {
+            "light.a": {"entity_id": "light.a", "state": "off"},
+            "cover.b": {"entity_id": "cover.b", "state": "closed"},
+        }
+        assert self.svc._device_already_in_target(rule, state_map) is True
+
+    def test_multiple_actions_one_not_in_target(self):
+        rule = {"actions": [
+            self._action("turn_off", "light.a"),
+            self._action("close_cover", "cover.b", domain="cover"),
+        ]}
+        state_map = {
+            "light.a": {"entity_id": "light.a", "state": "off"},
+            "cover.b": {"entity_id": "cover.b", "state": "open"},  # 未关
+        }
+        assert self.svc._device_already_in_target(rule, state_map) is False
+
+    @pytest.mark.asyncio
+    async def test_gate_skips_rule_zero_llm(self):
+        """集成：动作目标态已满足 → 整条规则评估前跳过，chat/VL 都不调（0 LLM）。"""
+        registry = MagicMock()
+        registry.list_rules.return_value = [
+            {"id": "r1", "name": "关窗帘", "condition": "桌上有鼠标", "type": "vision",
+             "actions": [{"mcp_tool_input": {"domain": "cover", "service": "close_cover",
+                                            "entity_id": "cover.c", "data": {}}}],
+             "enabled": True, "cooldown_seconds": 0, "last_triggered_at": 0},
+        ]
+        vision = MagicMock()
+        vision.encode_frames_b64 = AsyncMock(return_value="b64")
+        vision.evaluate_condition = AsyncMock(return_value=1)
+        ha = MagicMock()
+        ha.get_states_snapshot = AsyncMock(return_value=[
+            {"entity_id": "cover.c", "state": "closed", "attributes": {}}
+        ])
+        svc = AutomationService(registry, vision_service=vision, ha_service=ha)
+        chat = MagicMock()
+        chat.chat = AsyncMock(return_value="1")
+        svc._chat_client = chat
+        svc._build_condition_context = AsyncMock(return_value="ctx")
+        result = await svc.evaluate(frames=[[1, 2, 3]])
+        assert result == []  # 门控跳过 → 无动作
+        vision.evaluate_condition.assert_not_awaited()  # 0 VL
+        chat.chat.assert_not_awaited()                  # 0 chat
 

@@ -123,3 +123,61 @@ class TestRuleRegistryUserId:
                 assert args[0] == "r1"
                 assert args[2] == "u-db"  # 第三参数 user_id
 
+
+# ---------------------------------------------------------------------------
+# P1：老规则无 type 时按 condition 关键词猜路由类型（迁移）
+# ---------------------------------------------------------------------------
+
+class TestGuessType:
+    """P1：_guess_type 按 condition 关键词猜 time/weather/vision。"""
+
+    def test_vision_words(self):
+        assert RuleRegistryService._guess_type("桌上有鼠标") == "vision"
+        assert RuleRegistryService._guess_type("画面里有人坐着") == "vision"
+
+    def test_weather_words(self):
+        assert RuleRegistryService._guess_type("下雨时") == "weather"
+        assert RuleRegistryService._guess_type("温度高于30度") == "weather"
+
+    def test_time_words(self):
+        assert RuleRegistryService._guess_type("晚上10点后") == "time"
+        assert RuleRegistryService._guess_type("每天早上7点") == "time"
+
+    def test_empty_falls_back_to_vision(self):
+        assert RuleRegistryService._guess_type("") == "vision"
+        assert RuleRegistryService._guess_type("   ") == "vision"
+
+    def test_mixed_vision_wins_over_time(self):
+        # 含视觉词 → 一律 vision（即使也有时间词）
+        assert RuleRegistryService._guess_type("晚上桌上有鼠标") == "vision"
+
+    def test_weather_wins_over_time(self):
+        # 雨 + 晚 → weather（检查顺序 weather 在 time 前）
+        assert RuleRegistryService._guess_type("晚上下雨") == "weather"
+
+    def test_unknown_falls_back_to_vision(self):
+        assert RuleRegistryService._guess_type("某个奇怪条件") == "vision"
+
+
+class TestLoadFromDbGuessType:
+    """P1：load_from_db 加载老规则（无 type 列）时按 condition 猜 type 并写入内存。"""
+
+    @pytest.mark.asyncio
+    async def test_old_rules_get_guessed_type(self):
+        svc = RuleRegistryService()
+        with patch("app.services.rule_registry_service.Database") as MockDB:
+            mock_db = MagicMock()
+            mock_db.rules_all = AsyncMock(return_value=[
+                {"id": "old1", "condition": "下雨时关窗", "actions": [], "enabled": True},
+                {"id": "old2", "condition": "桌上有鼠标", "actions": [], "enabled": True},
+                {"id": "old3", "condition": "晚上10点", "actions": [], "enabled": True},
+                {"id": "old4", "condition": "已有类型", "type": "weather", "actions": [], "enabled": True},
+            ])
+            MockDB.get.return_value = mock_db
+            await svc.load_from_db()
+        rules = {r["id"]: r for r in svc.list_rules()}
+        assert rules["old1"]["type"] == "weather"   # 猜的
+        assert rules["old2"]["type"] == "vision"
+        assert rules["old3"]["type"] == "time"
+        assert rules["old4"]["type"] == "weather"   # 已有 type 不被猜覆盖
+

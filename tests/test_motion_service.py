@@ -72,3 +72,30 @@ class TestMotionDetector:
     def test_commit_reference_without_assess(self):
         det = MotionDetector()
         det.commit_reference()  # should not raise
+
+
+class TestThresholdSetter:
+    """P1-A：dhash 阈值滑块热更新——threshold 属性 setter（不改动 assess 语义）。"""
+
+    def test_setter_updates_value(self):
+        det = MotionDetector(threshold=15)
+        det.threshold = 50
+        assert det.threshold == 50
+
+    def test_setter_clamps_negative_to_zero(self):
+        det = MotionDetector(threshold=15)
+        det.threshold = -5
+        assert det.threshold == 0  # max(0, -5)
+
+    def test_setter_affects_assess(self):
+        # 阈值拉到最大 → distance > threshold 永不成立 → moved=False（降级定时器档）
+        det = MotionDetector(threshold=15)
+        det.threshold = 256
+        ramp = np.arange(256, dtype=np.uint8)
+        f1 = np.stack([np.tile(ramp, (100, 1))] * 3, axis=-1)
+        f2 = np.stack([np.tile(ramp[::-1], (100, 1))] * 3, axis=-1)
+        det.assess(f1)
+        det.commit_reference()
+        moved, distance = det.assess(f2)
+        assert moved is False  # distance(≤256) > 256 永不成立
+        assert distance > 0

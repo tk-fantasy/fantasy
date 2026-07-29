@@ -372,12 +372,36 @@ class RulePayloadRequest(BaseModel):
     condition: str = ""
     actions: list[dict[str, Any]] = Field(default_factory=list)
     enabled: bool = True
-    cooldown_seconds: int = 10
+    cooldown_seconds: int = 5
+    type: str = "vision"  # 规则类型 time/weather/vision；决定评估走 chat 还是 VL
 
 
 class RuleEnabledRequest(BaseModel):
     """POST /rules/{rule_id}/enabled 请求体。"""
     enabled: bool = True
+
+
+# --------------- Automation ---------------
+
+class AutomationSilentRequest(BaseModel):
+    """POST /automation/silent 请求体。开关与间隔任选其一传，未传者不改。"""
+    enabled: bool | None = None
+    interval_seconds: int | None = None
+
+
+class AutomationVisionRecognizerRequest(BaseModel):
+    """POST /automation/vision-recognizer 请求体。开关 /camera 视觉展示推理。"""
+    enabled: bool = True
+
+
+class AutomationCooldownRequest(BaseModel):
+    """POST /automation/cooldown 请求体。默认冷却秒数（只影响新建/无显式 cooldown 的规则）。"""
+    cooldown_seconds: int = 5
+
+
+class AutomationDhashThresholdRequest(BaseModel):
+    """POST /automation/dhash-threshold 请求体。dhash 运动判定阈值（与摄像头预览共享 vision.motion_threshold）。"""
+    threshold: int = 15
 
 
 # --------------- Scheduled Tasks ---------------

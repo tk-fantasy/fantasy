@@ -461,15 +461,22 @@ async def lifespan(_: FastAPI):
     dispatcher._tools = langchain_tools  # 供 per-user agent 构建使用
     _container.dispatcher = dispatcher
 
-    # 启动自动化评估
-    eval_interval = max(1.0, float(get_config("automation.eval_interval_seconds", 10.0)))
+    # 启动自动化评估（dhash 事件触发 + 定时器兜底，替代旧 10s 轮询 + 推理完成双触发）
+    min_trigger_interval = max(0.5, float(get_config("vision.min_infer_interval_seconds", 3.0)))
+    silent_eval_enabled = bool(get_config("automation.silent_eval_enabled", True))
+    silent_eval_interval = max(5.0, float(get_config("automation.silent_eval_interval_seconds", 60.0)))
     _automation_agent_ref[0] = AutomationAgent(
         automation_service=automation_service,
         camera_stream=camera_stream,
-        eval_interval=eval_interval,
+        min_trigger_interval=min_trigger_interval,
+        silent_eval_enabled=silent_eval_enabled,
+        silent_eval_interval=silent_eval_interval,
     )
     await _automation_agent_ref[0].start()
-    logger.info("AutomationAgent started (eval_interval=%.1fs)", eval_interval)
+    logger.info(
+        "AutomationAgent started (min_trigger=%.1fs, silent=%s/%.1fs)",
+        min_trigger_interval, silent_eval_enabled, silent_eval_interval,
+    )
 
     # 启动定时任务调度器（与 AutomationAgent 互补：精确时刻触发，零 LLM 开销）
     scheduler_service = SchedulerService(
@@ -485,18 +492,16 @@ async def lifespan(_: FastAPI):
     # 回填工具依赖的 ref：让 scheduled_task_* 工具能访问调度器
     tool_deps.scheduler_service_ref[0] = scheduler_service
 
-    # 视觉推理完成回调
-    def _on_inference_done() -> None:
-        if _automation_agent_ref[0] is None:
-            return
-        logger.info("Inference done, triggering rule evaluation")
-        _automation_agent_ref[0].trigger_evaluate()
-
     _startup_progress.set("正在连接摄像头与智能家居...")
-    camera_stream.set_on_inference_done(_on_inference_done)
+    # dhash 运动触发自动化评估（事件驱动，替代旧 on_inference_done 双触发）。
+    # on_inference_done 回调已废弃：dhash 触发 + 定时器兜底两条入口足够，
+    # 推理完成后再触发会造成重复评估。set_on_inference_done 保留方法兼容。
+    camera_stream.set_on_automation_trigger(_automation_agent_ref[0].trigger_evaluate)
     # 注入主事件循环：运动推理通过 run_coroutine_threadsafe 投到主循环跑，
-    # httpx 网络等待时释放 GIL，不再抢 GIL 饿死摄像头采集线程（修复运动推理时 FPS 崩到 ~1）
+    # httpx 网络等待时释放 GIL，不再像线程池那样抢 GIL 饿死采集线程（修复运动推理时 FPS 崩到 ~1）
     camera_stream.set_event_loop(asyncio.get_running_loop())
+    # 注入视觉展示开关初始状态（用户在 /camera 关过则重启后仍保持关闭）
+    camera_stream.set_camera_vl_display_enabled(bool(get_config("automation.camera_vl_display_enabled", True)))
     camera_stream.start()
 
     # 后台任务
@@ -567,6 +572,7 @@ from .routes.setup_routes import router as setup_router
 from .routes.doc_routes import router as doc_router
 from .routes.sg_routes import router as sg_router
 from .routes.ws_routes import router as ws_router
+from .routes.automation_routes import router as automation_router
 app.include_router(settings_router, prefix="/api")
 app.include_router(home_router, prefix="/api")
 app.include_router(weather_router, prefix="/api")
@@ -581,6 +587,7 @@ app.include_router(session_router, prefix="/api")
 app.include_router(ha_router, prefix="/api")
 app.include_router(mcp_router, prefix="/api")
 app.include_router(ptz_router, prefix="/api")
+app.include_router(automation_router, prefix="/api")  # 自动化：/api/automation/*
 app.include_router(setup_router)  # 无 prefix，包含 / 和 /favicon.ico
 app.include_router(doc_router)  # 路径已包含 /api 前缀或无
 app.include_router(sg_router, prefix="/api")  # 语义图：/api/sg/*

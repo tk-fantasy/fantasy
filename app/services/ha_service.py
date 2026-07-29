@@ -38,6 +38,11 @@ class HAService:
         self._states_cache_at = now
         return states
 
+    async def get_states_snapshot(self) -> list[dict[str, Any]]:
+        """所有实体状态快照（带 5s 缓存）。供设备状态门控等只读路径复用，单次评估
+        周期内多规则共享一次 HA 拉取（命中缓存 0 网络开销）。"""
+        return await self._get_states_cached()
+
     async def _get_area_maps_cached(self) -> tuple[dict[str, str], dict[str, str]]:
         """获取 area_id→area_name 和 entity_id→area_id 映射（缓存 60 秒）。"""
         now = time.time()

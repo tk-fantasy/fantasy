@@ -7,6 +7,7 @@ import re
 from typing import Callable
 
 from ..clients.llm_chat_client import LlmChatClient
+from ..core.config import get_config
 from ..utils.json_extractor import extract_json_from_content
 from ..utils.text_match import fuzzy_match
 from .entity_controls import resolve_controls, controls_to_text
@@ -255,9 +256,10 @@ class RuleService:
             # 兜底:确保关键字段存在
             parsed.setdefault("name", text[:20])
             parsed.setdefault("condition", "")
+            parsed.setdefault("type", "vision")  # time/weather/vision；LLM 漏输出时兜底 vision
             parsed.setdefault("actions", [])
             parsed.setdefault("action_descriptions", [])
-            parsed.setdefault("cooldown_seconds", 10)
+            parsed.setdefault("cooldown_seconds", get_config("automation.default_cooldown_seconds", 5))
             parsed.setdefault("summary", text)
 
             # 校验 actions（使用完整设备数据，带 attributes）
@@ -287,9 +289,10 @@ class RuleService:
         return {
             "name": text[:20],
             "condition": "",
+            "type": "vision",
             "actions": [],
             "action_descriptions": [],
-            "cooldown_seconds": 10,
+            "cooldown_seconds": get_config("automation.default_cooldown_seconds", 5),
             "summary": text,
         }
 

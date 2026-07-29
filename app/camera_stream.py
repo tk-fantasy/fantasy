@@ -139,6 +139,10 @@ class CameraStream:
         self._infer_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="infer")
                 
         self._on_inference_done: Callable[[], None] | None = None
+        # dhash 运动触发自动化的回调（与 /camera 视觉展示推理解耦：关展示不影响自动化）
+        self._on_automation_trigger: Callable[[], None] | None = None
+        # /camera 页面视觉展示推理开关：只门控 classify_frame 预览，不影响 dhash 自动化触发
+        self._camera_vl_display_enabled: bool = True
         # 主事件循环引用：运动推理通过 run_coroutine_threadsafe 投到主循环跑，
         # httpx 网络等待时释放 GIL，不再像线程池那样抢 GIL 饿死采集线程。
         # 由 set_event_loop 在应用启动时注入（主循环已运行后）。
@@ -304,6 +308,29 @@ class CameraStream:
     def set_on_inference_done(self, callback: Callable[[], None]) -> None:
         """注册视觉推理完成回调,用于触发规则评估(降低响应延迟)。"""
         self._on_inference_done = callback
+
+    def set_on_automation_trigger(self, callback: Callable[[], None]) -> None:
+        """注册 dhash 运动触发回调，用于事件驱动自动化评估。
+
+        与 /camera 视觉展示推理解耦：关掉视觉展示（set_camera_vl_display_enabled）
+        只停 /camera 的 VL 预览，不影响 dhash 检测与自动化触发。
+        """
+        self._on_automation_trigger = callback
+
+    def set_camera_vl_display_enabled(self, enabled: bool) -> None:
+        """开关 /camera 页面的视觉展示推理（classify_frame 预览）。
+
+        关掉只停预览推理，dhash 运动检测与自动化触发不受影响。
+        """
+        self._camera_vl_display_enabled = bool(enabled)
+
+    def set_motion_threshold(self, threshold: int) -> None:
+        """热更新 dhash 运动判定阈值（与 /automation/dhash-threshold 滑块联动）。
+
+        阈值拉满（=hash_size²）时 distance > threshold 永不成立 → dhash 不触发，
+        自动化降级为纯定时器兜底。复用 vision.motion_threshold，与摄像头预览共享。
+        """
+        self._motion.threshold = int(threshold)
 
     def set_event_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         """注入主事件循环，运动推理通过 run_coroutine_threadsafe 投到主循环跑。
@@ -671,9 +698,17 @@ class CameraStream:
                 time.sleep(0.5)
 
     def _maybe_schedule_inference(self, frame: np.ndarray) -> None:
-        """运动门控:有运动或太久没更新才把帧送给视觉模型。"""
-        if not self._recognizer.enabled:
-            return
+        """运动门控 + 自动化事件触发。
+
+        dhash 检测与自动化触发移到 recognizer 门控之前——关掉 /camera 视觉展示
+        （_camera_vl_display_enabled=False）只停预览推理，不影响自动化；视觉
+        模型未启用时同理（自动化照常靠 dhash 触发）。
+
+        注：MotionDetector 的参考帧语义为「上次送模型推理的帧」（commit_reference
+        在推理真正调度后调用），此处不改变该契约。视觉展示关闭时 dhash 不再 commit，
+        moved 会持续为真 → 自动化退化为 3s 节流轮询（由 trigger_evaluate 的节流闸
+        兜底，非无界）；展示开启时维持事件驱动。这是可接受的降级路径。
+        """
         now = time.time()
         if now - self._last_motion_check < self._motion_check_interval:
             return
@@ -681,9 +716,23 @@ class CameraStream:
 
         moved, distance = self._motion.assess(frame)
 
-        # 判断 + 赋值：必须在同一个锁内，保证原子性
+        # 运动距离始终刷新给 /camera 状态展示（与展示开关无关）
         with self._lock:
             self._state.motion_distance = distance
+
+        # 自动化触发：moved 即触发，不受视觉展示开关 / 视觉模型启用与否影响
+        if moved and self._on_automation_trigger is not None:
+            try:
+                self._on_automation_trigger()
+            except Exception:  # noqa: BLE001
+                logger.exception("on_automation_trigger callback failed")
+
+        # /camera 展示推理：视觉展示关 或 视觉模型未启用 → 不调度预览推理
+        if not self._camera_vl_display_enabled or not self._recognizer.enabled:
+            return
+
+        # 判断 + 赋值：必须在同一个锁内，保证原子性
+        with self._lock:
             if self._infer_busy:
                 # 安全阀：推理线程可能 hang（LLM 超时未生效），超时后强制重置标记
                 if self._infer_started_at > 0 and (time.time() - self._infer_started_at) > self._infer_timeout:

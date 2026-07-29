@@ -5,7 +5,7 @@ import AdvancedModal from '../components/AdvancedModal.vue'
 import { apiGet, apiPost } from '../utils/api'
 
 // ===== Modal 管理 =====
-const activeModal = ref(null) // 'weather' | 'exa' | 'vision' | 'ha' | 'unique' | 'keys'
+const activeModal = ref(null) // 'weather' | 'exa' | 'vision' | 'ha' | 'unique' | 'keys' | 'automation'
 
 const modalTitle = computed(() => {
   const titles = {
@@ -16,6 +16,7 @@ const modalTitle = computed(() => {
     ha: 'Home Assistant',
     unique: '助手角色',
     keys: 'API Keys',
+    automation: '自动化',
   }
   return titles[activeModal.value] || ''
 })
@@ -76,6 +77,21 @@ const ptzPassword = ref('')
 const ptzSaving = ref(false)
 const ptzSaved = ref(false)
 
+// 自动化（dhash 事件触发 + 定时器兜底；dhash 阈值滑块留 P1）
+const automationConfig = ref({
+  silent_eval_enabled: true,
+  silent_eval_interval_seconds: 60,
+  default_cooldown_seconds: 5,
+  motion_threshold: 15,
+  motion_threshold_max: 256,
+  min_trigger_interval: 3.0,
+  camera_vl_display_enabled: true,
+  running: false,
+  eval_count: 0,
+})
+const automationSaving = ref(false)
+const automationSaved = ref(false)
+
 // HA 配置
 const haConfig = ref({ url: '', token_set: false, token_preview: '' })
 const haTokenInput = ref('')
@@ -102,13 +118,14 @@ const typeSelectOptions = typeOptions.map(t => ({ value: t, label: t }))
 async function loadAll() {
   loading.value = true
   try {
-    const [weatherRes, advRes, haRes, uniqueRes, keysRes, ptzRes] = await Promise.all([
+    const [weatherRes, advRes, haRes, uniqueRes, keysRes, ptzRes, automationRes] = await Promise.all([
       fetch('/api/weather/config'),
       fetch('/api/advanced/config'),
       fetch('/api/ha/config'),
       fetch('/api/unique'),
       fetch('/api/llm_keys'),
       fetch('/api/ptz/config'),
+      fetch('/api/automation/status'),
     ])
 
     if (weatherRes.ok) {
@@ -149,6 +166,22 @@ async function loadAll() {
         has_password: data.has_password ?? false,
         speed: data.speed ?? 0.5,
         step_ms: data.step_ms ?? 300,
+      }
+    }
+    if (automationRes.ok) {
+      const json = await automationRes.json()
+      const data = json.data || {}
+      automationConfig.value = {
+        ...automationConfig.value,
+        silent_eval_enabled: data.silent_eval_enabled ?? true,
+        silent_eval_interval_seconds: data.silent_eval_interval_seconds ?? 60,
+        default_cooldown_seconds: data.default_cooldown_seconds ?? 5,
+        motion_threshold: data.motion_threshold ?? 15,
+        motion_threshold_max: data.motion_threshold_max ?? 256,
+        min_trigger_interval: data.min_trigger_interval ?? 3.0,
+        camera_vl_display_enabled: data.camera_vl_display_enabled ?? true,
+        running: data.running ?? false,
+        eval_count: data.eval_count ?? 0,
       }
     }
   } catch (e) {
@@ -326,6 +359,33 @@ async function savePtz() {
     console.error('Failed to save PTZ config:', e)
   } finally {
     ptzSaving.value = false
+  }
+}
+
+// ===== 自动化保存 =====
+async function saveAutomation() {
+  automationSaving.value = true
+  automationSaved.value = false
+  try {
+    await Promise.all([
+      apiPost('/api/automation/silent', {
+        enabled: automationConfig.value.silent_eval_enabled,
+        interval_seconds: automationConfig.value.silent_eval_interval_seconds,
+      }),
+      apiPost('/api/automation/cooldown', {
+        cooldown_seconds: automationConfig.value.default_cooldown_seconds,
+      }),
+      apiPost('/api/automation/dhash-threshold', {
+        threshold: automationConfig.value.motion_threshold,
+      }),
+    ])
+    await loadAll()
+    automationSaved.value = true
+    setTimeout(() => { automationSaved.value = false }, 2000)
+  } catch (e) {
+    console.error('Failed to save automation config:', e)
+  } finally {
+    automationSaving.value = false
   }
 }
 
@@ -521,6 +581,11 @@ const ptzSummary = computed(() => ptzConfig.value.enabled ? (ptzConfig.value.ip 
 const haSummary = computed(() => haConfig.value.url || '未配置')
 const uniqueSummary = computed(() => personaCustomized.value ? '已自定义' : '默认')
 const keysSummary = computed(() => `${keys.value.length} 个`)
+const automationSummary = computed(() =>
+  automationConfig.value.silent_eval_enabled
+    ? `兜底 ${automationConfig.value.silent_eval_interval_seconds}s`
+    : '仅事件触发'
+)
 
 onMounted(() => {
   loadAll()
@@ -601,6 +666,14 @@ onUnmounted(() => {
           <div class="config-info">
             <span class="config-title">API Keys</span>
             <span class="config-status">{{ keysSummary }}</span>
+          </div>
+        </div>
+
+        <div class="config-card" @click="openModal('automation')">
+          <span class="config-icon">&#9881;</span>
+          <div class="config-info">
+            <span class="config-title">自动化</span>
+            <span class="config-status">{{ automationSummary }}</span>
           </div>
         </div>
       </div>
@@ -1007,6 +1080,66 @@ onUnmounted(() => {
           </div>
         </div>
       </div>
+
+      <!-- 自动化配置 -->
+      <div v-else-if="activeModal === 'automation'" class="modal-content">
+        <div class="setting-row">
+          <label class="setting-label">
+            <span class="label-text">定时器兜底</span>
+            <span class="label-desc">dhash 阈值拉满时即轮询间隔；关掉仅靠事件触发</span>
+          </label>
+          <input type="checkbox" v-model="automationConfig.silent_eval_enabled" />
+        </div>
+        <div class="setting-row">
+          <label class="setting-label">
+            <span class="label-text">兜底间隔（秒）</span>
+            <span class="label-desc">5~3600，dhash 无运动时按此周期评估</span>
+          </label>
+          <div class="slider-row">
+            <input type="range" min="5" max="3600" step="1" v-model.number="automationConfig.silent_eval_interval_seconds" />
+            <span class="slider-value">{{ automationConfig.silent_eval_interval_seconds }}s</span>
+          </div>
+        </div>
+        <div class="setting-row">
+          <label class="setting-label">
+            <span class="label-text">默认冷却（秒）</span>
+            <span class="label-desc">1~3600，只影响新建/无显式 cooldown 的规则</span>
+          </label>
+          <div class="slider-row">
+            <input type="range" min="1" max="3600" step="1" v-model.number="automationConfig.default_cooldown_seconds" />
+            <span class="slider-value">{{ automationConfig.default_cooldown_seconds }}s</span>
+          </div>
+        </div>
+        <div class="setting-row">
+          <label class="setting-label">
+            <span class="label-text">dhash 阈值</span>
+            <span class="label-desc">运动检测灵敏度（1~{{ automationConfig.motion_threshold_max }}），拉满=关 dhash 降级定时器</span>
+          </label>
+          <div class="slider-row">
+            <input type="range" min="1" :max="automationConfig.motion_threshold_max" step="1" v-model.number="automationConfig.motion_threshold" />
+            <span class="slider-value">{{ automationConfig.motion_threshold }} / {{ automationConfig.motion_threshold_max }}</span>
+          </div>
+        </div>
+        <div class="setting-row">
+          <label class="setting-label">
+            <span class="label-text">dhash 节流</span>
+            <span class="label-desc">运动触发评估的最小间隔，复用 vision.min_infer_interval_seconds</span>
+          </label>
+          <span class="slider-value">{{ automationConfig.min_trigger_interval }}s</span>
+        </div>
+        <div class="setting-row">
+          <label class="setting-label">
+            <span class="label-text">运行状态</span>
+            <span class="label-desc">已评估次数</span>
+          </label>
+          <span class="slider-value">{{ automationConfig.running ? '运行中' : '已停' }} · {{ automationConfig.eval_count }} 次</span>
+        </div>
+        <div class="modal-save-bar">
+          <button class="btn-primary" :class="{ saved: automationSaved }" @click="saveAutomation" :disabled="automationSaving">
+            {{ automationSaving ? '保存中...' : automationSaved ? '已保存' : '保存' }}
+          </button>
+        </div>
+      </div>
     </AdvancedModal>
   </div>
 </template>
@@ -1072,6 +1205,26 @@ onUnmounted(() => {
 
 .setting-input.narrow {
   width: 100px;
+}
+
+/* 自动化 modal 的滑块行 */
+.slider-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4, 10px);
+  min-width: 220px;
+}
+.slider-row input[type="range"] {
+  flex: 1;
+  min-width: 140px;
+  accent-color: var(--color-accent, #4a9eff);
+}
+.slider-value {
+  font-size: var(--text-sm, 13px);
+  color: var(--color-text-secondary, #888);
+  white-space: nowrap;
+  min-width: 60px;
+  text-align: right;
 }
 
 .setting-textarea {

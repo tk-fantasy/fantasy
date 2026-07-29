@@ -39,6 +39,11 @@ class MotionDetector:
     def threshold(self) -> int:
         return self._threshold
 
+    @threshold.setter
+    def threshold(self, value: int) -> None:
+        """热更新运动判定阈值（dhash 阈值滑块用）。不改动 assess/commit_reference 语义。"""
+        self._threshold = max(0, int(value))
+
     def assess(self, frame_bgr: np.ndarray) -> tuple[bool, int]:
         """返回 (是否运动, 与参考帧的汉明距离);尚无参考帧时返回 (True, -1)。"""
         current = compute_dhash(frame_bgr, self._hash_size)

@@ -81,7 +81,11 @@
     "max_backoff_seconds": 15.0
   },
   "automation": {
-    "eval_interval_seconds": 10
+    "eval_interval_seconds": 10,
+    "silent_eval_enabled": true,
+    "silent_eval_interval_seconds": 60,
+    "default_cooldown_seconds": 5,
+    "camera_vl_display_enabled": true
   },
   "chat_assistant": {
     "persona": "你是Aether，一个本地家庭智能助手，运行在用户自己的电脑上，连着一个摄像头，通过 Home Assistant 控制全屋智能设备。你的性格：简洁、务实，懂技术又不啰嗦。说话用中文，口语化，一次把事说清楚，不堆废话。",

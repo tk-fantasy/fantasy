@@ -106,12 +106,15 @@ async def agents_status(container: AppContainer = Depends(get_container)) -> Api
     automation_agent_ref = container.automation_agent_ref
     if automation_agent_ref[0] is None:
         return ApiResponse(data={"status": "not_started"})
+    agent = automation_agent_ref[0]
     return ApiResponse(
         data={
             "automation": {
-                "running": automation_agent_ref[0]._running,
-                "eval_interval": automation_agent_ref[0]._eval_interval,
-                "eval_count": automation_agent_ref[0]._eval_count,
+                "running": agent._running,
+                "min_trigger_interval": agent._min_trigger_interval,
+                "silent_enabled": agent._silent_enabled,
+                "silent_interval": agent._silent_interval,
+                "eval_count": agent._eval_count,
             },
         }
     )
