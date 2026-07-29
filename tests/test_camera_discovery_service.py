@@ -183,3 +183,57 @@ class TestFindCamera:
             )
         assert found_ip is None
         assert svc._status == "not_found"
+
+
+class TestApplyFoundIp:
+    """apply_found_ip: 更新 vision.rtsp_url(只换 IP)+ ptz.ip,通知 ptz 重连。"""
+
+    @pytest.mark.asyncio
+    async def test_updates_rtsp_url_and_ptz_ip(self):
+        from app.core import config as cfg
+        # 起始 config 有旧 rtsp_url 和 ptz.ip
+        cfg.CONFIG["vision"]["rtsp_url"] = "rtsp://192.168.1.50:554/stream2"
+        cfg.CONFIG["ptz"]["ip"] = "192.168.1.50"
+        svc = CameraDiscoveryService()
+        notify_mock = MagicMock()
+        with patch("app.services.camera_discovery_service.ptz_service_notify_ip_changed", notify_mock):
+            await svc.apply_found_ip("192.168.1.99")
+        # rtsp_url 的 IP 被换,port/path/凭据保留
+        assert "192.168.1.99" in cfg.CONFIG["vision"]["rtsp_url"]
+        assert ":554/stream2" in cfg.CONFIG["vision"]["rtsp_url"]
+        assert "192.168.1.50" not in cfg.CONFIG["vision"]["rtsp_url"]
+        # ptz.ip 同步更新
+        assert cfg.CONFIG["ptz"]["ip"] == "192.168.1.99"
+        # ptz 收到重连通知
+        notify_mock.assert_called_once_with("192.168.1.99")
+
+    @pytest.mark.asyncio
+    async def test_no_rtsp_url_only_updates_ptz(self):
+        """USB 模式(无 rtsp_url)只更新 ptz.ip。"""
+        from app.core import config as cfg
+        cfg.CONFIG["vision"]["rtsp_url"] = ""
+        cfg.CONFIG["ptz"]["ip"] = "192.168.1.50"
+        svc = CameraDiscoveryService()
+        with patch("app.services.camera_discovery_service.ptz_service_notify_ip_changed", MagicMock()):
+            await svc.apply_found_ip("192.168.1.99")
+        assert cfg.CONFIG["vision"]["rtsp_url"] == ""
+        assert cfg.CONFIG["ptz"]["ip"] == "192.168.1.99"
+
+
+class TestReplaceUrlHost:
+    """_replace_url_host: 只换 host,保留端口/路径/凭据。"""
+
+    def test_plain_url(self):
+        svc = CameraDiscoveryService()
+        out = svc._replace_url_host("rtsp://192.168.1.50:554/stream2", "192.168.1.99")
+        assert out == "rtsp://192.168.1.99:554/stream2"
+
+    def test_url_with_credentials(self):
+        svc = CameraDiscoveryService()
+        out = svc._replace_url_host("rtsp://admin:pass@192.168.1.50:554/stream2", "192.168.1.99")
+        assert out == "rtsp://admin:pass@192.168.1.99:554/stream2"
+
+    def test_url_no_port(self):
+        svc = CameraDiscoveryService()
+        out = svc._replace_url_host("rtsp://192.168.1.50/stream", "192.168.1.99")
+        assert out == "rtsp://192.168.1.99/stream"

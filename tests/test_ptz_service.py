@@ -251,3 +251,21 @@ class TestStep:
             await t
             assert result["success"] is True
             assert result.get("interrupted") is True
+
+
+class TestNotifyIpChanged:
+    """notify_ip_changed: 作废缓存连接,下次 _ensure_connected 用新 config IP 重连。"""
+
+    @pytest.mark.asyncio
+    async def test_marks_broken_and_clears_connection(self):
+        svc = PtzService()
+        # 模拟已有连接
+        svc._cam = MagicMock()
+        svc._ptz = MagicMock()
+        svc._profile_token = "tok"
+        svc._broken = False
+        svc.notify_ip_changed("192.168.1.99")
+        assert svc._broken is True
+        assert svc._cam is None
+        assert svc._ptz is None
+        assert svc._profile_token is None

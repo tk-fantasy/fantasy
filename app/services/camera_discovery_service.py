@@ -26,6 +26,12 @@ from ..core.config import get_config, update_config_section
 logger = logging.getLogger(__name__)
 
 
+def ptz_service_notify_ip_changed(new_ip: str) -> None:
+    """薄包装:通知 ptz_service IP 变了。单独成函数便于测试 mock。"""
+    from .ptz_service import ptz_service
+    ptz_service.notify_ip_changed(new_ip)
+
+
 def normalize_mac(mac: str) -> str:
     """归一化 MAC 为纯小写十六进制(去冒号/横线)。
 
@@ -258,6 +264,58 @@ class CameraDiscoveryService:
         """从 rtsp URL 提 host IP。复用 ptz_service.extract_host_from_url。"""
         from .ptz_service import extract_host_from_url
         return extract_host_from_url(url)
+
+    async def apply_found_ip(self, new_ip: str) -> None:
+        """发现到新 IP 后,更新 vision.rtsp_url(只换 IP)+ ptz.ip,通知 PTZ 重连。
+
+        rtsp_url 只替换 host 部分,保留端口/路径/凭据;USB 模式(无 rtsp_url)
+        只更新 ptz.ip。两处都写 config.json(持久化)。
+        """
+        new_ip = (new_ip or "").strip()
+        if not new_ip:
+            logger.warning("apply_found_ip: empty ip, skip")
+            return
+
+        # 更新 ptz.ip
+        update_config_section("ptz", {"ip": new_ip})
+        logger.info("apply_found_ip: ptz.ip updated to %s", new_ip)
+
+        # 更新 vision.rtsp_url(只换 host,保留端口/路径)
+        old_url = str(get_config("vision.rtsp_url", "") or "").strip()
+        if old_url:
+            new_url = self._replace_url_host(old_url, new_ip)
+            update_config_section("vision", {"rtsp_url": new_url})
+            logger.info("apply_found_ip: rtsp_url host updated to %s", new_ip)
+
+        # 通知 PTZ 重连
+        try:
+            ptz_service_notify_ip_changed(new_ip)
+        except Exception:  # noqa: BLE001
+            logger.exception("notify ptz ip change failed")
+
+    @staticmethod
+    def _replace_url_host(url: str, new_host: str) -> str:
+        """替换 URL 里的 host(保留 scheme/凭据/端口/路径)。
+
+        rtsp://admin:pwd@192.168.1.50:554/stream2 → ...@192.168.1.99:554/stream2
+        rtsp://192.168.1.50:554/stream2          → rtsp://192.168.1.99:554/stream2
+        """
+        from urllib.parse import urlparse, urlunparse
+
+        parsed = urlparse(url)
+        # netloc = [user:pass@]host[:port],只替换 host 部分
+        netloc = parsed.netloc
+        if "@" in netloc:
+            creds, hostport = netloc.rsplit("@", 1)
+            creds = creds + "@"
+        else:
+            creds, hostport = "", netloc
+        if ":" in hostport:
+            _, port = hostport.split(":", 1)
+            new_netloc = f"{creds}{new_host}:{port}"
+        else:
+            new_netloc = f"{creds}{new_host}"
+        return urlunparse(parsed._replace(netloc=new_netloc))
 
 
 # 模块级单例(无状态)。bootstrap / 路由直接 import 用。
