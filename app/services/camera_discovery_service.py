@@ -84,9 +84,17 @@ class CameraDiscoveryService:
     async def read_device_hardware_id(
         self, ip: str, port: int, user: str, pwd: str
     ) -> str:
-        """单点连一台 ONVIF 设备,读 HardwareId(MAC)。
+        """单点连一台 ONVIF 设备,读可作身份证的硬件标识(优先 MAC)。
 
-        HardwareId 为空或不像 MAC 时降级返回 SerialNumber。
+        取值优先级(实测不同厂商字段差异很大):
+          1. GetNetworkInterfaces[].Info.HwAddress —— 真正的 MAC,最可靠。
+             TP-Link TL-IPC43CL-V2 的 HardwareId 返回的是硬件版本号 "2.0"
+             (不是 MAC),SerialNumber 只返回 MAC 尾 4 字节,只有这里能给
+             完整 MAC。海康/大华一般也能从这里拿到。
+          2. GetDeviceInformation.HardwareId —— 部分厂商这里是 MAC。
+             只当它长得像 MAC(归一化后 12 位 hex)才采用。
+          3. GetDeviceInformation.SerialNumber —— 兜底(非 MAC 但唯一)。
+
         连接失败抛异常(由调用方决定如何处理)。
         """
         ip = (ip or "").strip()
@@ -103,15 +111,32 @@ class CameraDiscoveryService:
         try:
             await cam.update_xaddrs()
             devicemgmt = await cam.create_devicemgmt_service()
+
+            # 优先级 1: GetNetworkInterfaces 的 HwAddress(真 MAC)
+            try:
+                nics = await devicemgmt.GetNetworkInterfaces()
+                for nic in nics or []:
+                    nic_info = getattr(nic, "Info", None)
+                    if nic_info is None:
+                        continue
+                    # 只认启用的网卡,避免拿到未用的虚拟接口
+                    if getattr(nic, "Enabled", True) is False:
+                        continue
+                    hw = str(getattr(nic_info, "HwAddress", "") or "").strip()
+                    if normalize_mac(hw):
+                        return hw
+            except Exception:  # noqa: BLE001
+                logger.debug("GetNetworkInterfaces failed, falling back to DeviceInformation", exc_info=True)
+
             info = await devicemgmt.GetDeviceInformation()
         finally:
-            # devicemgmt 是临时探测连接,不复用
             pass
 
-        # HardwareId 通常是 MAC(如 "A0:BD:1D:..."),某型号为空则降级序列号
+        # 优先级 2: HardwareId(仅当长得像 MAC)
         hardware_id = str(getattr(info, "HardwareId", "") or "").strip()
         if hardware_id and normalize_mac(hardware_id):
             return hardware_id
+        # 优先级 3: SerialNumber(兜底,非 MAC 但唯一)
         serial = str(getattr(info, "SerialNumber", "") or "").strip()
         return serial
 

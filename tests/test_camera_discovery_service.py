@@ -41,37 +41,96 @@ class TestNormalizeMac:
 
 
 class TestReadHardwareId:
-    """read_device_hardware_id: mock ONVIFCamera,验证读 HardwareId 与降级。"""
+    """read_device_hardware_id: mock ONVIFCamera,验证 MAC 取值优先级与降级。
 
-    @pytest.mark.asyncio
-    async def test_reads_hardware_id(self):
-        svc = CameraDiscoveryService()
-        info = MagicMock()
-        info.HardwareId = "AA:BB:CC:DD:EE:FF"
-        info.SerialNumber = "12345"
-        devicemgmt = AsyncMock()
-        devicemgmt.GetDeviceInformation = AsyncMock(return_value=info)
+    优先级:GetNetworkInterfaces.HwAddress(真 MAC) > HardwareId(像 MAC 才用)
+    > SerialNumber(兜底)。TP-Link 的 HardwareId 是版本号 "2.0"(非 MAC),
+    SerialNumber 只是 MAC 尾,只有 GetNetworkInterfaces 给完整 MAC。
+    """
+
+    @staticmethod
+    def _make_cam(devicemgmt):
         cam = MagicMock()
         cam.update_xaddrs = AsyncMock()
         cam.create_devicemgmt_service = AsyncMock(return_value=devicemgmt)
-        with patch("onvif.ONVIFCamera", return_value=cam):
-            result = await svc.read_device_hardware_id("192.168.1.50", 80, "admin", "pass")
+        return cam
+
+    @pytest.mark.asyncio
+    async def test_prefers_network_interface_mac(self):
+        """GetNetworkInterfaces 给完整 MAC 时,优先用它(而非 HardwareId)。"""
+        svc = CameraDiscoveryService()
+        nic = MagicMock()
+        nic.Enabled = True
+        nic.Info.HwAddress = "60-a3-e3-de-e0-54"
+        devicemgmt = AsyncMock()
+        devicemgmt.GetNetworkInterfaces = AsyncMock(return_value=[nic])
+        # HardwareId 是假 MAC(版本号),不该被采用
+        info = MagicMock()
+        info.HardwareId = "2.0"
+        info.SerialNumber = "e3dee054"
+        devicemgmt.GetDeviceInformation = AsyncMock(return_value=info)
+        with patch("onvif.ONVIFCamera", return_value=self._make_cam(devicemgmt)):
+            result = await svc.read_device_hardware_id("192.168.4.16", 80, "admin", "pass")
+        assert result == "60-a3-e3-de-e0-54"
+
+    @pytest.mark.asyncio
+    async def test_skips_disabled_nic(self):
+        """禁用的网卡 MAC 不采用,继续降级。"""
+        svc = CameraDiscoveryService()
+        nic = MagicMock()
+        nic.Enabled = False
+        nic.Info.HwAddress = "60-a3-e3-de-e0-54"
+        devicemgmt = AsyncMock()
+        devicemgmt.GetNetworkInterfaces = AsyncMock(return_value=[nic])
+        info = MagicMock()
+        info.HardwareId = "AA:BB:CC:DD:EE:FF"  # 启用网卡没给,降级到 HardwareId
+        info.SerialNumber = "12345"
+        devicemgmt.GetDeviceInformation = AsyncMock(return_value=info)
+        with patch("onvif.ONVIFCamera", return_value=self._make_cam(devicemgmt)):
+            result = await svc.read_device_hardware_id("192.168.4.16", 80, "admin", "pass")
         assert result == "AA:BB:CC:DD:EE:FF"
 
     @pytest.mark.asyncio
-    async def test_falls_back_to_serial_when_no_hardware_id(self):
+    async def test_falls_back_to_hardware_id_when_no_nic(self):
+        """GetNetworkInterfaces 没给 MAC 时,降级用像 MAC 的 HardwareId。"""
         svc = CameraDiscoveryService()
-        info = MagicMock()
-        info.HardwareId = ""
-        info.SerialNumber = "TP-ABC123"
         devicemgmt = AsyncMock()
+        devicemgmt.GetNetworkInterfaces = AsyncMock(return_value=[])
+        info = MagicMock()
+        info.HardwareId = "AA:BB:CC:DD:EE:FF"
+        info.SerialNumber = "12345"
         devicemgmt.GetDeviceInformation = AsyncMock(return_value=info)
-        cam = MagicMock()
-        cam.update_xaddrs = AsyncMock()
-        cam.create_devicemgmt_service = AsyncMock(return_value=devicemgmt)
-        with patch("onvif.ONVIFCamera", return_value=cam):
-            result = await svc.read_device_hardware_id("192.168.1.50", 80, "admin", "pass")
+        with patch("onvif.ONVIFCamera", return_value=self._make_cam(devicemgmt)):
+            result = await svc.read_device_hardware_id("192.168.4.16", 80, "admin", "pass")
+        assert result == "AA:BB:CC:DD:EE:FF"
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_serial_when_no_mac_anywhere(self):
+        """哪儿都没 MAC 时,兜底返回 SerialNumber。"""
+        svc = CameraDiscoveryService()
+        devicemgmt = AsyncMock()
+        devicemgmt.GetNetworkInterfaces = AsyncMock(return_value=[])
+        info = MagicMock()
+        info.HardwareId = ""  # 空
+        info.SerialNumber = "TP-ABC123"
+        devicemgmt.GetDeviceInformation = AsyncMock(return_value=info)
+        with patch("onvif.ONVIFCamera", return_value=self._make_cam(devicemgmt)):
+            result = await svc.read_device_hardware_id("192.168.4.16", 80, "admin", "pass")
         assert result == "TP-ABC123"
+
+    @pytest.mark.asyncio
+    async def test_get_network_interfaces_error_falls_back(self):
+        """GetNetworkInterfaces 报错时,不崩,降级到 DeviceInformation。"""
+        svc = CameraDiscoveryService()
+        devicemgmt = AsyncMock()
+        devicemgmt.GetNetworkInterfaces = AsyncMock(side_effect=RuntimeError("not supported"))
+        info = MagicMock()
+        info.HardwareId = "AA:BB:CC:DD:EE:FF"
+        info.SerialNumber = "12345"
+        devicemgmt.GetDeviceInformation = AsyncMock(return_value=info)
+        with patch("onvif.ONVIFCamera", return_value=self._make_cam(devicemgmt)):
+            result = await svc.read_device_hardware_id("192.168.4.16", 80, "admin", "pass")
+        assert result == "AA:BB:CC:DD:EE:FF"
 
     @pytest.mark.asyncio
     async def test_empty_ip_raises(self):
