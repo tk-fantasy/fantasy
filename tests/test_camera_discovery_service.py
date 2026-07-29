@@ -287,3 +287,49 @@ class TestCaptureMacOnStartup:
         with patch.object(svc, "read_device_hardware_id", AsyncMock(side_effect=Exception("offline"))):
             # 不抛异常
             await svc.capture_mac_on_startup()
+
+
+class TestDisabledAndEdgeCases:
+    """discovery 关闭/无凭证等边界场景。"""
+
+    @pytest.mark.asyncio
+    async def test_find_and_apply_no_mac_returns_none(self):
+        """无 MAC 时 find_and_apply 立即返回 None,不扫描。"""
+        from app.core import config as cfg
+        cfg.CONFIG["vision"]["device_mac"] = ""
+        svc = CameraDiscoveryService()
+        with patch.object(svc, "_scan_ports", AsyncMock()) as sp:
+            result = await svc.find_and_apply(timeout=1)
+        assert result is None
+        sp.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_find_and_apply_applies_when_found(self):
+        """find_and_apply: 找到 IP 后调 apply_found_ip。"""
+        svc = CameraDiscoveryService()
+        with patch.object(svc, "find_camera", AsyncMock(return_value="192.168.1.99")), \
+             patch.object(svc, "apply_found_ip", AsyncMock()) as ap:
+            result = await svc.find_and_apply(timeout=1)
+        assert result == "192.168.1.99"
+        ap.assert_called_once_with("192.168.1.99")
+
+    @pytest.mark.asyncio
+    async def test_find_and_apply_no_apply_when_not_found(self):
+        """find_and_apply: 没找到时不调 apply_found_ip。"""
+        svc = CameraDiscoveryService()
+        with patch.object(svc, "find_camera", AsyncMock(return_value=None)), \
+             patch.object(svc, "apply_found_ip", AsyncMock()) as ap:
+            result = await svc.find_and_apply(timeout=1)
+        assert result is None
+        ap.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_probe_candidate_no_credentials_returns_empty(self):
+        """无 ONVIF 凭证时 _probe_candidate 返回空,跳过该候选。"""
+        from app.core import config as cfg
+        cfg.CONFIG["ptz"]["username"] = ""
+        svc = CameraDiscoveryService()
+        with patch.object(svc, "read_device_hardware_id", AsyncMock()) as rd:
+            result = await svc._probe_candidate("192.168.1.50")
+        assert result == ""
+        rd.assert_not_called()
