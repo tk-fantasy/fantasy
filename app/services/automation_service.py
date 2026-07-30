@@ -6,6 +6,7 @@ import time
 import traceback
 
 from .rule_registry_service import RuleRegistryService
+from ..clients.client_factory import build_per_user_chat_client
 from ..core.config import get_config
 
 logger = logging.getLogger(__name__)
@@ -310,25 +311,12 @@ class AutomationService:
     async def _resolve_chat_client(self, user_id: str = ""):
         """按 user_id 解析 per-user chat client；无配置或 user_id 为空则回退全局 self._chat_client。
 
-        与 scheduler_service._resolve_reminder_client 同一模式：
-        resolve_key_for_role_user 拿到 per-user key → 构造独立 LlmChatClient，
-        覆盖 _api_key/_base_url/_model/_enabled=True（绕过全局 llm.enabled 占位符禁用态）。
-        老规则 user_id='' 直接走全局，保持原行为。
+        per-user 客户端构造走 build_per_user_chat_client（强制 _enabled=True，绕过全局
+        llm.enabled 占位符禁用态）。无 per-user 配置时 lazy init 全局 client 复用。
         """
-        if user_id:
-            try:
-                from ..core.key_resolver import resolve_key_for_role_user
-                key_info = await resolve_key_for_role_user("chat", user_id)
-                if key_info and key_info.get("api_key"):
-                    from ..clients.llm_chat_client import LlmChatClient
-                    client = LlmChatClient(role="chat")
-                    client._api_key = key_info["api_key"]
-                    client._base_url = key_info["base_url"]
-                    client._model = key_info["model"]
-                    client._enabled = True
-                    return client
-            except Exception:
-                logger.debug("Failed to resolve per-user automation chat client, using global", exc_info=True)
+        per_user = await build_per_user_chat_client("chat", user_id, force_enabled=True)
+        if per_user is not None:
+            return per_user
         # 回退全局：lazy init 一次，后续复用
         if self._chat_client is None:
             from ..clients.llm_chat_client import LlmChatClient

@@ -75,7 +75,7 @@ class TestRuleServicePerUser:
 
         with patch("app.core.key_resolver.resolve_key_for_role_user",
                    new=AsyncMock(return_value=per_user_key)):
-            with patch("app.clients.llm_chat_client.LlmChatClient") as MockClient:
+            with patch("app.clients.client_factory.LlmChatClient") as MockClient:
                 mock_instance = MagicMock()
                 mock_instance.chat = AsyncMock(return_value='{"condition":"晚上","actions":[],"name":"r"}')
                 MockClient.return_value = mock_instance
@@ -134,7 +134,7 @@ class TestRuleServicePerUser:
 
         with patch("app.core.key_resolver.resolve_key_for_role_user",
                    new=AsyncMock(return_value=per_user_key)):
-            with patch("app.clients.llm_chat_client.LlmChatClient") as MockClient:
+            with patch("app.clients.client_factory.LlmChatClient") as MockClient:
                 mock_instance = MagicMock()
                 mock_instance.chat = AsyncMock(return_value='{"condition":"晚上","actions":[],"name":"r"}')
                 MockClient.return_value = mock_instance

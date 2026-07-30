@@ -24,6 +24,7 @@ from typing import Any
 
 from croniter import croniter
 
+from ..clients.client_factory import build_per_user_chat_client
 from ..core.database import Database
 from ..core.tracing import new_request_id
 from ..schema.chat_schema import Event, Nlp
@@ -390,23 +391,12 @@ class SchedulerService:
         """按 user_id 解析 reminder 用的 per-user chat 客户端，无配置回退全局。
 
         与 message 同 role（chat），避免 reminder 走 summary 模型导致语气/能力与主对话不一致。
-        仿 summarization_service._resolve_summary_client，但多覆盖 _enabled=True
-        （全局 chat 关着时，per-user 有 key 也得能跑，否则 LlmBaseClient.post_json 会拦"LLM 未启用"）。
+        per-user 客户端构造走 build_per_user_chat_client（强制 _enabled=True：
+        全局 chat 关着时，per-user 有 key 也得能跑，否则 LlmBaseClient.post_json 会拦"LLM 未启用"）。
         """
-        if user_id:
-            try:
-                from ..core.key_resolver import resolve_key_for_role_user
-                key_info = await resolve_key_for_role_user("chat", user_id)
-                if key_info and key_info.get("api_key"):
-                    from ..clients.llm_chat_client import LlmChatClient
-                    client = LlmChatClient(role="chat")
-                    client._api_key = key_info["api_key"]
-                    client._base_url = key_info["base_url"]
-                    client._model = key_info["model"]
-                    client._enabled = True  # per-user 有 key 即启用，不受全局 llm.enabled 开关影响
-                    return client
-            except Exception:
-                logger.debug("Failed to resolve per-user reminder client, using global", exc_info=True)
+        per_user = await build_per_user_chat_client("chat", user_id, force_enabled=True)
+        if per_user is not None:
+            return per_user
         return self._llm_chat_client
 
     async def _resolve_main_session_id(self, user_id: str = "") -> str | None:
