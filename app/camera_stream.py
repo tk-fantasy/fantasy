@@ -138,7 +138,6 @@ class CameraStream:
         self._infer_scheduler_thread: threading.Thread | None = None
         self._infer_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="infer")
                 
-        self._on_inference_done: Callable[[], None] | None = None
         # dhash 运动触发自动化的回调（与 /camera 视觉展示推理解耦：关展示不影响自动化）
         self._on_automation_trigger: Callable[[], None] | None = None
         # /camera 页面视觉展示推理开关：只门控 classify_frame 预览，不影响 dhash 自动化触发
@@ -313,10 +312,6 @@ class CameraStream:
                 # 异常时重置 _infer_busy，避免推理永久卡死
                 with self._lock:
                     self._infer_busy = False
-
-    def set_on_inference_done(self, callback: Callable[[], None]) -> None:
-        """注册视觉推理完成回调,用于触发规则评估(降低响应延迟)。"""
-        self._on_inference_done = callback
 
     def set_on_automation_trigger(self, callback: Callable[[], None]) -> None:
         """注册 dhash 运动触发回调，用于事件驱动自动化评估。
@@ -829,12 +824,6 @@ class CameraStream:
             with self._lock:
                 self._infer_busy = False
                 self._infer_started_at = 0.0
-        # 推理完成后触发规则评估回调(在推理线程里调,回调内部负责跨线程调度)
-        if self._on_inference_done is not None:
-            try:
-                self._on_inference_done()
-            except Exception:  # noqa: BLE001
-                logger.exception("on_inference_done callback failed")
 
     async def _run_inference_async(self, frame: np.ndarray) -> None:
         """异步推理，跑在主事件循环里（由 run_coroutine_threadsafe 投递）。
@@ -866,13 +855,6 @@ class CameraStream:
             with self._lock:
                 self._infer_busy = False
                 self._infer_started_at = 0.0
-        # 推理完成后触发规则评估回调（已在主循环里，但回调内部仍用
-        # call_soon_threadsafe 调度，二次投递无害且保持与同步路径一致）
-        if self._on_inference_done is not None:
-            try:
-                self._on_inference_done()
-            except Exception:  # noqa: BLE001
-                logger.exception("on_inference_done callback failed")
 
     def _resolve_display_result(self, result: ActionResult) -> ActionResult:
         if not self._recognizer.enabled:

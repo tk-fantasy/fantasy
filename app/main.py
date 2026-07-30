@@ -494,9 +494,8 @@ async def lifespan(_: FastAPI):
     tool_deps.scheduler_service_ref[0] = scheduler_service
 
     _startup_progress.set("正在连接摄像头与智能家居...")
-    # dhash 运动触发自动化评估（事件驱动，替代旧 on_inference_done 双触发）。
-    # on_inference_done 回调已废弃：dhash 触发 + 定时器兜底两条入口足够，
-    # 推理完成后再触发会造成重复评估。set_on_inference_done 保留方法兼容。
+    # dhash 运动触发自动化评估（事件驱动 + 定时器兜底两条入口）。
+    # 旧的 on_inference_done（推理完成即触发评估）已移除：会造成与 dhash 重复评估。
     camera_stream.set_on_automation_trigger(_automation_agent_ref[0].trigger_evaluate)
     # 注入主事件循环：运动推理通过 run_coroutine_threadsafe 投到主循环跑，
     # httpx 网络等待时释放 GIL，不再像线程池那样抢 GIL 饿死采集线程（修复运动推理时 FPS 崩到 ~1）
