@@ -349,8 +349,13 @@ async def probe_ptz(ip: str, port: int, username: str, password: str) -> ProbeRe
             )
         return ProbeResult(ok=False, reason="error", detail=f"PTZ 探测失败：{e}")
     finally:
-        # 临时连接不需要保持，清理掉
-        cam = None
+        # 显式关闭 ONVIF transport(zeep/aiohttp 连接),不依赖 GC 回收。
+        # _connect 超时可能在赋值 cam 前抛出,故先判 None。
+        if cam is not None:
+            try:
+                await cam.close()
+            except Exception:  # noqa: BLE001
+                logger.debug("probe_ptz ONVIFCamera close failed", exc_info=True)
 
 
 # ============================ 天气（和风）============================

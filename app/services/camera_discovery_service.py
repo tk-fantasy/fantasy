@@ -71,6 +71,9 @@ class CameraDiscoveryService:
         self._status: str = "idle"  # idle|scanning|found|not_found|disabled|error
         self._last_found_ip: str = ""
         self._last_error: str = ""
+        # 并发保护:find_camera 扫描期间,后续触发(worker+手动、连点按钮)直接跳过,
+        # 不重复启动扫描轮,也不并发写 config + 通知 PTZ。非阻塞——已在扫就返回当前状态。
+        self._discovery_lock = asyncio.Lock()
 
     @property
     def status(self) -> dict[str, Any]:
@@ -130,7 +133,12 @@ class CameraDiscoveryService:
 
             info = await devicemgmt.GetDeviceInformation()
         finally:
-            pass
+            # 显式关闭 ONVIF transport(zeep/aiohttp 连接),不依赖 GC 回收。
+            # 探测候选设备时一轮可能连 1-5 台,不关会累积连接耗尽 fd。
+            try:
+                await cam.close()
+            except Exception:  # noqa: BLE001
+                logger.debug("ONVIFCamera close failed", exc_info=True)
 
         # 优先级 2: HardwareId(仅当长得像 MAC)
         hardware_id = str(getattr(info, "HardwareId", "") or "").strip()
@@ -200,7 +208,7 @@ class CameraDiscoveryService:
                 self.read_device_hardware_id(ip, port, user, pwd),
                 timeout=3.0,
             )
-        except (asyncio.TimeoutError, Exception) as e:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
             logger.debug("ONVIF probe failed for %s: %s", ip, e)
             return ""
 
@@ -253,6 +261,16 @@ class CameraDiscoveryService:
         if timeout is None:
             timeout = float(get_config("vision.discovery_timeout_seconds", 30))
 
+        # 并发保护:已有扫描在进行(worker 触发 + 手动按钮,或连点),不重复启动。
+        # 非阻塞——拿不到锁直接返回,调用方(worker)照常退避,手动按钮可从 status 看到 scanning。
+        if self._discovery_lock.locked():
+            logger.info("find_camera: scan already in progress, skipping")
+            return None
+        async with self._discovery_lock:
+            return await self._scan_locked(target_mac, subnet, timeout)
+
+    async def _scan_locked(self, target_mac: str, subnet: str, timeout: float) -> str | None:
+        """实际扫描逻辑(find_camera 持锁后调用,假设已独占 _discovery_lock)。"""
         ips = self._list_subnet_ips(subnet)
         if not ips:
             self._status = "error"
