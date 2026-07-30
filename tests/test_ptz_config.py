@@ -133,6 +133,35 @@ class TestPostPtzConfig:
         assert mock_update.call_count == 1
 
     @pytest.mark.asyncio
+    async def test_probe_fail_still_saves_password(self):
+        """probe 失败时密码仍写 .env（防死循环：连不上→改不了密码→还是连不上）。
+
+        probe 失败不应拦着密码落盘 —— 改密码往往正因为连不上。config 段
+        不落盘（避免脏 IP/凭证），但密码必须写进去，否则用户永远改不动密码。
+        """
+        from app.routes import ptz_routes
+
+        _PROBE_FAIL = AsyncMock(return_value=ProbeResult(ok=False, reason="unauthorized", detail="凭证无效"))
+        req = PtzConfigRequest(
+            enabled=True, ip="192.168.4.16", port=80,
+            username="admin", password="new_password",
+            speed=0.5, step_ms=300,
+        )
+
+        with patch.object(ptz_routes, "write_secrets") as mock_write, \
+             patch.object(ptz_routes, "update_config_section") as mock_update, \
+             patch.object(ptz_routes, "probe_ptz", _PROBE_FAIL):
+            result = await ptz_routes.ptz_config_set(req)
+
+        # probe 失败 → 返回 probe_failed，saved=False
+        assert result.code == "probe_failed"
+        assert result.data["saved"] is False
+        # 但密码仍写进了 .env
+        mock_write.assert_called_once_with({"PTZ_PASSWORD": "new_password"})
+        # password_saved 标志告诉前端密码已存
+        assert result.data["password_saved"] is True
+
+    @pytest.mark.asyncio
     async def test_all_fields_saved(self):
         """POST → update_config_section 收到全部配置字段。"""
         from app.routes import ptz_routes
