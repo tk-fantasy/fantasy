@@ -54,11 +54,19 @@ async def ptz_config_set(payload: PtzConfigRequest) -> ApiResponse[dict]:
     if payload.enabled and payload.ip:
         result = await probe_ptz(payload.ip, payload.port, payload.username, probe_pwd)
         if not result.ok:
-            logger.warning("PTZ config save rejected: %s (%s)", result.reason, result.detail)
+            # probe 失败：不落盘 config 段（避免脏 IP/凭证），但密码仍允许写。
+            # 改密码往往是因为连不上，若 probe 失败就拦着密码，会陷入
+            # 「连不上→改不了密码→还是连不上」的死循环。密码是用户明确要改的，
+            # 不该被 probe 拦截，probe 结果只作警告。
+            logger.warning("PTZ probe failed but password will still save: %s (%s)", result.reason, result.detail)
+            if payload.password:
+                write_secrets({"PTZ_PASSWORD": payload.password})
+                update_config_section("ptz", {"password_env": "PTZ_PASSWORD"})
+                logger.info("PTZ password saved to .env despite probe failure")
             return ApiResponse(
                 code="probe_failed",
                 message=result.detail,
-                data={"saved": False, "section": "ptz", **result.to_dict()},
+                data={"saved": False, "section": "ptz", "password_saved": bool(payload.password), **result.to_dict()},
             )
 
     config_data = {

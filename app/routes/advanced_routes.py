@@ -84,11 +84,19 @@ async def set_advanced_config(
             password = _resolve_rtsp_password_for_probe(payload.rtsp_password)
             result = await probe_rtsp(rtsp_url, username, password)
             if not result.ok:
-                logger.warning("RTSP config save rejected: %s (%s)", result.reason, result.detail)
+                # probe 失败：不落盘 URL/用户名（避免脏 config），但密码仍允许写。
+                # 改密码往往是因为连不上，若 probe 失败就拦着密码，会陷入
+                # 「连不上→改不了密码→还是连不上」的死循环。密码是用户明确要改的，
+                # 不该被 probe 拦截，probe 结果只作警告。
+                logger.warning("RTSP probe failed but password will still save: %s (%s)", result.reason, result.detail)
+                if payload.rtsp_password:
+                    write_secrets({"RTSP_PASSWORD": payload.rtsp_password})
+                    update_config_section("vision", {"rtsp_password_env": "RTSP_PASSWORD"})
+                    logger.info("RTSP password saved to .env despite probe failure")
                 return ApiResponse(
                     code="probe_failed",
                     message=result.detail,
-                    data={"saved": False, "section": "rtsp", **result.to_dict()},
+                    data={"saved": False, "section": "rtsp", "password_saved": bool(payload.rtsp_password), **result.to_dict()},
                 )
             # 固定变量名，保证 _resolve_rtsp_url 能读到
             vision_data["rtsp_password_env"] = "RTSP_PASSWORD"

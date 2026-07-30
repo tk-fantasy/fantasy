@@ -116,6 +116,55 @@ class TestAdvancedConfigRtsp:
         assert mock_update.call_count == 2
 
     @pytest.mark.asyncio
+    async def test_post_probe_fail_still_saves_password(self):
+        """probe 失败时密码仍写 .env（防死循环：连不上→改不了密码→还是连不上）。
+
+        probe 失败不应拦着密码落盘 —— 改密码往往正是因为连不上。URL/用户名
+        不落盘（避免脏 config），但密码必须写进去，否则用户永远改不动密码。
+        """
+        from app.routes import advanced_routes
+
+        _PROBE_FAIL = AsyncMock(return_value=ProbeResult(ok=False, reason="unauthorized", detail="凭证无效"))
+        req = AdvancedConfigRequest(
+            vision=VisionConfig(rtsp_url="rtsp://192.168.4.16:554/stream2", rtsp_username="admin"),
+            rtsp_password="new_password",
+        )
+
+        with patch.object(advanced_routes, "write_secrets") as mock_write, \
+             patch.object(advanced_routes, "update_config_section") as mock_update, \
+             patch.object(advanced_routes, "probe_rtsp", _PROBE_FAIL):
+            result = await advanced_routes.set_advanced_config(req)
+
+        # probe 失败 → 返回 probe_failed，saved=False
+        assert result.code == "probe_failed"
+        assert result.data["saved"] is False
+        # 但密码仍写进了 .env
+        mock_write.assert_called_once_with({"RTSP_PASSWORD": "new_password"})
+        # password_saved 标志告诉前端密码已存
+        assert result.data["password_saved"] is True
+
+    @pytest.mark.asyncio
+    async def test_post_probe_fail_no_password_writes_nothing(self):
+        """probe 失败且没填密码 → 什么都不写（保持原样）。"""
+        from app.routes import advanced_routes
+
+        _PROBE_FAIL = AsyncMock(return_value=ProbeResult(ok=False, reason="unauthorized", detail="凭证无效"))
+        req = AdvancedConfigRequest(
+            vision=VisionConfig(rtsp_url="rtsp://192.168.4.16:554/stream2", rtsp_username="admin"),
+            rtsp_password="",  # 没填密码
+        )
+
+        with patch.object(advanced_routes, "write_secrets") as mock_write, \
+             patch.object(advanced_routes, "update_config_section") as mock_update, \
+             patch.object(advanced_routes, "probe_rtsp", _PROBE_FAIL):
+            result = await advanced_routes.set_advanced_config(req)
+
+        assert result.code == "probe_failed"
+        assert result.data["saved"] is False
+        mock_write.assert_not_called()
+        assert result.data["password_saved"] is False
+
+    @pytest.mark.asyncio
     async def test_post_usb_only_no_rtsp_url(self):
         """POST 留空 rtsp_url → 走 USB，不设 rtsp_password_env。"""
         from app.routes import advanced_routes
