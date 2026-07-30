@@ -12,9 +12,14 @@
 from __future__ import annotations
 
 import pytest
-from unittest.mock import patch
+from unittest.mock import patch, AsyncMock
 
 from app.schema.api_schemas import PtzConfigRequest
+from app.services.config_probes import ProbeResult
+
+# probe 通过的复用 mock：POST /ptz/config 在 enabled+ip 时会先 probe_ptz 真连摄像头，
+# 测试只验证"写配置"逻辑，probe 用 mock 放行，避免真实网络超时（容器内不可达）。
+_PROBE_OK = AsyncMock(return_value=ProbeResult(ok=True))
 
 
 # --------------- extract_host_from_url ---------------
@@ -97,7 +102,8 @@ class TestPostPtzConfig:
         )
 
         with patch.object(ptz_routes, "write_secrets") as mock_write, \
-             patch.object(ptz_routes, "update_config_section") as mock_update:
+             patch.object(ptz_routes, "update_config_section") as mock_update, \
+             patch.object(ptz_routes, "probe_ptz", _PROBE_OK):
             result = await ptz_routes.ptz_config_set(req)
 
         mock_write.assert_called_once_with({"PTZ_PASSWORD": "onvif_secret"})
@@ -144,7 +150,8 @@ class TestPostPtzConfig:
         )
 
         with patch.object(ptz_routes, "write_secrets") as mock_write, \
-             patch.object(ptz_routes, "update_config_section") as mock_update:
+             patch.object(ptz_routes, "update_config_section") as mock_update, \
+             patch.object(ptz_routes, "probe_ptz", _PROBE_OK):
             await ptz_routes.ptz_config_set(req)
 
         mock_write.assert_not_called()
@@ -176,7 +183,8 @@ class TestPostPtzConfig:
             return values
 
         with patch.object(ptz_routes, "write_secrets") as mock_write, \
-             patch.object(ptz_routes, "update_config_section", side_effect=fake_update):
+             patch.object(ptz_routes, "update_config_section", side_effect=fake_update), \
+             patch.object(ptz_routes, "probe_ptz", _PROBE_OK):
             await ptz_routes.ptz_config_set(req)
 
         for key, val in captured_ptz.items():
