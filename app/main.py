@@ -148,19 +148,17 @@ async def _rebuild_agent() -> None:
     调用方必须持有 _rebuild_lock。
     """
     from .mcp.langchain_tools import convert_all_tools
-    from .agents.langgraph_agent import build_chat_agent, close_agent_http_clients
-
-    # 关闭旧 agent 的 httpx 客户端，释放连接池（旧 agent 已被新 agent 取代，不再被引用）
-    await close_agent_http_clients()
+    from .agents.langgraph_agent import build_chat_agent
 
     langchain_tools = convert_all_tools(mcp_client_manager)
-    new_agent = build_chat_agent(tools=langchain_tools)
+    new_agent, new_clients = build_chat_agent(tools=langchain_tools)
+    # 旧客户端的回收交给 dispatcher.set_agent（它内部 close_all_agent_clients）
     global langgraph_agent
     langgraph_agent = new_agent
     _services["langgraph_agent"] = new_agent
     _services["langchain_tools"] = langchain_tools
     if dispatcher is not None:
-        dispatcher.set_agent(new_agent, tools=langchain_tools)
+        await dispatcher.set_agent(new_agent, tools=langchain_tools, clients=new_clients)
     logger.info("Agent rebuilt with %d tools", len(langchain_tools))
 
 
@@ -442,11 +440,11 @@ async def lifespan(_: FastAPI):
     from .agents.validator_agent import ValidatorAgent
     global langgraph_agent
     langchain_tools = convert_all_tools(mcp_client_manager)
-    langgraph_agent = build_chat_agent(tools=langchain_tools)
+    langgraph_agent, _global_clients = build_chat_agent(tools=langchain_tools)
     _services["langgraph_agent"] = langgraph_agent
     _services["langchain_tools"] = langchain_tools
 
-    # 创建 Dispatcher（使用 LangGraph Agent）
+    # 创建 Dispatcher（使用 LangGraph Agent，传入其 httpx 客户端供生命周期管理）
     global dispatcher
     dispatcher = Dispatcher(
         session_store=session_store,
@@ -458,6 +456,7 @@ async def lifespan(_: FastAPI):
         ha_service=ha_service,
         validator=ValidatorAgent(max_retries=1),
         summarization_service=summarization_service,
+        clients=_global_clients,
     )
     dispatcher._tools = langchain_tools  # 供 per-user agent 构建使用
     _container.dispatcher = dispatcher
@@ -553,6 +552,9 @@ async def lifespan(_: FastAPI):
     await mcp_client_manager.disconnect_all_external()
     await session_store.shutdown()
     camera_stream.stop()
+    # 回收 dispatcher 持有的所有 agent httpx 客户端（全局 + per-user），防连接池泄漏
+    if dispatcher is not None:
+        await dispatcher.close_all_agent_clients()
     await ha_client.close()
     await close_web_http_client()
     from .clients.llm_base_client import close_shared_client

@@ -45,8 +45,8 @@ class TestGetAgent:
 
         model_config = {"base_url": "https://api.b.com", "model": "m2", "api_key": "key-B"}
         with patch("app.agents.dispatcher.load_model_config_for_user", return_value=model_config), \
-             patch("app.agents.dispatcher.close_agent_http_clients", new=AsyncMock()), \
-             patch("app.agents.dispatcher.build_chat_agent", return_value=user_agent):
+             patch("app.agents.dispatcher.build_chat_agent",
+                   return_value=(user_agent, (MagicMock(), MagicMock()))):
             result = await dispatcher._get_agent("user-1")
 
         assert result is user_agent
@@ -60,16 +60,12 @@ class TestGetAgent:
 
         model_config = {"base_url": "https://api.b.com", "model": "m2", "api_key": "key-B"}
 
-        async def mock_close():
-            pass
-
         def mock_build(tools, model_config=None):
             nonlocal build_count
             build_count += 1
-            return user_agent
+            return user_agent, (MagicMock(), MagicMock())
 
         with patch("app.agents.dispatcher.load_model_config_for_user", return_value=model_config), \
-             patch("app.agents.dispatcher.close_agent_http_clients", new=mock_close), \
              patch("app.agents.dispatcher.build_chat_agent", side_effect=mock_build):
             await dispatcher._get_agent("user-1")
             await dispatcher._get_agent("user-1")
@@ -84,19 +80,15 @@ class TestGetAgent:
 
         model_config = {"base_url": "https://api.b.com", "model": "m2", "api_key": "key-B"}
 
-        async def mock_close():
-            pass
-
         def mock_build(tools, model_config=None):
             nonlocal build_count
             build_count += 1
-            return user_agent
+            return user_agent, (MagicMock(), MagicMock())
 
         with patch("app.agents.dispatcher.load_model_config_for_user", return_value=model_config), \
-             patch("app.agents.dispatcher.close_agent_http_clients", new=mock_close), \
              patch("app.agents.dispatcher.build_chat_agent", side_effect=mock_build):
             await dispatcher._get_agent("user-1")
-            dispatcher.invalidate_user_agent("user-1")
+            await dispatcher.invalidate_user_agent("user-1")
             await dispatcher._get_agent("user-1")
 
         assert build_count == 2  # invalidate 后重建
@@ -112,14 +104,10 @@ class TestGetAgent:
         configs = iter([config_a, config_b, config_a, config_b])
         agents = iter([agent_a, agent_b, agent_a, agent_b])
 
-        async def mock_close():
-            pass
-
         def mock_build(tools, model_config=None):
-            return next(agents)
+            return next(agents), (MagicMock(), MagicMock())
 
         with patch("app.agents.dispatcher.load_model_config_for_user", side_effect=lambda uid: next(configs)), \
-             patch("app.agents.dispatcher.close_agent_http_clients", new=mock_close), \
              patch("app.agents.dispatcher.build_chat_agent", side_effect=mock_build):
             result_a = await dispatcher._get_agent("user-a")
             result_b = await dispatcher._get_agent("user-b")
@@ -127,7 +115,8 @@ class TestGetAgent:
         assert result_a is agent_a
         assert result_b is agent_b
 
-    def test_set_agent_clears_user_cache(self):
+    @pytest.mark.asyncio
+    async def test_set_agent_clears_user_cache(self):
         dispatcher, global_agent = _make_dispatcher()
         # 模拟已缓存的 per-user agent
         dispatcher._user_agents["user-1"] = MagicMock()
@@ -135,8 +124,69 @@ class TestGetAgent:
         assert len(dispatcher._user_agents) == 2
 
         new_agent = MagicMock()
-        dispatcher.set_agent(new_agent, tools=["tool1"])
+        await dispatcher.set_agent(new_agent, tools=["tool1"], clients=(MagicMock(), MagicMock()))
 
         assert dispatcher._agent is new_agent
         assert len(dispatcher._user_agents) == 0
         assert dispatcher._tools == ["tool1"]
+
+
+class TestAgentClientsLifecycle:
+    """验证 agent→clients 映射：per-user 构建不误关全局 agent 的连接（#1 修复的核心）。"""
+
+    @staticmethod
+    def _make_dispatcher_with_clients():
+        """构造带真实 clients mock 的 dispatcher（全局 agent 的客户端可被观测 close 调用）。"""
+        from app.agents.dispatcher import Dispatcher
+
+        global_agent = MagicMock()
+        global_sync = MagicMock()
+        global_async = MagicMock()
+        dispatcher = Dispatcher(
+            session_store=MagicMock(),
+            agent=global_agent,
+            camera_stream=MagicMock(),
+            clients=(global_sync, global_async),
+        )
+        return dispatcher, global_agent, global_sync, global_async
+
+    @pytest.mark.asyncio
+    async def test_per_user_build_does_not_close_global_clients(self):
+        """构建 per-user agent 时，全局 agent 的 httpx 客户端不能被关（#1 根因）。"""
+        dispatcher, global_agent, global_sync, global_async = self._make_dispatcher_with_clients()
+        user_agent = MagicMock()
+        user_sync, user_async = MagicMock(), MagicMock()
+        model_config = {"base_url": "https://b.com", "model": "m", "api_key": "k"}
+
+        with patch("app.agents.dispatcher.load_model_config_for_user", return_value=model_config), \
+             patch("app.agents.dispatcher.build_chat_agent",
+                   return_value=(user_agent, (user_sync, user_async))):
+            await dispatcher._get_agent("user-1")
+
+        # 全局 agent 的客户端绝不能被关
+        global_sync.close.assert_not_called()
+        global_async.aclose.assert_not_called()
+        # per-user agent 的客户端登记进映射（按 id）
+        assert id(user_agent) in dispatcher._agent_clients
+        # 全局 agent 的客户端仍在映射里（没被踢出）
+        assert id(global_agent) in dispatcher._agent_clients
+
+    @pytest.mark.asyncio
+    async def test_invalidate_closes_only_that_users_clients(self):
+        """invalidate_user_agent 只关该用户的客户端，不动全局。"""
+        dispatcher, global_agent, global_sync, global_async = self._make_dispatcher_with_clients()
+        user_agent = MagicMock()
+        user_sync, user_async = MagicMock(), MagicMock()
+        model_config = {"base_url": "https://b.com", "model": "m", "api_key": "k"}
+
+        with patch("app.agents.dispatcher.load_model_config_for_user", return_value=model_config), \
+             patch("app.agents.dispatcher.build_chat_agent",
+                   return_value=(user_agent, (user_sync, user_async))):
+            await dispatcher._get_agent("user-1")
+        await dispatcher.invalidate_user_agent("user-1")
+
+        # 该用户的客户端被关
+        user_sync.close.assert_called_once()
+        user_async.aclose.assert_called_once()
+        # 全局客户端不受影响
+        global_sync.close.assert_not_called()

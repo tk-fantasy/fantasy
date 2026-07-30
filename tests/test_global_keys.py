@@ -463,7 +463,7 @@ class TestPerUserUseGlobalPassthrough:
 
         mock_container = MagicMock()
         mock_container.dispatcher = MagicMock()
-        mock_container.dispatcher.invalidate_user_agent = MagicMock()
+        mock_container.dispatcher.invalidate_user_agent = AsyncMock()
 
         payload = LLMSettingsRequest(role="chat", key_id="some-key", use_global=True)
 
@@ -492,7 +492,7 @@ class TestPerUserUseGlobalPassthrough:
 
         mock_container = MagicMock()
         mock_container.dispatcher = MagicMock()
-        mock_container.dispatcher.invalidate_user_agent = MagicMock()
+        mock_container.dispatcher.invalidate_user_agent = AsyncMock()
 
         payload = LLMSettingsRequest(role="chat", key_id="my-key", use_global=False)
 
@@ -518,7 +518,7 @@ class TestPerUserUseGlobalPassthrough:
 
         mock_container = MagicMock()
         mock_container.dispatcher = MagicMock()
-        mock_container.dispatcher.invalidate_user_agent = MagicMock()
+        mock_container.dispatcher.invalidate_user_agent = AsyncMock()
 
         payload = LLMSettingsRequest(role="chat", key_id="my-key")  # 无 use_global
 
