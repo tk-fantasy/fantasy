@@ -9,7 +9,6 @@ from .clients.ha_client import HomeAssistantClient
 from .clients.llm_chat_client import LlmChatClient
 from .clients.llm_vision_client import LlmVisionClient
 from .core.config import get_config
-from .mcp.local_mcp_servers import register_local_tools
 from .mcp.mcp_client_manager import MCPClientManager
 from .mcp.tool_executor import ToolExecutor
 from .services.api_key_manager import ApiKeyManager
@@ -57,8 +56,9 @@ def initialize_services() -> dict[str, Any]:
     services["session_store"] = session_store
 
     # MCP 工具管理
+    # 工具注册统一在 tools.register_all_tools（lifespan 阶段）完成，
+    # 此处只构造 manager + executor，不提前注册工具。
     mcp_client_manager = MCPClientManager()
-    register_local_tools(mcp_client_manager)
     tool_executor = ToolExecutor(mcp_client_manager)
 
     services["mcp_client_manager"] = mcp_client_manager
