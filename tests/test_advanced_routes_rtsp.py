@@ -13,6 +13,10 @@ import pytest
 from unittest.mock import patch, AsyncMock
 
 from app.schema.api_schemas import AdvancedConfigRequest, VisionConfig
+from app.services.config_probes import ProbeResult
+
+# probe 结果的复用 mock
+_PROBE_OK = AsyncMock(return_value=ProbeResult(ok=True))
 
 
 class TestAdvancedConfigRtsp:
@@ -65,7 +69,8 @@ class TestAdvancedConfigRtsp:
         )
 
         with patch.object(advanced_routes, "write_secrets") as mock_write, \
-             patch.object(advanced_routes, "update_config_section") as mock_update:
+             patch.object(advanced_routes, "update_config_section") as mock_update, \
+             patch.object(advanced_routes, "probe_rtsp", _PROBE_OK):
             result = await advanced_routes.set_advanced_config(req)
 
         # write_secrets 被调用，参数是 {RTSP_PASSWORD: 明文}
@@ -101,7 +106,8 @@ class TestAdvancedConfigRtsp:
         )
 
         with patch.object(advanced_routes, "write_secrets") as mock_write, \
-             patch.object(advanced_routes, "update_config_section") as mock_update:
+             patch.object(advanced_routes, "update_config_section") as mock_update, \
+             patch.object(advanced_routes, "probe_rtsp", _PROBE_OK):
             await advanced_routes.set_advanced_config(req)
 
         mock_write.assert_not_called()
@@ -193,7 +199,8 @@ class TestAdvancedConfigRtsp:
             return values
 
         with patch.object(advanced_routes, "write_secrets") as mock_write, \
-             patch.object(advanced_routes, "update_config_section", side_effect=fake_update):
+             patch.object(advanced_routes, "update_config_section", side_effect=fake_update), \
+             patch.object(advanced_routes, "probe_rtsp", _PROBE_OK):
             await advanced_routes.set_advanced_config(req)
 
         # 所有写进 vision 段的 key 都不含明文密码
@@ -220,7 +227,8 @@ class TestRtspAutoSyncPtzIp:
         )
 
         with patch.object(advanced_routes, "write_secrets") as mock_write, \
-             patch.object(advanced_routes, "update_config_section") as mock_update:
+             patch.object(advanced_routes, "update_config_section") as mock_update, \
+             patch.object(advanced_routes, "probe_rtsp", _PROBE_OK):
             await advanced_routes.set_advanced_config(req)
 
         mock_write.assert_not_called()
@@ -239,7 +247,8 @@ class TestRtspAutoSyncPtzIp:
         )
 
         with patch.object(advanced_routes, "write_secrets"), \
-             patch.object(advanced_routes, "update_config_section") as mock_update:
+             patch.object(advanced_routes, "update_config_section") as mock_update, \
+             patch.object(advanced_routes, "probe_rtsp", _PROBE_OK):
             await advanced_routes.set_advanced_config(req)
 
         ptz_calls = [c for c in mock_update.call_args_list if c.args[0] == "ptz"]
