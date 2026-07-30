@@ -71,14 +71,12 @@ class TestFindMarkdownFiles:
 
 class TestParseAll:
     def test_empty_dir(self, tmp_path):
-        docs, entity_map = parse_all(str(tmp_path), "")
+        docs = parse_all(str(tmp_path), "")
         assert docs == []
-        assert entity_map == {}
 
     def test_nonexistent_dir(self):
-        docs, entity_map = parse_all("/nonexistent/path", "")
+        docs = parse_all("/nonexistent/path", "")
         assert docs == []
-        assert entity_map == {}
 
     def test_parse_single_doc(self, tmp_path):
         cat_dir = tmp_path / "01-安装"
@@ -88,7 +86,7 @@ class TestParseAll:
             encoding="utf-8",
         )
 
-        docs, entity_map = parse_all(str(tmp_path), "")
+        docs = parse_all(str(tmp_path), "")
         assert len(docs) == 1
         doc = docs[0]
         assert isinstance(doc, Document)
