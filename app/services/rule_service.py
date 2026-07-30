@@ -245,7 +245,9 @@ class RuleService:
             # 兜底:确保关键字段存在
             parsed.setdefault("name", text[:20])
             parsed.setdefault("condition", "")
-            parsed.setdefault("type", "vision")  # time/weather/vision；LLM 漏输出时兜底 vision
+            # type 归一化到合法值；LLM 漏输出或乱填时兜底 vision
+            _t = str(parsed.get("type", "vision") or "vision").strip().lower()
+            parsed["type"] = _t if _t in ("time", "weather", "vision") else "vision"
             parsed.setdefault("actions", [])
             parsed.setdefault("action_descriptions", [])
             parsed.setdefault("cooldown_seconds", get_config("automation.default_cooldown_seconds", 5))
