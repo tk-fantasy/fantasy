@@ -14,7 +14,7 @@
 
 - **ID 方案**:摄像头 ID 是 `cam_<6位随机>`(生成一次永不改)+ 用户可改 `name` + 显示序号 `sort_order`(删除留空缺不重排)。
 - **流协议**:MJPEG。不引 ZLM/录像(本期非目标)。
-- **VLM 并发**:云端 glm-4v(上限 10)。展示推理全局 1 路(独立通道);自动化+工具共享并发池上限 5;峰值 1+5=6 < 10。
+- **VLM 并发**:云端 glm-4v(上限 10)。展示推理全局 1 路(独立通道);自动化+工具共享并发池上限**可配**(默认 5,读 `automation.vlm_auto_concurrency`,用户最高可调 10);峰值 = 1 + N。glm-4v 免费故费用不作约束,封号风险由既有 key 池熔断(连续失败 3 次 → 60s 冷却)+ 429 指数退避兜底,本计划不重复实现。
 - **密钥存储**:`cameras` 表密码字段存明文(`rtsp_password`/`ptz_password`),与现有 `user_settings` 存明文 LLM key 一致,是项目既有模式。
 - **幂等迁移判据**:用 KV 标记 `cameras_migrated == "1"`(非 spec 的"表非空",防全新部署删空 + 残留 env 误判)。
 - **全局端点兼容**:`/api/health`、`/api/state` 返回主摄像头(第一个 enabled)状态,保留 `/camera` 弹窗外的前端引用不崩。
@@ -1087,7 +1087,17 @@ class CameraManager:
     def __init__(self, vision_service=None, motion_service=None,
                  ha_service=None, db=None, discovery_service=None,
                  automation_service=None,
-                 display_concurrency: int = 1, auto_concurrency: int = 5) -> None:
+                 display_concurrency: int | None = None,
+                 auto_concurrency: int | None = None) -> None:
+        # 并发上限可配:用户在 config.json 调 automation.vlm_auto_concurrency(默认 5,上限 10)。
+        # 不写死是为了让"总并发别超云端上限"这个旋钮完全在用户手里——glm-4v 上限 10,
+        # 展示 1 + 自动化 N ≤ 10。auto_concurrency 钳到 [1,9] 避免超过云端总额度。
+        from ..core.config import get_config
+        if auto_concurrency is None:
+            auto_concurrency = int(get_config("automation.vlm_auto_concurrency", 5))
+        auto_concurrency = max(1, min(9, auto_concurrency))   # 上限 9:1 展示 + 9 自动 = 10
+        if display_concurrency is None:
+            display_concurrency = 1
         self._vision_service = vision_service
         self._motion_service = motion_service
         self._ha_service = ha_service
@@ -2325,6 +2335,20 @@ Expected: 成功
 # (人工编辑或脚本,迁移已把数据写入 cameras 表)
 ```
 
+`automation` 段保留,并新增并发旋钮字段(Step 4 CameraManager 读取):
+
+```json
+"automation": {
+  "eval_interval_seconds": 10,
+  "silent_eval_enabled": true,
+  "silent_eval_interval_seconds": 60,
+  "default_cooldown_seconds": 5,
+  "vlm_auto_concurrency": 5
+}
+```
+
+> `vlm_auto_concurrency`:自动化+工具通道的 VLM 并发上限。默认 5,用户可调最高 9(展示通道固定 1,1+9=10 ≤ 云端 glm-4v 总额)。glm-4v 免费故不约束费用;此旋钮纯粹控制"总并发别超云端上限"。
+
 `app/core/config.py` 中 `vision.*`/`ptz.*` 属性访问同步删除(改为从 cameras 表读)。从 `.env` 删除 `RTSP_PASSWORD`/`PTZ_PASSWORD`。
 
 - [ ] **Step 12.7: Commit**
@@ -2342,6 +2366,7 @@ git commit -m "feat(frontend): /camera 弹窗多路切换 + MonitorView 适配 +
 - 决策 1(ID 方案 cam_<6位> + name + sort_order)→ Step 1 DDL + Step 4 `_spawn` ✅
 - 决策 2(MJPEG)→ Step 6 `video_feed` StreamingResponse multipart ✅
 - 决策 3(VLM 并发 1+5)→ Step 4 双 Semaphore + Step 12.4 验收 5 ✅
+  - **补充**:自动化通道上限已改为可配(`automation.vlm_auto_concurrency`,默认 5,钳到 [1,9]),让"总并发别超云端 10"这个旋钮完全在用户手里。glm-4v 免费故费用不限;封号风险由既有 key 池熔断 + 429 退避兜底(本计划不重复实现)。
 - 决策 4(推理分工:展示只跑当前路)→ Step 4 enable_display 切换 + Step 12.1 ✅
 - 决策 5(ONVIF 多路,每路 MAC)→ Step 3 find_camera(camera_id) + Step 1 device_mac 列 ✅
 - 决策 6(迁移 + 删 config)→ Step 1 迁移 + Step 12.6 配置清理 ✅
