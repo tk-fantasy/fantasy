@@ -27,7 +27,7 @@ _startup_progress_mod.startup_progress.set = lambda *a, **kw: None
 
 
 @pytest.fixture(autouse=True)
-def _patch_config(monkeypatch, tmp_path):
+def _patch_config(monkeypatch, tmp_path, request):
     """Auto-patch app.config so tests don't read real config.json / .env."""
     import app.core.config as cfg
 
@@ -81,4 +81,13 @@ def _patch_config(monkeypatch, tmp_path):
         "llm_keys": [],
     }
     monkeypatch.setattr(cfg, "CONFIG", test_config)
+
+    # D6:默认禁用 legacy→cameras 迁移。conftest 注入了 vision/ptz 段,若不禁用,
+    # 任何调 Database.init() 的测试(rules/sessions/kv)都会被触发"默认摄像头"插入,
+    # 污染全量回归。仅 @pytest.mark.migration 标记的测试自己 patch
+    # _legacy_camera_config 喂数据开启迁移。
+    import app.core.database as _db_mod
+    if not request.node.get_closest_marker("migration"):
+        monkeypatch.setattr(_db_mod, "_legacy_camera_config", lambda: None)
+
     yield test_config
