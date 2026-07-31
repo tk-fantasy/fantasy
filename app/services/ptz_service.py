@@ -117,14 +117,16 @@ class PtzService:
     def _speed(self) -> float:
         return max(0.1, min(1.0, float(get_config("ptz.speed", 0.5))))
 
-    def notify_ip_changed(self, new_ip: str) -> None:
+    def notify_ip_changed(self, new_ip: str, camera_id: str = "") -> None:
         """通知 PTZ 摄像头 IP 已变(由 discovery 调用):作废缓存连接。
 
-        config.ptz.ip 已被 discovery 更新过(写入内存 + 磁盘),这里只清掉
-        旧 IP 建的 ONVIFCamera 缓存,下次 _ensure_connected 会读新 config 的 IP
-        懒重连。同步操作,不需锁(只置标记和清引用,无 ONVIF 调用)。
+        Task 3:加 camera_id 参数(过渡兼容,默认空串=旧行为)。完整 per-camera
+        PTZ 在 Task 5 PtzRegistry 处理。config.ptz.ip 已被 discovery 更新过
+        (写入内存 + 磁盘),这里只清掉旧 IP 建的 ONVIFCamera 缓存,下次
+        _ensure_connected 会读新 config 的 IP 懒重连。同步操作,不需锁。
         """
-        logger.info("PTZ notified of IP change → %s, will reconnect on next call", new_ip)
+        logger.info("PTZ notified of IP change → %s (cam=%s), will reconnect",
+                    new_ip, camera_id or "global")
         self._cam = None
         self._ptz = None
         self._profile_token = None

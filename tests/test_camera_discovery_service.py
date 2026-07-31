@@ -256,7 +256,7 @@ class TestApplyFoundIp:
         svc = CameraDiscoveryService()
         notify_mock = MagicMock()
         with patch("app.services.camera_discovery_service.ptz_service_notify_ip_changed", notify_mock):
-            await svc.apply_found_ip("192.168.1.99")
+            await svc.apply_found_ip(new_ip="192.168.1.99")
         # rtsp_url 的 IP 被换,port/path/凭据保留
         assert "192.168.1.99" in cfg.CONFIG["vision"]["rtsp_url"]
         assert ":554/stream2" in cfg.CONFIG["vision"]["rtsp_url"]
@@ -274,7 +274,7 @@ class TestApplyFoundIp:
         cfg.CONFIG["ptz"]["ip"] = "192.168.1.50"
         svc = CameraDiscoveryService()
         with patch("app.services.camera_discovery_service.ptz_service_notify_ip_changed", MagicMock()):
-            await svc.apply_found_ip("192.168.1.99")
+            await svc.apply_found_ip(new_ip="192.168.1.99")
         assert cfg.CONFIG["vision"]["rtsp_url"] == ""
         assert cfg.CONFIG["ptz"]["ip"] == "192.168.1.99"
 
@@ -364,13 +364,14 @@ class TestDisabledAndEdgeCases:
 
     @pytest.mark.asyncio
     async def test_find_and_apply_applies_when_found(self):
-        """find_and_apply: 找到 IP 后调 apply_found_ip。"""
+        """find_and_apply: 找到 IP 后调 apply_found_ip(camera_id 透传)。"""
         svc = CameraDiscoveryService()
         with patch.object(svc, "find_camera", AsyncMock(return_value="192.168.1.99")), \
              patch.object(svc, "apply_found_ip", AsyncMock()) as ap:
-            result = await svc.find_and_apply(timeout=1)
+            result = await svc.find_and_apply(camera_id="cam_a", timeout=1)
         assert result == "192.168.1.99"
-        ap.assert_called_once_with("192.168.1.99")
+        # Task 3:camera_id + new_ip 透传
+        ap.assert_called_once_with(camera_id="cam_a", new_ip="192.168.1.99")
 
     @pytest.mark.asyncio
     async def test_find_and_apply_no_apply_when_not_found(self):
@@ -392,3 +393,125 @@ class TestDisabledAndEdgeCases:
             result = await svc._probe_candidate("192.168.1.50")
         assert result == ""
         rd.assert_not_called()
+
+
+# ============================================================================
+# Task 3: 多路化 —— find_camera(camera_id) 从 cameras 行读 MAC/子网/凭证
+# ============================================================================
+
+class TestFindCameraByCameraId:
+    """Task 3:find_camera(camera_id) 从 db.cameras_get 行读配置,不再读全局 config。"""
+
+    @pytest.mark.asyncio
+    async def test_find_camera_uses_camera_row(self):
+        """find_camera(camera_id) 从 cameras 行读 MAC/子网/凭证。"""
+        svc = CameraDiscoveryService()
+        svc.set_db(MagicMock())
+        cam_row = {
+            "id": "cam_a", "device_mac": "60-a3-e3-de-e0-54", "ptz_ip": "192.168.4.16",
+            "ptz_port": 80, "ptz_username": "admin", "ptz_password": "pwd",
+            "rtsp_url": "rtsp://192.168.4.16/stream", "rtsp_username": "admin",
+            "rtsp_password": "rp", "discovery_subnet": "192.168.4.0/24",
+            "discovery_enabled": 1,
+        }
+
+        async def fake_get(cid):
+            return cam_row if cid == "cam_a" else None
+        svc._db.cameras_get = fake_get
+
+        with patch.object(svc, "_scan_ports", AsyncMock(return_value=["192.168.4.99"])), \
+             patch.object(svc, "_probe_candidate", AsyncMock(return_value="60a3e3dee054")), \
+             patch("asyncio.sleep", AsyncMock()):   # 避免真睡
+            new_ip = await svc.find_camera("cam_a")
+        assert new_ip == "192.168.4.99"
+
+    @pytest.mark.asyncio
+    async def test_find_camera_isolated_per_camera(self):
+        """两路 device_mac 不同,各自命中不同 IP。"""
+        svc = CameraDiscoveryService()
+        svc.set_db(MagicMock())
+        rows = {
+            "cam_a": {"id": "cam_a", "device_mac": "aa-aa-aa-aa-aa-aa", "ptz_ip": "10.0.0.1",
+                      "ptz_port": 80, "ptz_username": "u", "ptz_password": "p",
+                      "rtsp_url": "", "discovery_subnet": "10.0.0.0/24", "discovery_enabled": 1},
+            "cam_b": {"id": "cam_b", "device_mac": "bb-bb-bb-bb-bb-bb", "ptz_ip": "10.0.0.2",
+                      "ptz_port": 80, "ptz_username": "u", "ptz_password": "p",
+                      "rtsp_url": "", "discovery_subnet": "10.0.0.0/24", "discovery_enabled": 1},
+        }
+
+        async def fake_get(cid):
+            return rows.get(cid)
+        svc._db.cameras_get = fake_get
+
+        async def fake_probe(ip):
+            return "aaaaaaaaaaaa" if ip == "10.0.0.99" else "bbbbbbbbbbbb"
+        with patch.object(svc, "_scan_ports", AsyncMock(return_value=["10.0.0.99", "10.0.0.100"])), \
+             patch.object(svc, "_probe_candidate", AsyncMock(side_effect=fake_probe)), \
+             patch("asyncio.sleep", AsyncMock()):
+            assert await svc.find_camera("cam_a") == "10.0.0.99"
+            assert await svc.find_camera("cam_b") == "10.0.0.100"
+
+    @pytest.mark.asyncio
+    async def test_find_camera_no_db_returns_none(self):
+        """_db 未注入 → 防崩返回 None。"""
+        svc = CameraDiscoveryService()
+        # 不调 set_db,_db 保持 None
+        assert await svc.find_camera("cam_a") is None
+
+    @pytest.mark.asyncio
+    async def test_find_camera_disabled_returns_none(self):
+        """该路 discovery_enabled=0 → 跳过。"""
+        svc = CameraDiscoveryService()
+        svc.set_db(MagicMock())
+
+        async def fake_get(cid):
+            return {"id": "cam_a", "device_mac": "aaaa", "discovery_enabled": 0}
+        svc._db.cameras_get = fake_get
+        assert await svc.find_camera("cam_a") is None
+
+
+class TestApplyFoundIpByCameraId:
+    """Task 3:apply_found_ip(camera_id, new_ip) 更新该路 cameras 行 + 触发回调。"""
+
+    @pytest.mark.asyncio
+    async def test_apply_updates_camera_row_and_callback(self):
+        svc = CameraDiscoveryService()
+        db_mock = MagicMock()
+        db_mock.cameras_update = AsyncMock()
+        svc.set_db(db_mock)
+        cam_row = {"id": "cam_a", "rtsp_url": "rtsp://192.168.1.50:554/stream",
+                   "ptz_ip": "192.168.1.50"}
+
+        async def fake_get(cid):
+            return cam_row.copy() if cid == "cam_a" else None
+        svc._db.cameras_get = fake_get
+
+        calls = []
+        svc.set_on_ip_changed(lambda cid, ip: calls.append((cid, ip)))
+
+        await svc.apply_found_ip("cam_a", "192.168.1.99")
+        db_mock.cameras_update.assert_called_once()
+        args = db_mock.cameras_update.call_args
+        assert args[0][0] == "cam_a"   # camera_id
+        fields = args[0][1]
+        assert fields["ptz_ip"] == "192.168.1.99"
+        assert "192.168.1.99" in fields["rtsp_url"]
+        assert ":554/stream" in fields["rtsp_url"]
+        # 回调被触发
+        assert calls == [("cam_a", "192.168.1.99")]
+
+    @pytest.mark.asyncio
+    async def test_apply_no_rtsp_only_updates_ptz_ip(self):
+        """USB 路(无 rtsp_url)只更新 ptz_ip。"""
+        svc = CameraDiscoveryService()
+        db_mock = MagicMock()
+        db_mock.cameras_update = AsyncMock()
+        svc.set_db(db_mock)
+
+        async def fake_get(cid):
+            return {"id": "cam_a", "rtsp_url": "", "ptz_ip": "1.1.1.1"}
+        svc._db.cameras_get = fake_get
+        await svc.apply_found_ip("cam_a", "2.2.2.2")
+        fields = db_mock.cameras_update.call_args[0][1]
+        assert fields == {"ptz_ip": "2.2.2.2"}
+
