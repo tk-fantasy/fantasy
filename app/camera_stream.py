@@ -29,6 +29,7 @@ _TINY_JPEG = cv2.imencode('.jpg', np.full((1, 1, 3), 128, dtype=np.uint8))[1].to
 
 @dataclass
 class CameraState:
+    camera_id: str = ""
     camera_opened: bool = False
     backend_name: str = "unknown"
     frame_width: int = 0
@@ -61,11 +62,25 @@ class CameraStream:
     把用户请求堵在后面。
     """
 
-    def __init__(self, camera_index: int | None = None, vision_service: "VisionService | None" = None) -> None:
-        # 摄像头设备号：优先构造参数，其次 config，默认 0
-        if camera_index is None:
-            camera_index = int(get_config("vision.camera_index", 0))
-        self._camera_index = camera_index
+    def __init__(
+        self,
+        camera_id: str = "",
+        config: dict | None = None,
+        vision_service: "VisionService | None" = None,
+        on_automation_trigger=None,
+        discovery_service: Any = None,
+    ) -> None:
+        # 多摄像头参数化(Task 2):camera_id + config dict 替代读全局 get_config。
+        # 健壮性参数(read_retry/release_cooldown/slow_read/backend_blacklist 等)
+        # 仍读 get_config —— 它们是全局调优项,非每路独立配置(D 系列决策未要求每路不同)。
+        c = config or {}
+        self.camera_id = camera_id
+        self._config = c
+        # 摄像头来源:rtsp 优先于 usb_index
+        self._rtsp_url = str(c.get("rtsp_url", "")).strip()
+        self._rtsp_username = str(c.get("rtsp_username", ""))
+        self._rtsp_password = str(c.get("rtsp_password", ""))
+        self._camera_index = int(c.get("usb_index", 0)) if not self._rtsp_url else 0
         self._recognizer = vision_service or VisionService()
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
@@ -73,19 +88,19 @@ class CameraStream:
         self._cap: cv2.VideoCapture | None = None
         self._latest_frame: np.ndarray | None = None
         self._latest_jpeg: bytes | None = None
-        self._latest_result = ActionResult("idle", "等待识别。", {"source": "vision", "enabled": self._recognizer.enabled})
+        self._latest_result = ActionResult("idle", "等待识别。", {"source": "vision", "enabled": self._recognizer.enabled, "camera_id": camera_id})
         self._infer_busy = False
         self._presence_count = 0
         self._absence_count = 0
         self._presence_threshold = 3
 
         self._motion = MotionDetector(
-            hash_size=int(get_config("vision.motion_hash_size", 16)),
-            threshold=int(get_config("vision.motion_threshold", 15)),
+            hash_size=int(c.get("motion_hash_size", 16)),
+            threshold=int(c.get("motion_threshold", 15)),
         )
-        self._motion_check_interval = max(0.05, float(get_config("vision.motion_check_interval_seconds", 0.2)))
-        self._min_infer_interval = max(0.5, float(get_config("vision.min_infer_interval_seconds", 3.0)))
-        self._max_idle_interval = max(self._min_infer_interval, float(get_config("vision.max_idle_interval_seconds", 60.0)))
+        self._motion_check_interval = max(0.05, float(c.get("motion_check_interval", 0.2)))
+        self._min_infer_interval = max(0.5, float(c.get("vision_min_infer_interval", 3.0)))
+        self._max_idle_interval = max(self._min_infer_interval, float(c.get("vision_max_idle_interval", 60.0)))
         self._last_motion_check = 0.0
         self._last_model_run_at = 0.0
         self._infer_count = 0
@@ -123,26 +138,28 @@ class CameraStream:
 
         # 规则引擎用的多帧环形缓冲:按 frame_interval_ms 间隔存最近 N 帧,
         # 供条件评估做时间序列理解(如“正在坐下”)。推理完成回调降低规则响应延迟。
-        self._frame_count = max(1, int(get_config("vision.vision_use_img_count", 3)))
-        self._frame_interval_ms = max(0, int(get_config("vision.frame_interval_ms", 1000)))
+        self._frame_count = max(1, int(c.get("vision_use_img_count", 3)))
+        self._frame_interval_ms = max(0, int(c.get("frame_interval_ms", 2000)))
         self._frame_buffer: deque[np.ndarray] = deque(maxlen=self._frame_count)
         self._frame_timestamps: deque[float] = deque(maxlen=self._frame_count)
         self._last_buffer_push = 0.0
-                
+
         # 异步帧缓冲队列：避免 frame.copy() 阻塞主循环
         self._buffer_queue: queue.Queue[np.ndarray] = queue.Queue(maxsize=10)
         self._buffer_thread: threading.Thread | None = None
-        
+
         # 异步推理调度队列：避免 frame.copy() 阻塞主循环
         self._infer_queue: queue.Queue[tuple[np.ndarray, str]] = queue.Queue(maxsize=5)
         self._infer_scheduler_thread: threading.Thread | None = None
         self._infer_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="infer")
-                
+
         self._on_inference_done: Callable[[], None] | None = None
-        # dhash 运动触发自动化的回调（与 /camera 视觉展示推理解耦：关展示不影响自动化）
-        self._on_automation_trigger: Callable[[], None] | None = None
-        # /camera 页面视觉展示推理开关：只门控 classify_frame 预览，不影响 dhash 自动化触发
-        self._camera_vl_display_enabled: bool = True
+        # dhash 运动触发自动化的回调(与 AI 预览推理解耦:关预览不影响自动化)。
+        # Task 2:回调签名变 callback(camera_id),由 CameraManager 注入。
+        self._on_automation_trigger: Callable[[str], None] | None = on_automation_trigger
+        # AI 预览推理开关:只门控 classify_frame 预览,不影响 dhash 自动化触发。
+        # D4:全局同一时刻只 1 路预览,由 CameraManager 单例切换保证。
+        self._camera_vl_display_enabled: bool = bool(c.get("display_enabled", 1))
         # 主事件循环引用：运动推理通过 run_coroutine_threadsafe 投到主循环跑，
         # httpx 网络等待时释放 GIL，不再像线程池那样抢 GIL 饿死采集线程。
         # 由 set_event_loop 在应用启动时注入（主循环已运行后）。
@@ -150,7 +167,7 @@ class CameraStream:
         self._infer_futures: list = []  # 跟踪未完成的推理 future，stop 时取消
 
         # ONVIF 发现服务(掉线时找回 IP)。None 表示未注入,走纯指数退避。
-        self._discovery_service: Any = None
+        self._discovery_service: Any = discovery_service
         # 连续开流失败计数,达到阈值触发一次 discovery
         self._open_fail_count = 0
         self._discovery_trigger_threshold = 3
@@ -159,6 +176,7 @@ class CameraStream:
         self._discovery_min_interval = 20.0
 
         self._state = CameraState(
+            camera_id=camera_id,
             details={"source": "vision", "enabled": self._recognizer.enabled},
             motion_threshold=self._motion.threshold,
             model_fps=round(1.0 / self._min_infer_interval, 2),
@@ -318,20 +336,36 @@ class CameraStream:
         """注册视觉推理完成回调,用于触发规则评估(降低响应延迟)。"""
         self._on_inference_done = callback
 
-    def set_on_automation_trigger(self, callback: Callable[[], None]) -> None:
-        """注册 dhash 运动触发回调，用于事件驱动自动化评估。
+    def set_on_automation_trigger(self, callback: Callable[[str], None]) -> None:
+        """注册 dhash 运动触发回调,用于事件驱动自动化评估。
 
-        与 /camera 视觉展示推理解耦：关掉视觉展示（set_camera_vl_display_enabled）
-        只停 /camera 的 VL 预览，不影响 dhash 检测与自动化触发。
+        Task 2:回调签名变 callback(camera_id: str),触发时带本路 id,
+        供 CameraManager 路由到对应摄像头的自动化评估。
+
+        与 AI 预览推理解耦:关掉预览(set_display_enabled(False))只停
+        classify_frame 预览,不影响 dhash 检测与自动化触发。
         """
         self._on_automation_trigger = callback
 
-    def set_camera_vl_display_enabled(self, enabled: bool) -> None:
-        """开关 /camera 页面的视觉展示推理（classify_frame 预览）。
+    def set_display_enabled(self, enabled: bool) -> None:
+        """开关 AI 预览推理(classify_frame 预览,原 set_camera_vl_display_enabled)。
 
-        关掉只停预览推理，dhash 运动检测与自动化触发不受影响。
+        关掉只停预览推理,dhash 运动检测与自动化触发不受影响。
+        D4:全局同一时刻只允许 1 路预览推理,由 CameraManager 单例切换保证。
         """
         self._camera_vl_display_enabled = bool(enabled)
+
+    def start_display(self) -> None:
+        """CameraManager 激活该路预览推理的入口(D4 薄封装)。"""
+        self.set_display_enabled(True)
+
+    def stop_display(self) -> None:
+        """CameraManager 停掉该路预览推理的入口(D4 薄封装)。"""
+        self.set_display_enabled(False)
+
+    def set_camera_vl_display_enabled(self, enabled: bool) -> None:
+        """已废弃别名 → set_display_enabled(过渡期保留,Step 7 清理调用方后删)。"""
+        self.set_display_enabled(enabled)
 
     def set_motion_threshold(self, threshold: int) -> None:
         """热更新 dhash 运动判定阈值（与 /automation/dhash-threshold 滑块联动）。
@@ -484,18 +518,18 @@ class CameraStream:
         return re.sub(r"(://[^:]+):[^@]+@", r"\1:***@", url)
 
     def _resolve_rtsp_url(self) -> str:
-        """从 config + .env 拼出完整 RTSP URL（含鉴权）。
+        """从 config 字段拼完整 RTSP URL(含鉴权)。
 
-        config.json 只存不带凭证的 base url + 用户名 + 密码的 env 变量名，
-        密码本身在 .env 里（不进 git）。这样 config.json 即使被分享/提交
-        也不会泄漏摄像头密码。
+        Task 2:多摄像头参数化 —— URL/凭证从构造时传入的 config dict 读
+        (cameras 表的 rtsp_url/rtsp_username/rtsp_password 列),不再读全局
+        get_config + os.getenv。密码明文存在 cameras 表(与 user_settings
+        存明文 LLM key 一致,项目既有模式)。
         """
-        base = str(get_config("vision.rtsp_url", "")).strip()
+        base = self._rtsp_url
         if not base:
             return ""
-        user = str(get_config("vision.rtsp_username", "")).strip()
-        pwd_env = str(get_config("vision.rtsp_password_env", "")).strip()
-        pwd = os.getenv(pwd_env, "") if pwd_env else ""
+        user = self._rtsp_username
+        pwd = self._rtsp_password
         if not user or not pwd:
             # 没配凭证就裸连（部分摄像头 RTSP 不要求鉴权）
             return base
@@ -760,9 +794,10 @@ class CameraStream:
             self._state.motion_distance = distance
 
         # 自动化触发：moved 即触发，不受视觉展示开关 / 视觉模型启用与否影响
+        # Task 2:回调带 camera_id,供 CameraManager 路由到对应摄像头的评估。
         if moved and self._on_automation_trigger is not None:
             try:
-                self._on_automation_trigger()
+                self._on_automation_trigger(self.camera_id)
             except Exception:  # noqa: BLE001
                 logger.exception("on_automation_trigger callback failed")
 
@@ -810,7 +845,7 @@ class CameraStream:
         with self._lock:
             self._infer_started_at = started
         try:
-            result = self._recognizer.classify_frame(frame)
+            result = self._recognizer.classify_frame(frame, camera_id=self.camera_id)
             logger.info(
                 "Inference result updated",
                 extra={
@@ -847,7 +882,7 @@ class CameraStream:
         with self._lock:
             self._infer_started_at = started
         try:
-            result = await self._recognizer.classify_frame_async(frame)
+            result = await self._recognizer.classify_frame_async(frame, camera_id=self.camera_id)
             logger.info(
                 "Inference result updated",
                 extra={

@@ -32,7 +32,9 @@ def _feedback_default(event: str) -> str:
 class VisionService:
     def __init__(self, client: LlmVisionClient | None = None) -> None:
         self._client = client or LlmVisionClient()
-        self._vision_focuses: list[dict] = []
+        # Task 2:per-camera focuses —— 按摄像头分桶,各路隔离。
+        # 空串桶(camera_id="")为全局/向后兼容(单摄像头时代无 camera_id)。
+        self._vision_focuses: dict[str, list[dict]] = {}
 
     @property
     def model(self) -> str:
@@ -59,21 +61,27 @@ class VisionService:
             _encode_frames_b64, frames, client._max_side, client._jpeg_quality
         )
 
-    # ---- 多条 focus CRUD ----
+    # ---- 多条 focus CRUD(per-camera,Task 2)----
 
-    def get_vision_focuses(self) -> list[dict]:
-        """获取所有视觉关注项。"""
-        return list(self._vision_focuses)
+    def get_vision_focuses(self, camera_id: str = "") -> list[dict]:
+        """获取指定摄像头的视觉关注项。"""
+        return list(self._vision_focuses.get(camera_id, []))
 
-    def add_focus(self, text: str) -> dict:
-        """新增一条视觉关注。"""
-        item = {"id": uuid.uuid4().hex[:8], "text": text.strip(), "enabled": True}
-        self._vision_focuses.append(item)
+    def add_focus(self, text: str, camera_id: str = "") -> dict:
+        """新增一条视觉关注,归属指定摄像头。"""
+        item = {
+            "id": uuid.uuid4().hex[:8],
+            "text": text.strip(),
+            "enabled": True,
+            "camera_id": camera_id,
+        }
+        self._vision_focuses.setdefault(camera_id, []).append(item)
         return item
 
-    def update_focus(self, focus_id: str, *, text: str | None = None, enabled: bool | None = None) -> dict | None:
-        """更新一条视觉关注。"""
-        for item in self._vision_focuses:
+    def update_focus(self, focus_id: str, *, text: str | None = None,
+                     enabled: bool | None = None, camera_id: str = "") -> dict | None:
+        """更新指定摄像头下的一条视觉关注。"""
+        for item in self._vision_focuses.get(camera_id, []):
             if item["id"] == focus_id:
                 if text is not None:
                     item["text"] = text.strip()
@@ -82,19 +90,26 @@ class VisionService:
                 return item
         return None
 
-    def delete_focus(self, focus_id: str) -> bool:
-        """删除一条视觉关注。"""
-        before = len(self._vision_focuses)
-        self._vision_focuses = [f for f in self._vision_focuses if f["id"] != focus_id]
-        return len(self._vision_focuses) < before
+    def delete_focus(self, focus_id: str, camera_id: str = "") -> bool:
+        """删除指定摄像头下的一条视觉关注。"""
+        bucket = self._vision_focuses.get(camera_id, [])
+        before = len(bucket)
+        self._vision_focuses[camera_id] = [f for f in bucket if f["id"] != focus_id]
+        return len(self._vision_focuses[camera_id]) < before
 
     def load_focuses(self, focuses: list[dict]) -> None:
-        """从持久化数据加载全部关注项。"""
-        self._vision_focuses = list(focuses)
+        """从持久化数据加载全部关注项,按 camera_id 分桶。
 
-    def _get_combined_focus(self) -> str:
-        """拼接所有 enabled 项的 text，用于 classify_frame。"""
-        enabled = [f["text"] for f in self._vision_focuses if f.get("enabled", True)]
+        KV 存的是扁平 list,每条已含 camera_id 字段;这里按 camera_id 重新分桶。
+        """
+        self._vision_focuses = {}
+        for f in focuses:
+            cid = f.get("camera_id", "")
+            self._vision_focuses.setdefault(cid, []).append(f)
+
+    def _get_combined_focus(self, camera_id: str = "") -> str:
+        """拼接指定摄像头所有 enabled 项的 text,用于 classify_frame。"""
+        enabled = [f["text"] for f in self._vision_focuses.get(camera_id, []) if f.get("enabled", True)]
         if not enabled:
             return "画面中的人和他们的行为"
         return "；".join(enabled)
@@ -149,24 +164,25 @@ class VisionService:
         logger.warning("evaluate_condition unexpected: %r", content[:50])
         return 0
 
-    def classify_frame(self, frame_bgr) -> ActionResult:
+    def classify_frame(self, frame_bgr, camera_id: str = "") -> ActionResult:
         if not self.enabled:
             return ActionResult("idle", "视觉模型未启用。", {"source": "vision", "enabled": False})
 
         import asyncio
-        payload = asyncio.run(self._client.classify_frame(frame_bgr, focus=self._get_combined_focus()))
+        payload = asyncio.run(self._client.classify_frame(frame_bgr, focus=self._get_combined_focus(camera_id)))
         return self._build_result_from_payload(payload)
 
-    async def classify_frame_async(self, frame_bgr) -> ActionResult:
+    async def classify_frame_async(self, frame_bgr, camera_id: str = "") -> ActionResult:
         """异步版分类，直接 await 客户端而非 asyncio.run。
 
         供摄像头运动推理在主事件循环里调用：httpx 网络等待时释放 GIL，
         不会像 asyncio.run + 线程池那样抢 GIL 饿死摄像头采集线程。
+        camera_id 用于取该摄像头的 per-camera focus(Task 2)。
         """
         if not self.enabled:
             return ActionResult("idle", "视觉模型未启用。", {"source": "vision", "enabled": False})
 
-        payload = await self._client.classify_frame(frame_bgr, focus=self._get_combined_focus())
+        payload = await self._client.classify_frame(frame_bgr, focus=self._get_combined_focus(camera_id))
         return self._build_result_from_payload(payload)
 
     def _build_result_from_payload(self, payload: dict[str, Any]) -> ActionResult:
