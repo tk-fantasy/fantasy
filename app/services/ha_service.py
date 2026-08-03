@@ -44,12 +44,17 @@ class HAService:
         return await self._get_states_cached()
 
     async def _get_area_maps_cached(self) -> tuple[dict[str, str], dict[str, str]]:
-        """获取 area_id→area_name 和 entity_id→area_id 映射（缓存 60 秒）。"""
+        """获取 area_id→area_name 和 entity_id→area_id 映射（缓存 60 秒）。
+
+        entity 的 area_id 优先取实体自身配置；为空时继承其所属 device 的 area_id。
+        HA 推荐做法是给 device 分配区域，此时实体自身 area_id 为空、靠 device 继承，
+        若不做继承会把整批设备（如 Xiaomi Home）错误地当成「未分配区域」丢弃。
+        """
         now = time.time()
         if now - self._area_cache_at < 60.0:
             return self._area_map, self._entity_area_map
         try:
-            # 通过 WebSocket 连接 HA，获取 areas 和 entity registry
+            # 通过 WebSocket 连接 HA，获取 areas / entity / device registry
             import json
             import websockets
             ws_url = self._client.base_url.replace("http", "ws") + "/api/websocket"
@@ -64,22 +69,43 @@ class HAService:
                     auth_result = json.loads(await ws.recv())
                     if auth_result.get("type") != "auth_ok":
                         raise RuntimeError(f"HA WebSocket auth failed: {auth_result}")
+                    # 串行递增 id，避免 HA WebSocket「id 已使用」报错
+                    msg_id = 0
+
+                    async def call(msg_type: str) -> dict[str, Any]:
+                        nonlocal msg_id
+                        msg_id += 1
+                        await ws.send(json.dumps({"id": msg_id, "type": msg_type}))
+                        return json.loads(await ws.recv())
+
                     # 获取 areas
-                    await ws.send(json.dumps({"id": 1, "type": "config/area_registry/list"}))
-                    areas_resp = json.loads(await ws.recv())
+                    areas_resp = await call("config/area_registry/list")
                     areas = areas_resp.get("result", [])
                     self._area_map = {a["area_id"]: a["name"] for a in areas}
+                    # 获取 device registry：device_id -> area_id
+                    dev_resp = await call("config/device_registry/list")
+                    devices = dev_resp.get("result", [])
+                    device_area: dict[str, str] = {
+                        dv["id"]: dv["area_id"]
+                        for dv in devices
+                        if dv.get("area_id")
+                    }
                     # 获取 entity registry
-                    await ws.send(json.dumps({"id": 2, "type": "config/entity_registry/list"}))
-                    reg_resp = json.loads(await ws.recv())
+                    reg_resp = await call("config/entity_registry/list")
                     registry = reg_resp.get("result", [])
+                    # entity 自身 area 优先，为空则继承所属 device 的 area
                     self._entity_area_map = {
-                        e["entity_id"]: e["area_id"]
+                        e["entity_id"]: (
+                            e.get("area_id")
+                            or device_area.get(e.get("device_id", ""), "")
+                        )
                         for e in registry
-                        if e.get("area_id")
+                        if (e.get("area_id") or device_area.get(e.get("device_id", "")))
                     }
             self._area_cache_at = now
-            logger.debug("获取到 %d 个区域、%d 个实体映射 - 已缓存", len(self._area_map), len(self._entity_area_map))
+            logger.debug(
+                "获取到 %d 个区域、%d 个实体映射 - 已缓存",
+                len(self._area_map), len(self._entity_area_map))
         except asyncio.TimeoutError:
             logger.warning("获取 HA area/entity registry 超时")
         except Exception:
