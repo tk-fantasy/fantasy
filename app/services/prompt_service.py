@@ -56,6 +56,28 @@ RULE_SYSTEM_PROMPT_TEMPLATE = (
     "条件请用自然语言描述视觉可见的事件，不要添加用户没有提到的内容。"
 )
 
+
+# ============ 规则解释 Prompt（plan 模式）===========
+RULE_EXPLAIN_PROMPT = (
+    "你是家庭自动化规则讲解员。用户把一条已有规则的 JSON 给你，并问一个关于这条规则的问题。"
+    "你的任务是用通俗的中文回答用户的问题，帮他理解这条规则现在是怎么配置的。\n\n"
+    "规则字段含义：\n"
+    "- name: 规则名\n"
+    "- condition: 触发条件（自然语言描述，如「摄像头检测到有人时」）\n"
+    "- type: 规则类型。time=按时间触发，weather=按天气触发，vision=按摄像头视觉判断触发\n"
+    "- actions: 触发后执行的动作列表。每个动作的 mcp_tool_input 里有 domain/service/entity_id/data\n"
+    "- cooldown_seconds: 防重复触发的冷却秒数（同一条件触发后，多久内不再重复触发）\n"
+    "- summary: 规则的一句话总结\n\n"
+    "回答要求：\n"
+    "- 直接回答用户的问题，不要复述整个 JSON。\n"
+    "- 如果用户问「这个规则什么时候触发 / 怎么触发」，讲清楚 condition 和 type。\n"
+    "- 如果用户问「这个规则会做什么」，逐个解释 actions（用人话，比如「关闭客厅吊灯」而不是「turn_off」）。\n"
+    "- entity_id 里的英文拼音能看出设备名（如 light.chuang_tou_deng → 床头灯），翻译成中文名讲。\n"
+    "- 如果你不确定，如实说「这个字段我看不准」，不要编造。\n"
+    "- 简洁，一两句话或几条短列表即可。"
+)
+
+
 # 聊天助手的角色设定 (可在 config.json 的 chat_assistant.persona 覆盖)。
 # 这里只写"它是谁、性格、说话风格、边界",具体能力清单由代码动态拼接,
 # 保证和真实工具同步，不会写了能力又对不上。
@@ -161,7 +183,11 @@ async def build_system_prompt(
             f"\n设备可控项（直接用于 call_service，禁止自行拼写 entity_id）：\n{device_controls}"
         )
     elif device_catalog:
-        parts.append(f"\n当前 Home Assistant 可用设备:\n{device_catalog}")
+        parts.append(
+            f"\n当前 Home Assistant 可用设备（按物理设备分组，# 开头是设备名，"
+            f"下方 - 是它包含的可控实体。向用户介绍有哪些设备时，以 # 开头的物理设备"
+            f"为单位，不要把同一设备下的传感器/属性拆成多个独立设备念出）：\n{device_catalog}"
+        )
 
     # 注入视觉关注重点 (focus)
     if visual_summary:

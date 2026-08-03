@@ -2,12 +2,17 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import BaseToggle from '../components/BaseToggle.vue'
 import EmojiPicker from '../components/EmojiPicker.vue'
+import ReviseChatModal from '../components/ReviseChatModal.vue'
 import { apiGet, apiPost } from '../utils/api'
 
 const tasks = ref([])
 const loading = ref(true)
 const showCreateForm = ref(false)
 const creating = ref(false)
+
+// 任务修改对话弹窗
+const selectedTask = ref(null)
+const showReviseModal = ref(false)
 
 // Emoji 偏好管理
 const emojiPrefs = ref({}) // { "scheduled_task:xxx": "🔔" }
@@ -47,6 +52,25 @@ async function onEmojiSelect(item) {
   } catch (e) {
     console.error('Failed to save emoji pref:', e)
   }
+}
+
+function openTaskRevise(task) {
+  selectedTask.value = task
+  showReviseModal.value = true
+}
+
+function closeTaskRevise() {
+  showReviseModal.value = false
+  selectedTask.value = null
+}
+
+function onTaskUpdated(updated) {
+  // 同步落库后的最新任务回列表
+  const idx = tasks.value.findIndex((t) => t.id === updated.id)
+  if (idx >= 0) {
+    tasks.value[idx] = { ...tasks.value[idx], ...updated }
+  }
+  closeTaskRevise()
 }
 
 // 新建表单状态
@@ -334,8 +358,8 @@ onMounted(() => {
     <div v-if="loading" class="loading-state">加载中...</div>
 
     <div v-else class="task-list">
-      <div v-for="task in tasks" :key="task.id" class="task-card">
-        <div class="task-toggle-col">
+      <div v-for="task in tasks" :key="task.id" class="task-card" @click="openTaskRevise(task)">
+        <div class="task-toggle-col" @click.stop>
           <BaseToggle :modelValue="task.enabled" @update:modelValue="toggleTask(task.id)" />
         </div>
 
@@ -344,7 +368,7 @@ onMounted(() => {
             <span
               class="task-emoji emoji-trigger"
               :title="'点击更换图标'"
-              @click="openEmojiPicker('scheduled_task', task.id, getTaskIcon(task))"
+              @click.stop="openEmojiPicker('scheduled_task', task.id, getTaskIcon(task))"
             >{{ getTaskIcon(task) }}</span>
             <h3>{{ task.name }}</h3>
             <span class="task-status" :class="statusClass(task)">{{ statusText(task) }}</span>
@@ -371,7 +395,7 @@ onMounted(() => {
               <span class="meta-value">{{ task.last_error }}</span>
             </div>
           </div>
-          <div class="task-actions">
+          <div class="task-actions" @click.stop>
             <button class="btn-run" @click="runTaskNow(task.id)" title="立即执行一次">立即执行</button>
             <button class="btn-delete" @click="deleteTask(task.id)" title="删除">删除</button>
           </div>
@@ -387,6 +411,16 @@ onMounted(() => {
       :visible="showEmojiPicker"
       @update:visible="showEmojiPicker = $event"
       @select="onEmojiSelect"
+    />
+
+    <!-- 任务修改对话弹窗 -->
+    <ReviseChatModal
+      v-if="showReviseModal && selectedTask"
+      kind="task"
+      :item-id="selectedTask.id"
+      :initial="selectedTask"
+      @applied="onTaskUpdated"
+      @close="closeTaskRevise"
     />
   </div>
 </template>

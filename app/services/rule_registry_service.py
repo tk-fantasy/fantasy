@@ -187,6 +187,36 @@ class RuleRegistryService:
                     self._save_rule_async(rule)
                     return
 
+    def update_rule(self, rule_id: str, rule_dict: dict) -> dict:
+        """用 LLM 修改后的规则内容覆盖现有规则。
+
+        只覆盖 schema 字段（name/condition/type/actions/action_descriptions/
+        cooldown_seconds/summary），保留 id/enabled/created_at/user_id/
+        last_triggered_at 不被改动。不存在则抛 404。
+        """
+        with self._lock:
+            for rule in self._rules:
+                if rule.id == rule_id:
+                    rule.name = str(rule_dict.get("name", rule.name))
+                    rule.condition = str(rule_dict.get("condition", rule.condition))
+                    rule.type = str(rule_dict.get("type", rule.type) or rule.type)
+                    rule.actions = rule_dict.get("actions", rule.actions)
+                    rule.action_descriptions = rule_dict.get("action_descriptions", rule.action_descriptions)
+                    rule.cooldown_seconds = int(rule_dict.get("cooldown_seconds", rule.cooldown_seconds))
+                    rule.summary = str(rule_dict.get("summary", rule.summary))
+                    rule.updated_at = int(time.time() * 1000)
+                    self._save_rule_async(rule)
+                    return rule.to_dict()
+        raise AppException(f"规则不存在: {rule_id}", code="rule_not_found", http_status=404)
+
+    def get_rule(self, rule_id: str) -> dict | None:
+        """按 id 取单条规则（不存在返回 None）。供路由层 revise 时取当前规则。"""
+        with self._lock:
+            for rule in self._rules:
+                if rule.id == rule_id:
+                    return rule.to_dict()
+        return None
+
     def list_rules(self) -> list[dict]:
         with self._lock:
             return [rule.to_dict() for rule in self._rules]

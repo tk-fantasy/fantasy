@@ -85,6 +85,7 @@ def _register_ha_get_entities(deps: ToolDeps) -> None:
     async def handler(_: dict, session) -> dict:
         try:
             devices = await deps.ha_service.get_all_devices()
+            grouped = await deps.ha_service.get_all_devices_grouped()
             raw_svc_defs = await deps.ha_service.get_service_defs(
                 deps.ha_client_ref[0], domains=set(d.get("domain", "") for d in devices)
             )
@@ -94,15 +95,53 @@ def _register_ha_get_entities(deps: ToolDeps) -> None:
             }
             for device in devices:
                 device["_controls"] = resolve_controls(device, raw_svc_defs)
-            return {"entities": devices, "count": len(devices), "services": services_info}
+            # 给 grouped devices 的子实体也补 _controls（复用扁平实体的计算结果）
+            ctrl_by_eid = {d["entity_id"]: d.get("_controls", {}) for d in devices}
+            grouped_devices = grouped.get("devices", [])
+
+            # 构造精简的 devices 视图给 AI：每个物理设备只暴露
+            # name / model / area / 可控项摘要 / entity_id 列表，
+            # 不再内联完整子实体对象——否则 LLM 会读到子实体的 friendly_name
+            # （如「小爱音箱Pro 麦克风 静音」）并把它当作独立设备念给用户。
+            # 控制需要的 domain/service/param 在扁平 entities 数组里查得到。
+            devices_brief = []
+            for dev in grouped_devices:
+                ents = dev.get("entities", [])
+                # 只列可控子实体的 entity_id（AI 控制 device 时从这里取）
+                controllable = [
+                    e for e in ents
+                    if e["domain"] not in ("sensor", "binary_sensor")
+                ]
+                devices_brief.append({
+                    "name": dev.get("name", ""),
+                    "model": dev.get("model"),
+                    "area": dev.get("area_name"),
+                    "summary": dev.get("summary", ""),
+                    "entity_ids": [e["entity_id"] for e in controllable],
+                })
+            return {
+                "devices": devices_brief,     # 精简物理设备列表（供回答「有哪些设备」）
+                "entities": devices,          # 扁平实体列表（含 _controls，供 call_service）
+                "count": len(devices_brief),
+                "services": services_info,
+            }
         except Exception as e:
             logger.exception("HA get_entities failed")
-            return {"entities": [], "count": 0, "error": str(e)}
+            return {"entities": [], "devices": [], "count": 0, "error": str(e)}
 
     deps.mcp_client_manager.register_tool(MCPTool(
         client_id="ha_devices",
         tool_name="get_entities",
-        description="获取所有 Home Assistant 设备列表及其状态和可控项",
+        description=(
+            "获取家中所有智能设备。返回 devices 和 entities 两个字段：\n"
+            "- devices：物理设备列表，每项一个物理设备（如「小爱音箱Pro」「大门通断器」），"
+            "含 name/area/summary/entity_ids。向用户介绍「有哪些设备」时，直接用 devices 的 name 逐个列出，"
+            "不要把同一物理设备下的传感器/开关/子功能当成多个设备分别念出。\n"
+            "- entities：扁平实体列表（含 entity_id/domain/_controls），控制设备时从这里取 "
+            "domain/service/entity_id/data 调用 call_service。\n"
+            "一个物理设备可能对应多个 entity_id（不同功能点），用户说一个设备名时可能命中其中任意一个——"
+            "按用户意图从 entities 里匹配最合适的。"
+        ),
         parameters={"type": "object", "properties": {}},
         handler=handler,
     ))

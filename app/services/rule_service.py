@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 import re
-from typing import Callable
+from typing import Awaitable, Callable
 
 from ..clients.llm_chat_client import LlmChatClient
 from ..core.config import get_config
@@ -162,15 +162,20 @@ class RuleService:
         
         return errors
 
-    async def build_rule(self, text: str, user_id: str = "") -> dict:
-        # 先按 user_id 解析 per-user client（无配置回退全局 self._client），
-        # 再检查 enabled —— per-user client 解析成功时 _enabled=True，可绕过全局占位符 key 的禁用态
+    async def _prepare_rule_context(self, filter_text: str, user_id: str = "") -> dict:
+        """加载 HA 数据并构造规则解析 system prompt。
+
+        build_rule（新建）和 revise_rule（修改）共用此方法，避免重复。
+        filter_text 用于把 prompt 范围缩小到相关设备（无匹配则返回全部）。
+
+        Returns:
+            {"client", "system_prompt", "full_devices", "services_info"}；LLM 未启用时返回空 dict。
+        """
         client = await self._resolve_client(user_id)
         if not client.enabled:
-            return self._fallback_rule(text)
+            return {}
 
         # 获取 HA 设备目录（用于 prompt）
-        ha_catalog = ""
         devices = []
         if self._ha_catalog_provider is not None:
             try:
@@ -202,7 +207,6 @@ class RuleService:
 
         # 构建设备可控项中文文本（替代 JSON 服务列表 + device attributes）
         controls_text = ""
-        raw_svc_defs = {}
         if full_devices and services_info:
             raw_svc_defs = {
                 domain: {svc: {"fields": fields} for svc, fields in svcs.items()}
@@ -212,7 +216,7 @@ class RuleService:
             for d in full_devices:
                 d["_controls"] = resolve_controls(d, raw_svc_defs)
             # domain 过滤后生成中文 controls
-            filtered_devices = _filter_devices(text, full_devices)
+            filtered_devices = _filter_devices(filter_text, full_devices)
             c_lines = []
             for d in filtered_devices:
                 controls = d.get("_controls", {})
@@ -221,12 +225,9 @@ class RuleService:
             controls_text = "\n\n".join(c_lines) if c_lines else ""
 
         # 构建设备列表文本（entity_id 映射）- 同样只包含匹配的 devices
-        device_list_text = ""
         if devices:
-            filtered = _filter_devices(text, devices)
-            lines = []
-            for d in filtered:
-                lines.append(f"- {d['name']} (entity_id: {d['entity_id']})")
+            filtered = _filter_devices(filter_text, devices)
+            lines = [f"- {d['name']} (entity_id: {d['entity_id']})" for d in filtered]
             device_list_text = "\n".join(lines)
         else:
             device_list_text = "(暂无可用设备)"
@@ -236,9 +237,24 @@ class RuleService:
             controls_text=controls_text,
             device_list_text=device_list_text,
         )
+        return {
+            "client": client,
+            "system_prompt": system_prompt,
+            "full_devices": full_devices,
+            "services_info": services_info,
+        }
+
+    async def build_rule(self, text: str, user_id: str = "") -> dict:
+        # 复用 _prepare_rule_context 加载 HA 数据 + 构造 system prompt
+        ctx = await self._prepare_rule_context(text, user_id)
+        if not ctx:
+            return self._fallback_rule(text)
+        client = ctx["client"]
+        full_devices = ctx["full_devices"]
+        services_info = ctx["services_info"]
 
         messages = [
-            {"role": "system", "content": system_prompt},
+            {"role": "system", "content": ctx["system_prompt"]},
             {"role": "user", "content": f"请把这句话解析成自动化规则 JSON: {text}"},
         ]
 
@@ -264,26 +280,140 @@ class RuleService:
 
             # 校验 actions（使用完整设备数据，带 attributes）
             errors = self._validate_actions(parsed.get("actions", []), full_devices, services_info)
-            
+
             if not errors:
-                # 校验通过
                 return parsed
-            
+
             # 校验失败，还有重试机会
             if attempt < MAX_RETRIES:
                 error_text = "\n".join(f"- {e}" for e in errors)
                 messages.append({"role": "assistant", "content": content})
                 messages.append({
-                    "role": "user", 
+                    "role": "user",
                     "content": f"你生成的规则有以下错误，请修正后重新生成完整的 JSON：\n{error_text}"
                 })
-                logger.info(f"Rule validation failed (attempt {attempt + 1}), retrying: {errors}")
+                logger.info("Rule validation failed (attempt %d), retrying: %s", attempt + 1, errors)
             else:
-                # 最后一次也失败了，记录日志但返回结果
-                logger.warning(f"Rule validation failed after {MAX_RETRIES + 1} attempts: {errors}")
+                logger.warning("Rule validation failed after %d attempts: %s", MAX_RETRIES + 1, errors)
                 return parsed
 
         return self._fallback_rule(text)
+
+    async def revise_rule(self, current_rule: dict, instruction: str, user_id: str = "") -> dict:
+        """基于自然语言指令迭代修改已有规则（不落库，只返回预览）。
+
+        复用 build_rule 的 HA 数据加载 + system prompt + 校验重试逻辑，只改 user prompt：
+        把当前规则 JSON + 修改指令交给 LLM，让它输出完整新 JSON。
+
+        Returns:
+            {"rule": {...新规则 JSON...}, "summary": "一句中文说明改了什么"}
+            LLM 未启用时返回 {"rule": current_rule, "summary": "...", "fallback": True}。
+        """
+        # filter_text 用修改指令 + 当前条件/动作描述，确保相关设备被拉进 prompt
+        current_desc = " ".join([
+            str(current_rule.get("condition", "")),
+            " ".join(str(x) for x in current_rule.get("action_descriptions", []) or []),
+        ])
+        filter_text = f"{instruction} {current_desc}".strip()
+        ctx = await self._prepare_rule_context(filter_text, user_id)
+        if not ctx:
+            return {"rule": current_rule, "summary": "LLM 未配置，无法修改", "fallback": True}
+
+        client = ctx["client"]
+        full_devices = ctx["full_devices"]
+        services_info = ctx["services_info"]
+        current_type = str(current_rule.get("type", "") or "")
+        # 只传 schema 子集，避免 id/enabled/时间戳噪声干扰 LLM
+        current_brief = {
+            k: current_rule.get(k)
+            for k in ("name", "condition", "type", "actions", "action_descriptions", "cooldown_seconds", "summary")
+            if k in current_rule
+        }
+
+        messages = [
+            {"role": "system", "content": ctx["system_prompt"]},
+            {"role": "user", "content": (
+                f"以下是当前规则的 JSON:\n{json.dumps(current_brief, ensure_ascii=False, indent=2)}\n\n"
+                f"请按下面的指令修改这条规则，输出修改后的完整新 JSON（字段同 schema，"
+                f"不要包含 id/enabled/created_at/updated_at/user_id 等元数据）：\n{instruction}\n\n"
+                f"未提到的字段保持原样。额外在 JSON 中加一个 \"change_summary\" 字段，"
+                f"用一句中文说明你这次改了什么。"
+            )},
+        ]
+
+        summary = "已更新"
+        for attempt in range(MAX_RETRIES + 1):
+            content = await client.chat(messages, 20)
+            parsed = self._parse_json(content)
+            if not parsed:
+                if attempt < MAX_RETRIES:
+                    messages.append({"role": "assistant", "content": content})
+                    messages.append({"role": "user", "content": "JSON 解析失败，请重新生成有效的 JSON。"})
+                    continue
+                return {"rule": current_rule, "summary": "修改失败：LLM 未返回有效 JSON", "fallback": True}
+
+            # 抽取 change_summary（弹出，不进规则本体）
+            summary = str(parsed.pop("change_summary", "") or "已更新") or "已更新"
+
+            # 兜底关键字段；type 缺失时保留原规则的 type（不兜底 vision，避免改错路由）
+            parsed.setdefault("name", current_rule.get("name", ""))
+            parsed.setdefault("condition", current_rule.get("condition", ""))
+            parsed.setdefault("type", current_type or "vision")
+            parsed.setdefault("actions", current_rule.get("actions", []))
+            parsed.setdefault("action_descriptions", current_rule.get("action_descriptions", []))
+            parsed.setdefault("cooldown_seconds", current_rule.get("cooldown_seconds",
+                              get_config("automation.default_cooldown_seconds", 5)))
+            parsed.setdefault("summary", current_rule.get("summary", ""))
+
+            # 校验 actions
+            errors = self._validate_actions(parsed.get("actions", []), full_devices, services_info)
+            if not errors:
+                return {"rule": parsed, "summary": summary}
+
+            if attempt < MAX_RETRIES:
+                error_text = "\n".join(f"- {e}" for e in errors)
+                messages.append({"role": "assistant", "content": content})
+                messages.append({
+                    "role": "user",
+                    "content": f"你修改后的规则有以下错误，请修正后重新生成完整的 JSON：\n{error_text}",
+                })
+                logger.info("Rule revise validation failed (attempt %d): %s", attempt + 1, errors)
+            else:
+                logger.warning("Rule revise validation failed after %d attempts: %s", MAX_RETRIES + 1, errors)
+                return {"rule": parsed, "summary": summary}
+
+        return {"rule": current_rule, "summary": "修改失败", "fallback": True}
+
+    async def explain_rule(self, current_rule: dict, question: str, user_id: str = "") -> str:
+        """plan 模式：用自然语言回答关于当前规则的提问（只读，不修改）。
+
+        不需要 HA 设备数据（规则 JSON 本身已含 condition/actions/entity_id），
+        只走一次 LLM 调用。失败时返回兜底文本。
+        """
+        client = await self._resolve_client(user_id)
+        if not client.enabled:
+            return "LLM 未配置，无法解释规则。"
+        from .prompt_service import RULE_EXPLAIN_PROMPT
+        # 只传 schema 子集，避免 id/时间戳噪声
+        brief = {
+            k: current_rule.get(k)
+            for k in ("name", "condition", "type", "actions", "action_descriptions",
+                      "cooldown_seconds", "summary")
+            if k in current_rule
+        }
+        messages = [
+            {"role": "system", "content": RULE_EXPLAIN_PROMPT},
+            {"role": "user", "content": (
+                f"规则 JSON:\n{json.dumps(brief, ensure_ascii=False, indent=2)}\n\n"
+                f"用户的问题：{question}"
+            )},
+        ]
+        try:
+            content = await client.chat(messages, 20)
+            return str(content or "").strip() or "无法生成解释。"
+        except Exception as e:
+            logger.warning("explain_rule failed: %s", e, exc_info=True)
+            return f"解释失败：{e}"
 
     def _fallback_rule(self, text: str) -> dict:
         return {

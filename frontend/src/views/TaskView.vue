@@ -2,6 +2,7 @@
 import { ref, computed, onMounted } from 'vue'
 import BaseToggle from '../components/BaseToggle.vue'
 import EmojiPicker from '../components/EmojiPicker.vue'
+import ReviseChatModal from '../components/ReviseChatModal.vue'
 import { apiGet } from '../utils/api'
 
 const rules = ref([])
@@ -59,6 +60,16 @@ function openRuleDetail(rule) {
 }
 
 function closeRuleDetail() {
+  showRuleDetail.value = false
+  selectedRule.value = null
+}
+
+function onRuleUpdated(updated) {
+  // 把落库后的最新规则同步回列表
+  const idx = rules.value.findIndex((r) => r.id === updated.id)
+  if (idx >= 0) {
+    rules.value[idx] = { ...updated, enabled: updated.enabled !== false }
+  }
   showRuleDetail.value = false
   selectedRule.value = null
 }
@@ -372,25 +383,15 @@ onMounted(() => {
       </div>
     </div>
 
-    <!-- Rule Detail Modal -->
-    <Teleport to="body">
-      <Transition name="modal">
-        <div v-if="showRuleDetail && selectedRule" class="modal-overlay" @click.self="closeRuleDetail">
-          <div class="modal-content">
-            <div class="modal-header">
-              <h2>规则详情</h2>
-              <button class="modal-close" @click="closeRuleDetail">&times;</button>
-            </div>
-            <div class="modal-body">
-              <div class="detail-section">
-                <h3>原始数据</h3>
-                <pre class="json-view">{{ JSON.stringify(selectedRule, null, 2) }}</pre>
-              </div>
-            </div>
-          </div>
-        </div>
-      </Transition>
-    </Teleport>
+    <!-- 规则修改对话弹窗 -->
+    <ReviseChatModal
+      v-if="showRuleDetail && selectedRule"
+      kind="rule"
+      :item-id="selectedRule.id"
+      :initial="selectedRule"
+      @applied="onRuleUpdated"
+      @close="closeRuleDetail"
+    />
 
     <EmojiPicker
       :visible="showEmojiPicker"
@@ -665,53 +666,5 @@ onMounted(() => {
     min-width: 0;
     width: 100%;
   }
-}
-
-.detail-section {
-  margin-bottom: var(--space-14);
-}
-
-.detail-section h3 {
-  font-size: var(--text-sm);
-  font-weight: var(--weight-semibold);
-  color: var(--color-text-secondary);
-  margin-bottom: var(--space-6);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-.json-view {
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
-  padding: var(--space-8);
-  font-family: 'Cascadia Code', 'Fira Code', monospace;
-  font-size: var(--text-xs);
-  color: var(--color-text-secondary);
-  overflow-x: auto;
-  white-space: pre-wrap;
-  word-break: break-all;
-  margin: 0;
-}
-
-/* Modal Transition */
-.modal-enter-active,
-.modal-leave-active {
-  transition: all 0.3s var(--ease-out);
-}
-
-.modal-enter-active .modal-content,
-.modal-leave-active .modal-content {
-  transition: all 0.3s var(--ease-out);
-}
-
-.modal-enter-from,
-.modal-leave-to {
-  opacity: 0;
-}
-
-.modal-enter-from .modal-content,
-.modal-leave-to .modal-content {
-  transform: scale(0.95) translateY(20px);
 }
 </style>

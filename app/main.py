@@ -214,29 +214,71 @@ async def _ws_heartbeat(websocket: WebSocket, interval: int = 30):
 
 
 async def _refresh_ha_catalog() -> None:
-    """后台刷新 HA 设备目录缓存。"""
+    """后台刷新 HA 设备目录缓存。
+
+    catalog 按物理设备分组组织，帮助 AI 以「物理设备」为单位向用户介绍（而不是把
+    同一设备的传感器/诊断属性拆成多个设备念出）。
+
+    关键：每行格式 `- entity_id (类型:domain, 状态:xxx) 名称:xxx` 不能改
+    （rule_service._parse_ha_catalog 的正则依赖此格式抠 entity_id 做自动化校验），
+    但「名称:」部分统一用父设备名（dev_name），不用子实体的 friendly_name——
+    否则「小爱音箱Pro 麦克风 静音」这类子实体名会被 LLM 当独立设备念出。
+    """
     try:
         from .services.entity_controls import resolve_controls, controls_to_text
+        grouped = await ha_service.get_all_devices_grouped()
         devices = await ha_service.get_all_devices()
         raw_svc_defs = await ha_service.get_service_defs(
             ha_client, domains=set(d.get("domain", "") for d in devices)
         )
-        # 设备列表
+        # 诊断/属性类 domain：不作为独立设备条目念给用户
+        DIAGNOSTIC_DOMAINS = {"sensor", "binary_sensor"}
         lines = []
         controls_lines = []
-        for d in devices:
-            entity_id = d.get("entity_id", "")
-            name = d.get("attributes", {}).get("friendly_name", entity_id)
-            state_val = d.get("state", "")
-            domain = entity_id.split(".")[0] if "." in entity_id else ""
-            area_name = d.get("area_name")
-            area_tag = f", 区域:{area_name}" if area_name else ""
-            lines.append(f"- {entity_id} (类型:{domain}, 状态:{state_val}{area_tag}) 名称:{name}")
-            # 中文 controls
+        for dev in grouped.get("devices", []):
+            dev_name = dev.get("name", "")
+            area_name = dev.get("area_name")
+            model = dev.get("model")
+            ents = dev.get("entities", [])
+            controllable = [e for e in ents if e["domain"] not in DIAGNOSTIC_DOMAINS]
+            # 纯诊断设备（无可控实体，如网关）：只留标题行让 AI 知道这设备存在，
+            # 不列任何 entity 行（避免把 sensor 的 friendly_name 噪声暴露给 LLM）。
+            # rule_service 的 _parse_ha_catalog 只用于「构建自动化规则时解析可用设备」，
+            # 纯诊断设备本来就不能被 call_service 控制，缺这几行不影响规则生成。
+            if not controllable:
+                header = f"# {dev_name}"
+                if model:
+                    header += f" ({model})"
+                if area_name:
+                    header += f" [{area_name}]"
+                lines.append(header)
+                continue
+
+            header = f"# {dev_name}"
+            if model:
+                header += f" ({model})"
+            if area_name:
+                header += f" [{area_name}]"
+            lines.append(header)
+            # 可控实体：entity_id 必须保留（call_service 要用），但「名称:」统一用
+            # 父设备名，避免子实体 friendly_name 噪声
+            for e in controllable:
+                eid = e["entity_id"]
+                lines.append(
+                    f"- {eid} (类型:{e['domain']}, 状态:{e['state']}) 名称:{dev_name}"
+                )
+            # controls（中文可控项，供 call_service）
+            # 按物理设备聚合，标题统一用设备名（dev_name）
             if raw_svc_defs:
-                controls = resolve_controls(d, raw_svc_defs)
-                if controls:
-                    controls_lines.append(controls_to_text(d, controls))
+                dev_controls_lines = [f"{dev_name}:"]
+                for e in controllable:
+                    flat = next((d for d in devices if d["entity_id"] == e["entity_id"]), None)
+                    if flat:
+                        controls = resolve_controls(flat, raw_svc_defs)
+                        if controls:
+                            dev_controls_lines.append(controls_to_text(flat, controls, indent=1))
+                if len(dev_controls_lines) > 1:
+                    controls_lines.append("\n".join(dev_controls_lines))
         catalog = "\n".join(lines) if lines else "(暂无 HA 设备)"
         controls_text = "\n\n".join(controls_lines) if controls_lines else ""
         _ha_catalog_cache_ref[0] = catalog

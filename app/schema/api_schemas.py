@@ -271,6 +271,18 @@ class EmojiPreferenceRequest(BaseModel):
         return str(v).strip() if isinstance(v, str) else str(v)
 
 
+class EntityAliasRequest(BaseModel):
+    """设置实体别名的请求体（让用户自定义设备/实体的显示名）。"""
+
+    entity_id: str = Field(..., description="HA 实体 ID")
+    alias: str = Field(..., description="用户自定义别名，空串表示删除别名恢复默认")
+
+    @field_validator("entity_id", "alias", mode="before")
+    @classmethod
+    def _strip_str(cls, v: object) -> str:
+        return str(v).strip() if isinstance(v, str) else str(v)
+
+
 # --------------- Chat ---------------
 
 class ChatRequest(BaseModel):
@@ -449,6 +461,46 @@ class ScheduleParseRequest(BaseModel):
     phrase 为自然语言时间描述，如「每天早上8点」「明天10点」「每30分钟」。
     """
     phrase: str = Field(min_length=1)
+
+
+# --------------- Revise (对话式修改) ---------------
+
+class RuleReviseRequest(BaseModel):
+    """POST /rules/{rule_id}/revise 请求体。
+
+    对话式修改已有自动化规则：传当前规则 JSON + 修改指令，后端用 LLM 输出新 JSON（不落库）。
+    current 由前端维护（每轮基于上一轮结果），让多轮修改保持上下文一致。
+    """
+    instruction: str = Field(min_length=1)
+    current: dict[str, Any]
+
+
+class RuleUpdateRequest(BaseModel):
+    """PUT /rules/{rule_id} 请求体。把 revise 后确认的规则 JSON 落库。"""
+    rule: dict[str, Any]
+
+
+class TaskReviseRequest(BaseModel):
+    """POST /scheduled-tasks/{task_id}/revise 请求体。对话式修改已有定时任务（不落库）。"""
+    instruction: str = Field(min_length=1)
+    current: dict[str, Any]
+
+
+class ScheduledTaskUpdateRequest(BaseModel):
+    """PUT /scheduled-tasks/{task_id} 请求体。把 revise 后确认的任务 JSON 落库。"""
+    task: dict[str, Any]
+
+
+# --------------- Explain (plan 模式: 解释当前配置) ---------------
+
+class ExplainRequest(BaseModel):
+    """POST /rules/{id}/explain 和 /scheduled-tasks/{id}/explain 请求体。
+
+    plan 模式用：AI 基于当前配置回答用户的自然语言提问（不修改数据）。
+    current 是当前规则/任务 JSON；question 是用户的提问。
+    """
+    current: dict[str, Any]
+    question: str = Field(min_length=1)
 
 
 # --------------- Unique Settings ---------------
