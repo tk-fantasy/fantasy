@@ -191,12 +191,25 @@ def _concept_match(words: list[str], attr_names: set, domain: str, domain_svcs: 
     return True
 
 
-def controls_to_text(entity: dict, controls: dict) -> str:
-    name = (entity.get("attributes") or {}).get("friendly_name", "") or entity["entity_id"]
+def controls_to_text(entity: dict, controls: dict, indent: int = 0) -> str:
+    """把 resolve_controls 的结果转成给 LLM 看的中文可控项文本。
+
+    Args:
+        entity: 设备/实体 dict（取 friendly_name 和 entity_id）
+        controls: resolve_controls 返回的 {attr: ctrl_dict}
+        indent: 缩进层级。0=独立块（标题用 friendly_name + entity_id）；
+            >=1=作为子项，标题用 entity_id（不用 friendly_name——MIoT 子实体名常带
+            噪声如「麦克风 静音」，会被 LLM 当独立设备念出），由上层用设备名作总标题。
+    """
     eid = entity["entity_id"]
-    lines = [f"{name} ({eid})"]
+    pad = "  " * indent
+    if indent == 0:
+        name = (entity.get("attributes") or {}).get("friendly_name", "") or eid
+        lines = [f"{name} ({eid})"]
+    else:
+        lines = [f"{pad}子功能 {eid}:"]
     if not controls:
-        lines.append("  (no controls)")
+        lines.append(f"{pad}  (no controls)")
         return "\n".join(lines)
 
     for attr, ctrl in controls.items():
@@ -205,15 +218,15 @@ def controls_to_text(entity: dict, controls: dict) -> str:
 
         if ctrl["type"] == "slider":
             u = ctrl.get("unit", "")
-            lines.append(f"  {label} — {ctrl['min']}{u}~{ctrl['max']}{u}, now {ctrl['current']}{u}")
-            lines.append(f"    domain={domain} | service={ctrl['service']} | param={ctrl['param']}")
+            lines.append(f"{pad}  {label} — {ctrl['min']}{u}~{ctrl['max']}{u}, now {ctrl['current']}{u}")
+            lines.append(f"{pad}    domain={domain} | service={ctrl['service']} | param={ctrl['param']}")
         elif ctrl["type"] == "enum":
             opts = "|".join(str(o) for o in ctrl["options"])
-            lines.append(f"  {label} — options: {opts}, now {ctrl['current']}")
-            lines.append(f"    domain={domain} | service={ctrl['service']} | param={ctrl['param']}")
+            lines.append(f"{pad}  {label} — options: {opts}, now {ctrl['current']}")
+            lines.append(f"{pad}    domain={domain} | service={ctrl['service']} | param={ctrl['param']}")
         elif ctrl["type"] == "action":
-            lines.append(f"  {label} — action")
-            lines.append(f"    domain={domain} | service={ctrl['service']}")
+            lines.append(f"{pad}  {label} — action")
+            lines.append(f"{pad}    domain={domain} | service={ctrl['service']}")
 
     return "\n".join(lines)
 

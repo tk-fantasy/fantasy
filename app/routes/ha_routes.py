@@ -11,7 +11,7 @@ from ..clients.ha_client import HomeAssistantClient
 from ..core.api_models import ApiResponse
 from ..core.config import get_config, update_config_section
 from ..core.exceptions import AppException
-from ..schema.api_schemas import HAConfigRequest, HAServiceCallRequest, ModelTestRequest, UniqueSettingsRequest
+from ..schema.api_schemas import HAConfigRequest, HAServiceCallRequest, ModelTestRequest, UniqueSettingsRequest, EntityAliasRequest
 from ..services.ha_service import HAService
 
 logger = logging.getLogger(__name__)
@@ -23,16 +23,80 @@ router = APIRouter()
 async def ha_entities(container: AppContainer = Depends(get_container)) -> ApiResponse[dict]:
     try:
         from ..services.entity_controls import resolve_controls as _rc
-        devices = await container.ha_service.get_all_devices()
+        entities = await container.ha_service.get_all_devices()
+        grouped = await container.ha_service.get_all_devices_grouped()
+        # 用扁平实体的 domain 集合算 service 定义（覆盖所有实体）
+        all_domains = {d.get("domain", "") for d in entities}
+        for dev in grouped.get("devices", []):
+            for ent in dev.get("entities", []):
+                all_domains.add(ent.get("domain", ""))
         raw_svc_defs = await container.ha_service.get_service_defs(
-            container.ha_client, domains=set(d.get("domain", "") for d in devices)
+            container.ha_client, domains=all_domains
         )
-        for d in devices:
-            d["_controls"] = _rc(d, raw_svc_defs)
-        return ApiResponse(data={"entities": devices, "count": len(devices)})
+        # 扁平实体：保留原有 _controls（下游 tools/text_match/automation 消费）
+        controls_by_eid: dict[str, dict] = {}
+        for d in entities:
+            ctrl = _rc(d, raw_svc_defs)
+            d["_controls"] = ctrl
+            controls_by_eid[d["entity_id"]] = ctrl
+        # 设备分组里的子实体：复用同一份 controls（按 entity_id 查）
+        for dev in grouped.get("devices", []):
+            for ent in dev.get("entities", []):
+                ent["_controls"] = controls_by_eid.get(ent["entity_id"], _rc(ent, raw_svc_defs))
+        return ApiResponse(data={
+            "entities": entities,
+            "devices": grouped.get("devices", []),
+            "count": len(entities),
+        })
     except Exception as e:
         logger.exception("HA entities failed")
         raise AppException(f"Home Assistant 连接失败: {e}", code="ha_error", http_status=502)
+
+
+@router.get("/ha/entity-aliases")
+async def get_entity_aliases() -> ApiResponse[dict]:
+    """获取全部实体别名映射 {entity_id: alias}。"""
+    from ..core.database import Database
+    db = Database.get()
+    aliases = await db.prefs_get_by_scope("entity_alias")
+    return ApiResponse(data={"aliases": aliases})
+
+
+@router.put("/ha/entity-aliases")
+async def set_entity_alias(
+    payload: EntityAliasRequest, container: AppContainer = Depends(get_container)
+) -> ApiResponse[dict]:
+    """设置/更新一个实体别名。空串 alias 表示删除别名恢复默认名。
+
+    别名同时写两处：
+    - Aether DB（entity_alias scope）：本系统展示用
+    - HA entity_registry.name：同步到 HA 原生（HA 网页/自动化/其他集成都能看到）
+    HA 写入失败时回滚 Aether 侧，保证两边一致。
+    """
+    from ..core.database import Database
+    entity_id = payload.entity_id
+    alias = payload.alias
+    if not entity_id:
+        raise AppException("缺少 entity_id", code="missing_params", http_status=400)
+
+    db = Database.get()
+    # 先写 HA（失败则不写 Aether，保持一致）
+    ha_name = alias or None  # 空串 → 清除 HA 自定义名，恢复默认
+    try:
+        await container.ha_client.update_entity_name(entity_id, ha_name)
+    except Exception as e:
+        logger.warning("同步别名到 HA 失败: %s", e)
+        raise AppException(
+            f"同步到 Home Assistant 失败: {e}", code="ha_sync_failed", http_status=502
+        )
+    # HA 成功后再写 Aether DB
+    if alias:
+        await db.emoji_pref_upsert("entity_alias", entity_id, alias)
+    else:
+        await db.emoji_pref_delete("entity_alias", entity_id)
+    # 清缓存让前端重拉时应用新名
+    container.ha_service.invalidate_states_cache()
+    return ApiResponse(data={"entity_id": entity_id, "alias": alias})
 
 
 @router.get("/ha/services")

@@ -6,18 +6,25 @@ import SensorChart from '../components/SensorChart.vue'
 import { adaptControls, formatSliderValue, toActualValue } from '../utils/deviceCapabilities.js'
 import { apiGet } from '../utils/api'
 
-const entities = ref([])
+const entities = ref([])        // 扁平实体列表（兼容，也供 modal 内按 id 查找）
+const devices = ref([])         // 设备分组（主数据源）
 const services = ref({})
 const loading = ref(true)
 const searchQuery = ref('')
 const activeArea = ref('全部')
-const selectedDevice = ref(null)
+const selectedDevice = ref(null)       // 当前打开的设备（含 entities 数组）
+const selectedEntity = ref(null)       // 设备详情内当前展开的子实体
 const showModal = ref(false)
 const togglingDevices = ref(new Set())
 
 const emojiPrefs = ref({})
 const showEmojiPicker = ref(false)
 const currentEmojiTarget = ref(null)
+
+// 实体别名（用户自定义显示名，覆盖 HA 生成的难看名字）
+const entityAliases = ref({})         // {entity_id: alias}
+const editingName = ref(false)
+const nameInput = ref('')
 
 // ========================
 //  Emoji preferences
@@ -57,6 +64,61 @@ async function onEmojiSelect(item) {
   } catch (e) {
     console.error('Failed to save emoji pref:', e)
   }
+}
+
+// ========================
+//  Entity alias (用户自定义实体显示名)
+// ========================
+
+async function loadEntityAliases() {
+  try {
+    const res = await fetch('/api/ha/entity-aliases', { credentials: 'include' })
+    const json = await res.json()
+    entityAliases.value = json.data?.aliases || {}
+  } catch (e) {
+    console.error('Failed to load entity aliases:', e)
+  }
+}
+
+function startEditName() {
+  if (!selectedEntity.value) return
+  nameInput.value = selectedEntity.value.name || selectedEntity.value.entity_id
+  editingName.value = true
+}
+
+async function saveName() {
+  if (!selectedEntity.value) return
+  const eid = selectedEntity.value.entity_id
+  const alias = nameInput.value.trim()
+  try {
+    await fetch('/api/ha/entity-aliases', {
+      method: 'PUT',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ entity_id: eid, alias }),
+    })
+    entityAliases.value[eid] = alias
+    // 立即更新当前实体和卡片里的显示名
+    selectedEntity.value.name = alias || selectedEntity.value.attributes?.friendly_name || eid
+    refreshDeviceEntityName(eid, selectedEntity.value.name)
+  } catch (e) {
+    console.error('Failed to save entity alias:', e)
+  }
+  editingName.value = false
+}
+
+function resetName() {
+  if (!selectedEntity.value) return
+  const eid = selectedEntity.value.entity_id
+  const original = selectedEntity.value.attributes?.friendly_name || eid
+  nameInput.value = original
+}
+
+// 同步更新 selectedDevice.entities 里同名实体的 name（卡片即时刷新）
+function refreshDeviceEntityName(entityId, newName) {
+  if (!selectedDevice.value) return
+  const ent = (selectedDevice.value.entities || []).find(e => e.entity_id === entityId)
+  if (ent) ent.name = newName
 }
 
 // ========================
@@ -206,8 +268,13 @@ function formatState(entity) {
   }
 
   if (domain === 'sensor') {
-    const num = parseFloat(state)
-    if (!isNaN(num)) return `${Math.round(num * 100) / 100} ${unit}`.trim()
+    // 只有整个 state 是单一纯数值时才走数值格式化。
+    // parseFloat("192.168.4.73") = 192.168，会被错误截断成 192.17；
+    // 用严格正则 ^\d+(\.\d+)?$ 只匹配单一数值（整数或一位小数），IP/版本号等字符串原样返回。
+    if (/^-?\d+(\.\d+)?$/.test(state.trim())) {
+      const num = parseFloat(state)
+      return `${Math.round(num * 100) / 100} ${unit}`.trim()
+    }
     return state
   }
   if (domain === 'climate') {
@@ -361,31 +428,33 @@ function getDomainIcon(entity) {
 // ========================
 
 const areas = computed(() => {
-  const areaSet = new Set(entities.value.map(e => e.area_name || '未分组'))
+  const areaSet = new Set(devices.value.map(d => d.area_name || '未分组'))
   return ['全部', ...Array.from(areaSet).sort()]
 })
 
-const filteredEntities = computed(() => {
-  let items = entities.value
+const filteredDevices = computed(() => {
+  let items = devices.value
   if (activeArea.value !== '全部') {
-    items = items.filter(e => (e.area_name || '未分组') === activeArea.value)
+    items = items.filter(d => (d.area_name || '未分组') === activeArea.value)
   }
   if (searchQuery.value.trim()) {
     const q = searchQuery.value.toLowerCase()
-    items = items.filter(e =>
-      (e.name || '').toLowerCase().includes(q) ||
-      (e.entity_id || '').toLowerCase().includes(q)
+    items = items.filter(d =>
+      (d.name || '').toLowerCase().includes(q) ||
+      (d.model || '').toLowerCase().includes(q) ||
+      (d.entities || []).some(e =>
+        (e.name || '').toLowerCase().includes(q) ||
+        (e.entity_id || '').toLowerCase().includes(q))
     )
   }
   return items
 })
 
-const groupedEntities = computed(() => {
+const groupedDevices = computed(() => {
   const groups = {}
-  for (const entity of filteredEntities.value) {
-    const area = entity.area_name || '未分组'
-    if (!groups[area]) groups[area] = []
-    groups[area].push(entity)
+  for (const dev of filteredDevices.value) {
+    const area = dev.area_name || '未分组'
+    ;(groups[area] ||= []).push(dev)
   }
   return Object.entries(groups).sort(([a], [b]) => a.localeCompare(b))
 })
@@ -394,6 +463,28 @@ const stats = computed(() => ({
   online: entities.value.filter(isOn).length,
   total: entities.value.length,
 }))
+
+// ========================
+//  Device-level helpers
+// ========================
+
+// 设备在线：任一子实体非 unavailable/unknown 即在线
+function isDeviceOnline(dev) {
+  return (dev.entities || []).some(e =>
+    e.state && e.state !== 'unavailable' && e.state !== 'unknown')
+}
+
+// 设备图标：取第一个可控实体的 domain，否则第一个实体的 domain
+function deviceIconDomain(dev) {
+  const ents = dev.entities || []
+  const ctrl = ents.find(e => isControllable(e))
+  return (ctrl || ents[0] || {}).entity_id || 'default'
+}
+
+// 设备内可控实体数 / 只读实体数
+function deviceControllableCount(dev) {
+  return (dev.entities || []).filter(e => isControllable(e)).length
+}
 
 // ========================
 //  Data loading
@@ -407,6 +498,7 @@ async function loadEntities() {
       apiGet('/api/ha/services'),
     ])
     entities.value = entitiesData.entities || entitiesData || []
+    devices.value = entitiesData.devices || []
     services.value = servicesData || {}
   } catch (e) {
     console.error('Failed to load entities:', e)
@@ -474,84 +566,91 @@ async function toggleDevice(entity) {
 //  Modal
 // ========================
 
-function openDeviceModal(entity) {
-  selectedDevice.value = entity
+function openDeviceModal(dev) {
+  selectedDevice.value = dev
+  // 默认展开第一个可控实体；无可控则展开第一个
+  const ents = dev.entities || []
+  selectedEntity.value = ents.find(e => isControllable(e)) || ents[0] || null
   showModal.value = true
 }
 
 function closeModal() {
   showModal.value = false
   selectedDevice.value = null
+  selectedEntity.value = null
 }
 
-// Capabilities — 复用后端 _controls（已由 entity_controls.py 在 /api/ha/entities 时附加）
+function selectEntity(ent) {
+  selectedEntity.value = ent
+}
+
+// Capabilities — 基于 selectedEntity（设备内当前展开的子实体）
 const capabilities = computed(() => {
-  if (!selectedDevice.value) return []
-  return adaptControls(selectedDevice.value._controls, selectedDevice.value)
+  if (!selectedEntity.value) return []
+  return adaptControls(selectedEntity.value._controls, selectedEntity.value)
 })
 
 async function handleCapability(cap, value) {
-  if (!selectedDevice.value) return
+  if (!selectedEntity.value) return
   const actualValue = cap.type === 'slider' ? toActualValue(cap, value) : value
   const data = { [cap.param]: actualValue }
 
   // 乐观更新：先改本地状态，UI 立即响应
   if (cap.type === 'enum') {
     if (cap.currentAttr === 'state') {
-      selectedDevice.value.state = value
+      selectedEntity.value.state = value
     } else {
-      selectedDevice.value.attributes[cap.currentAttr] = value
+      selectedEntity.value.attributes[cap.currentAttr] = value
     }
-    // 同步 _controls.current，让 computed 重新计算按钮高亮
-    const ctrl = selectedDevice.value._controls?.[cap.key]
+    const ctrl = selectedEntity.value._controls?.[cap.key]
     if (ctrl) ctrl.current = value
   } else if (cap.type === 'slider') {
     const storedValue = cap.pctMatch ? Math.round(actualValue * 255 / 100) : actualValue
-    selectedDevice.value.attributes[cap.key] = storedValue
-    // 同步 _controls.current，让滑块位置和数值立即更新
-    const ctrl = selectedDevice.value._controls?.[cap.key]
+    selectedEntity.value.attributes[cap.key] = storedValue
+    const ctrl = selectedEntity.value._controls?.[cap.key]
     if (ctrl) ctrl.current = value
   }
 
-  // 然后发 API 请求（不阻塞 UI）
-  await callService(cap.service, cap.action, selectedDevice.value.entity_id, data)
+  await callService(cap.service, cap.action, selectedEntity.value.entity_id, data)
 }
 
 async function handleAction(act) {
-  if (!selectedDevice.value) return
-  const ok = await callService(act.service, act.action, selectedDevice.value.entity_id)
+  if (!selectedEntity.value) return
+  const ok = await callService(act.service, act.action, selectedEntity.value.entity_id)
   if (ok) {
-    // action 类型没有本地属性可乐观更新，后台缓存已失效，刷新拿最新状态
-    refreshSelectedDevice()
+    refreshSelectedEntity()
   }
 }
 
-// 刷新当前选中设备的状态（从 HA 重新拉取）
-async function refreshSelectedDevice() {
-  if (!selectedDevice.value) return
-  const entityId = selectedDevice.value.entity_id
+// 刷新当前展开子实体的状态（从 HA 重新拉取整批，更新该实体）
+async function refreshSelectedEntity() {
+  if (!selectedEntity.value) return
+  const entityId = selectedEntity.value.entity_id
   try {
     const [entitiesData, servicesData] = await Promise.all([
       apiGet('/api/ha/entities'),
       apiGet('/api/ha/services'),
     ])
-    const freshEntities = entitiesData.entities || entitiesData || []
+    const freshEntities = entitiesData.entities || []
+    // 同步扁平 entities（卡片计数等依赖）
+    entities.value = freshEntities
+    devices.value = entitiesData.devices || []
     const fresh = freshEntities.find(e => e.entity_id === entityId)
     if (fresh) {
-      // 用新数据替换 selectedDevice 的 state 和 attributes，保持引用不变
-      selectedDevice.value.state = fresh.state
-      selectedDevice.value.attributes = fresh.attributes || {}
+      selectedEntity.value.state = fresh.state
+      selectedEntity.value.attributes = fresh.attributes || {}
+      selectedEntity.value._controls = fresh._controls
     }
     services.value = servicesData || {}
   } catch (e) {
-    console.error('Failed to refresh device:', e)
+    console.error('Failed to refresh entity:', e)
   }
 }
 
 // Dynamic info rows from attributes (data-driven, no hardcoded attribute names)
 const dynamicInfoRows = computed(() => {
-  if (!selectedDevice.value) return []
-  const attrs = selectedDevice.value.attributes || {}
+  if (!selectedEntity.value) return []
+  const attrs = selectedEntity.value.attributes || {}
   const rows = []
 
   for (const [key, value] of Object.entries(attrs)) {
@@ -603,8 +702,8 @@ const ATTR_LABELS_ZH = {
 
 // 属性表：过滤 HA 内部字段 + 中文友好标签
 const displayAttributes = computed(() => {
-  if (!selectedDevice.value) return []
-  const attrs = selectedDevice.value.attributes || {}
+  if (!selectedEntity.value) return []
+  const attrs = selectedEntity.value.attributes || {}
   return Object.entries(attrs)
     .filter(([key, value]) => {
       if (HIDDEN_ATTRS.has(key)) return false
@@ -625,6 +724,7 @@ const displayAttributes = computed(() => {
 onMounted(() => {
   loadEntities()
   loadEmojiPrefs()
+  loadEntityAliases()
 })
 </script>
 
@@ -648,45 +748,46 @@ onMounted(() => {
     <div v-if="loading" class="loading-state">加载中...</div>
 
     <div v-else class="area-groups">
-      <div v-for="[area, items] in groupedEntities" :key="area" class="area-section">
+      <div v-for="[area, items] in groupedDevices" :key="area" class="area-section">
         <h2 class="area-title" v-if="activeArea === '全部'">
           <span class="area-name">{{ area }}</span>
           <span class="area-count">{{ items.length }}</span>
         </h2>
         <div class="device-grid">
           <div
-            v-for="entity in items"
-            :key="entity.entity_id"
+            v-for="dev in items"
+            :key="dev.device_id"
             class="device-card"
-            :class="{ on: isOn(entity), clickable: isClickable(entity) }"
-            @click="isClickable(entity) && openDeviceModal(entity)"
+            :class="{ on: isDeviceOnline(dev), clickable: true }"
+            @click="openDeviceModal(dev)"
           >
             <div class="card-top">
               <div
                 class="card-icon emoji-trigger"
-                :style="{ background: getDomainIcon(entity).bg, color: getDomainIcon(entity).color }"
-                @click.stop="openEmojiPicker('entity', entity.entity_id)"
-              >{{ getDomainIcon(entity).icon }}</div>
+                :style="{ background: getDomainIcon(deviceIconDomain(dev)).bg, color: getDomainIcon(deviceIconDomain(dev)).color }"
+                @click.stop="openEmojiPicker('device', dev.device_id)"
+              >{{ getDomainIcon(deviceIconDomain(dev)).icon }}</div>
             </div>
             <div class="card-body">
-              <h3>{{ entity.name || entity.entity_id }}</h3>
-              <span class="card-room">{{ entity.area_name || '未分组' }}</span>
+              <h3>{{ dev.name || dev.device_id }}</h3>
+              <span class="card-room">
+                {{ dev.manufacturer ? dev.manufacturer + ' · ' : '' }}{{ dev.model || (dev.area_name || '未分组') }}
+              </span>
             </div>
             <div class="card-footer">
-              <span class="card-spec">{{ getCardSecondary(entity) }}</span>
-              <span class="card-status" :class="{ on: isOn(entity) }">{{ getCardPrimary(entity) }}</span>
+              <span class="card-spec">{{ deviceControllableCount(dev) }} 可控 · {{ dev.entity_count }} 属性</span>
+              <span class="card-status" :class="{ on: isDeviceOnline(dev) }">{{ isDeviceOnline(dev) ? '在线' : '离线' }}</span>
             </div>
-            <div class="ctrl-badge" v-if="isControllable(entity)">可控</div>
           </div>
         </div>
       </div>
 
-      <div v-if="groupedEntities.length === 0" class="empty-state empty-state--card">
+      <div v-if="groupedDevices.length === 0" class="empty-state empty-state--card">
         {{ searchQuery || activeArea !== '全部' ? '未找到匹配的设备。' : '暂无设备数据。' }}
       </div>
     </div>
 
-    <!-- Modal -->
+    <!-- Modal: 设备详情 -->
     <Teleport to="body">
       <Transition name="modal">
         <div v-if="showModal && selectedDevice" class="modal-overlay" @click.self="closeModal">
@@ -694,79 +795,128 @@ onMounted(() => {
             <div class="modal-header">
               <div
                 class="modal-icon emoji-trigger"
-                :style="{ background: getDomainIcon(selectedDevice).bg, color: getDomainIcon(selectedDevice).color }"
-                @click="openEmojiPicker('entity', selectedDevice.entity_id)"
-              >{{ getDomainIcon(selectedDevice).icon }}</div>
+                :style="{ background: getDomainIcon(deviceIconDomain(selectedDevice)).bg, color: getDomainIcon(deviceIconDomain(selectedDevice)).color }"
+                @click="openEmojiPicker('device', selectedDevice.device_id)"
+              >{{ getDomainIcon(deviceIconDomain(selectedDevice)).icon }}</div>
               <div class="modal-title">
-                <h2>{{ selectedDevice.name || selectedDevice.entity_id }}</h2>
-                <span class="modal-entity-id">{{ selectedDevice.entity_id }}</span>
+                <h2>{{ selectedDevice.name || selectedDevice.device_id }}</h2>
+                <span class="modal-entity-id">
+                  {{ [selectedDevice.manufacturer, selectedDevice.model].filter(Boolean).join(' · ') || selectedDevice.area_name || '' }}
+                </span>
               </div>
               <button class="modal-close" @click="closeModal">&times;</button>
             </div>
 
             <div class="modal-body">
-              <div class="info-section">
-                <div class="info-row">
-                  <span class="info-label">状态</span>
-                  <span class="info-value" :class="{ active: isOn(selectedDevice) }">{{ formatState(selectedDevice) }}</span>
+              <!-- 子实体列表：可控优先 -->
+              <div class="entity-list-section" v-if="(selectedDevice.entities || []).length">
+                <h3>控制 <span class="section-count">({{ deviceControllableCount(selectedDevice) }})</span></h3>
+                <div class="entity-list">
+                  <div
+                    v-for="ent in (selectedDevice.entities || []).filter(e => isControllable(e))"
+                    :key="ent.entity_id"
+                    class="entity-row"
+                    :class="{ active: selectedEntity && selectedEntity.entity_id === ent.entity_id, on: isOn(ent) }"
+                    @click="selectEntity(ent)"
+                  >
+                    <span class="entity-icon" :style="{ color: getDomainIcon(ent.entity_id).color }">{{ getDomainIcon(ent.entity_id).icon }}</span>
+                    <span class="entity-name">{{ ent.name || ent.entity_id }}</span>
+                    <span class="entity-state">{{ getCardPrimary(ent) }}</span>
+                    <BaseToggle v-if="isToggleable(ent)" :modelValue="isOn(ent)" @click.stop @update:modelValue="toggleDevice(ent)" />
+                  </div>
                 </div>
-                <div class="info-row" v-if="selectedDevice.area_name">
-                  <span class="info-label">区域</span>
-                  <span class="info-value">{{ selectedDevice.area_name }}</span>
-                </div>
-                <div class="info-row" v-for="row in dynamicInfoRows" :key="row.label">
-                  <span class="info-label">{{ row.label }}</span>
-                  <span class="info-value">{{ row.value }}</span>
+
+                <h3 v-if="(selectedDevice.entities || []).some(e => !isControllable(e))">
+                  信息 <span class="section-count">({{ (selectedDevice.entities || []).filter(e => !isControllable(e)).length }})</span>
+                </h3>
+                <div class="entity-list" v-if="(selectedDevice.entities || []).some(e => !isControllable(e))">
+                  <div
+                    v-for="ent in (selectedDevice.entities || []).filter(e => !isControllable(e))"
+                    :key="ent.entity_id"
+                    class="entity-row"
+                    :class="{ active: selectedEntity && selectedEntity.entity_id === ent.entity_id }"
+                    @click="selectEntity(ent)"
+                  >
+                    <span class="entity-icon" :style="{ color: getDomainIcon(ent.entity_id).color }">{{ getDomainIcon(ent.entity_id).icon }}</span>
+                    <span class="entity-name">{{ ent.name || ent.entity_id }}</span>
+                    <span class="entity-state">{{ getCardPrimary(ent) }}</span>
+                  </div>
                 </div>
               </div>
 
-              <div class="history-section" v-if="getDomain(selectedDevice.entity_id) === 'sensor'">
-                <h3>近 24 小时趋势</h3>
-                <SensorChart :entityId="selectedDevice.entity_id" :unit="selectedDevice.attributes?.unit_of_measurement || ''" />
-              </div>
-
-              <div class="control-section" v-if="isControllable(selectedDevice)">
-                <h3>控制</h3>
-
-                <div class="control-row" v-if="isToggleable(selectedDevice)">
-                  <span class="control-label">开关</span>
-                  <BaseToggle :modelValue="isOn(selectedDevice)" @update:modelValue="toggleDevice(selectedDevice)" />
+              <!-- 当前展开实体的详情 -->
+              <template v-if="selectedEntity">
+                <div class="info-section">
+                  <div class="info-row name-row">
+                    <span class="info-label">名称</span>
+                    <span v-if="!editingName" class="info-value name-display" @click="startEditName" title="点击修改名称">
+                      {{ selectedEntity.name || selectedEntity.entity_id }}
+                      <span class="edit-hint">✎</span>
+                    </span>
+                    <span v-else class="name-edit">
+                      <input v-model="nameInput" class="name-input" @keyup.enter="saveName" @keyup.esc="editingName = false" autofocus />
+                      <button class="name-btn name-btn--save" @click="saveName">保存</button>
+                      <button class="name-btn" @click="resetName">还原</button>
+                    </span>
+                  </div>
+                  <div class="info-row">
+                    <span class="info-label">状态</span>
+                    <span class="info-value" :class="{ active: isOn(selectedEntity) }">{{ formatState(selectedEntity) }}</span>
+                  </div>
+                  <div class="info-row" v-for="row in dynamicInfoRows" :key="row.label">
+                    <span class="info-label">{{ row.label }}</span>
+                    <span class="info-value">{{ row.value }}</span>
+                  </div>
                 </div>
 
-                <template v-for="cap in capabilities" :key="cap.key">
-                  <div class="control-row" v-if="cap.type === 'enum'">
-                    <span class="control-label">{{ cap.label }}</span>
-                    <div class="mode-buttons">
-                      <button v-for="opt in cap.options" :key="opt" class="mode-btn" :class="{ active: opt === cap.current }" @click="handleCapability(cap, opt)">{{ opt }}</button>
+                <div class="history-section" v-if="getDomain(selectedEntity.entity_id) === 'sensor'">
+                  <h3>近 24 小时趋势</h3>
+                  <SensorChart :entityId="selectedEntity.entity_id" :unit="selectedEntity.attributes?.unit_of_measurement || ''" />
+                </div>
+
+                <div class="control-section" v-if="isControllable(selectedEntity)">
+                  <h3>控制</h3>
+
+                  <div class="control-row" v-if="isToggleable(selectedEntity)">
+                    <span class="control-label">开关</span>
+                    <BaseToggle :modelValue="isOn(selectedEntity)" @update:modelValue="toggleDevice(selectedEntity)" />
+                  </div>
+
+                  <template v-for="cap in capabilities" :key="cap.key">
+                    <div class="control-row" v-if="cap.type === 'enum'">
+                      <span class="control-label">{{ cap.label }}</span>
+                      <div class="mode-buttons">
+                        <button v-for="opt in cap.options" :key="opt" class="mode-btn" :class="{ active: opt === cap.current }" @click="handleCapability(cap, opt)">{{ opt }}</button>
+                      </div>
+                    </div>
+
+                    <div class="control-row" v-if="cap.type === 'slider'">
+                      <span class="control-label">{{ cap.label }}</span>
+                      <div class="slider-container">
+                        <input type="range" :min="cap.min" :max="cap.max" :step="cap.step" :value="cap.current" @input="handleCapability(cap, parseFloat($event.target.value))" class="slider" />
+                        <span class="slider-value">{{ formatSliderValue(cap) }}</span>
+                      </div>
+                    </div>
+
+                    <div class="control-row" v-if="cap.type === 'action'">
+                      <span class="control-label">{{ cap.label }}</span>
+                      <div class="action-buttons">
+                        <button v-for="act in cap.actions" :key="act.action" class="action-btn" :class="{ active: act.attrKey && selectedEntity.attributes[act.attrKey] }" @click="handleAction(act)">{{ act.label }}</button>
+                      </div>
+                    </div>
+                  </template>
+                </div>
+
+                <div class="attributes-section" v-if="displayAttributes.length">
+                  <h3>属性 ({{ displayAttributes.length }})</h3>
+                  <div class="attr-table">
+                    <div class="attr-row" v-for="attr in displayAttributes" :key="attr.key">
+                      <span class="attr-key">{{ attr.label }}</span>
+                      <span class="attr-value">{{ attr.value }}</span>
                     </div>
                   </div>
-
-                  <div class="control-row" v-if="cap.type === 'slider'">
-                    <span class="control-label">{{ cap.label }}</span>
-                    <div class="slider-container">
-                      <input type="range" :min="cap.min" :max="cap.max" :step="cap.step" :value="cap.current" @input="handleCapability(cap, parseFloat($event.target.value))" class="slider" />
-                      <span class="slider-value">{{ formatSliderValue(cap) }}</span>
-                    </div>
-                  </div>
-
-                  <div class="control-row" v-if="cap.type === 'action'">
-                    <span class="control-label">{{ cap.label }}</span>
-                    <div class="action-buttons">
-                      <button v-for="act in cap.actions" :key="act.action" class="action-btn" :class="{ active: act.attrKey && selectedDevice.attributes[act.attrKey] }" @click="handleAction(act)">{{ act.label }}</button>
-                    </div>
-                  </div>
-                </template>
-              </div>
-
-              <div class="attributes-section" v-if="displayAttributes.length">
-                <h3>属性 ({{ displayAttributes.length }})</h3>
-                <div class="attr-table">
-                  <div class="attr-row" v-for="attr in displayAttributes" :key="attr.key">
-                    <span class="attr-key">{{ attr.label }}</span>
-                    <span class="attr-value">{{ attr.value }}</span>
-                  </div>
                 </div>
-              </div>
+              </template>
             </div>
           </div>
         </div>
@@ -1212,5 +1362,83 @@ onMounted(() => {
   .device-grid { grid-template-columns: 1fr; }
   .search-input { max-width: 100%; }
   .modal-content { max-width: 100%; max-height: 90vh; }
+}
+
+/* 设备详情 modal — 子实体列表 */
+.entity-list-section h3 { margin: var(--space-16) 0 var(--space-8); }
+.entity-list-section h3:first-child { margin-top: 0; }
+.section-count { opacity: 0.5; font-weight: normal; font-size: var(--text-sm); }
+
+.entity-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.entity-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-10);
+  padding: var(--space-8) var(--space-10);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  background: rgba(255,255,255,0.02);
+  transition: background var(--duration-fast) var(--ease-out);
+}
+.entity-row:hover { background: rgba(255,255,255,0.06); }
+.entity-row.active { background: rgba(255,255,255,0.08); outline: 1px solid var(--color-border-hover); }
+.entity-icon { font-size: 18px; width: 24px; text-align: center; flex-shrink: 0; }
+.entity-name { flex: 1; font-size: var(--text-base); }
+.entity-state {
+  font-size: var(--text-sm);
+  color: var(--color-text-tertiary);
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.entity-row.on .entity-state { color: var(--color-text-secondary); }
+
+/* 实体别名编辑 */
+.name-row { align-items: center; }
+.name-display {
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-6);
+}
+.name-display:hover { color: var(--color-text); }
+.edit-hint {
+  opacity: 0;
+  font-size: var(--text-sm);
+  transition: opacity var(--duration-fast);
+}
+.name-display:hover .edit-hint { opacity: 0.6; }
+.name-edit { display: inline-flex; gap: var(--space-6); align-items: center; }
+.name-input {
+  background: rgba(255,255,255,0.06);
+  border: 1px solid var(--color-border-active);
+  border-radius: var(--radius-sm);
+  padding: var(--space-4) var(--space-8);
+  color: var(--color-text);
+  font-size: var(--text-base);
+  font-family: inherit;
+  outline: none;
+  min-width: 180px;
+}
+.name-btn {
+  background: rgba(255,255,255,0.06);
+  border: 1px solid var(--color-border-hover);
+  border-radius: var(--radius-sm);
+  padding: var(--space-4) var(--space-10);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  font-size: var(--text-sm);
+  font-family: inherit;
+}
+.name-btn:hover { border-color: var(--color-border-active); color: var(--color-text); }
+.name-btn--save {
+  background: var(--color-accent, rgba(52,152,219,0.2));
+  border-color: transparent;
+  color: var(--color-text);
 }
 </style>

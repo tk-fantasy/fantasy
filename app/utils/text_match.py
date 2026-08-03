@@ -142,5 +142,44 @@ def match_devices(query: str, devices: list[dict[str, Any]]) -> list[dict[str, A
 
     name_matched = _match_by(lambda d: [str(d.get("name", "") or "")])
     if name_matched:
-        return name_matched
-    return _match_by(lambda d: [str(d.get("name", "") or ""), str(d.get("area_name", "") or "")])
+        return _rank_by_relevance(name_matched, query)
+    return _rank_by_relevance(
+        _match_by(lambda d: [str(d.get("name", "") or ""), str(d.get("area_name", "") or "")]),
+        query,
+    )
+
+
+# 主控 domain：用户说「开大门」时，真正想操作的是开关/灯/音箱这类，而不是
+# 同名传感器（故障/版本号）或配置项（童锁/灵动开关）。匹配多候选时把这些排前面。
+_PRIMARY_DOMAINS = frozenset({
+    "light", "switch", "climate", "cover", "fan", "humidifier",
+    "lock", "media_player", "vacuum", "valve", "water_heater",
+    "siren", "alarm_control_panel",
+})
+# 纯属性/诊断 domain：匹配时降权，避免「打开大门」命中一堆 sensor
+_DIAGNOSTIC_DOMAINS = frozenset({"sensor", "binary_sensor"})
+
+
+def _rank_by_relevance(matched: list[dict[str, Any]], query: str) -> list[dict[str, Any]]:
+    """对命中的设备按相关性排序，主控实体优先、诊断类靠后。
+
+    不删减任何候选（调用方可能依赖完整命中集合做校验），只调整顺序，
+    让 LLM 和 match_devices 的消费方在「多匹配」时优先看到最可能的目标。
+    """
+    def score(dev: dict[str, Any]) -> tuple[int, int]:
+        domain = str(dev.get("entity_id", "")).split(".", 1)[0]
+        name = str(dev.get("name", "") or "")
+        # 主控 domain 得 0 分（最优先），诊断 domain 得 2 分，其他得 1 分
+        if domain in _PRIMARY_DOMAINS:
+            base = 0
+        elif domain in _DIAGNOSTIC_DOMAINS:
+            base = 2
+        else:
+            base = 1
+        # 名称与 query 精确相等（剥离后）优先于子串包含：用户说「大门开关」时，
+        # name=「大门开关」应排在 name=「大门开关故障」前面。
+        q = query.strip()
+        exact = 0 if (q and name == q) else 1
+        return (base, exact)
+
+    return sorted(matched, key=score)

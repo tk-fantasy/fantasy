@@ -503,6 +503,17 @@ class Database:
             await self._db.commit()
             return cursor.rowcount > 0
 
+    async def prefs_get_by_scope(self, scope: str) -> dict[str, str]:
+        """取某 scope 下全部 {key: value} 偏好（复用 emoji_preferences 表）。
+
+        entity_alias（实体别名）等用户自定义映射也存这张表，scope 区分用途。
+        """
+        async with self._db.execute(
+            "SELECT key, emoji_char FROM emoji_preferences WHERE scope = ?",
+            (scope,),
+        ) as cursor:
+            return {r[0]: r[1] async for r in cursor}
+
     # ============ Users 操作 ============
 
     async def user_create(self, user_id: str, username: str, password_hash: str, display_name: str = "") -> dict:

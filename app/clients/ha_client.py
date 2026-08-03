@@ -163,3 +163,40 @@ class HomeAssistantClient:
         response = await client.get(path, params=params or None, timeout=30.0)
         response.raise_for_status()
         return response.json()
+
+    # ============ 实体注册表写操作 ============
+
+    async def update_entity_name(
+        self, entity_id: str, name: str | None
+    ) -> dict[str, Any]:
+        """更新 HA entity_registry 里的 name（同步到 HA 原生）。
+
+        name=None 表示清除自定义名，恢复集成生成的默认 friendly_name。
+        通过 WebSocket 调 config/entity_registry/update。
+        """
+        import json
+        import websockets
+
+        ws_url = self._base_url.replace("http", "ws") + "/api/websocket"
+        headers = {}
+        if self._token:
+            headers["Authorization"] = f"Bearer {self._token}"
+        async with asyncio.timeout(5):
+            async with websockets.connect(ws_url, additional_headers=headers) as ws:
+                await ws.recv()
+                await ws.send(json.dumps({"type": "auth", "access_token": self._token}))
+                auth = json.loads(await ws.recv())
+                if auth.get("type") != "auth_ok":
+                    raise RuntimeError(f"HA auth failed: {auth}")
+                await ws.send(json.dumps({
+                    "id": 1,
+                    "type": "config/entity_registry/update",
+                    "entity_id": entity_id,
+                    "name": name,
+                }))
+                resp = json.loads(await ws.recv())
+                if not resp.get("success"):
+                    err = resp.get("error", {})
+                    raise RuntimeError(
+                        f"HA entity_registry/update failed: {err.get('message', resp)}")
+                return resp.get("result", {})

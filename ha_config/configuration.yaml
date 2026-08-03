@@ -1,6 +1,11 @@
 # Loads default set of integrations. Do not remove.
 default_config:
 
+# 固定内部/外部 URL，避免 OAuth 回调使用 homeassistant.local
+homeassistant:
+  internal_url: "http://192.168.4.26:8123"
+  external_url: "http://192.168.4.26:8123"
+
 # 安全加固：关闭内网免认证。
 # Aether 后端通过 config.json 的 ha.token (long-lived token) 调用 HA API，
 # 不依赖 trusted_networks，因此注释掉不影响后端设备控制。
