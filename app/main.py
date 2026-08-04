@@ -473,6 +473,7 @@ async def lifespan(_: FastAPI):
         vision_client=vision_client,
         ha_service=ha_service,
         ha_client_ref=_ha_client_ref,
+        camera_manager=_services.get("camera_manager"),   # Task 8:多路 fallback
     )
     register_all_tools(tool_deps)
 

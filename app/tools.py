@@ -18,6 +18,7 @@ from .mcp.local_mcp_servers import (
 )
 from .mcp.mcp_client_manager import MCPClientManager, MCPTool
 from .services.entity_controls import resolve_controls
+from .services.control_probe import call_with_probe
 from .utils.text_match import match_devices
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,8 @@ class ToolDeps:
     ha_service: Any
     # 可变引用：ha_client 可能被热替换
     ha_client_ref: list  # [HomeAssistantClient]
+    # Task 8:多路 CameraManager(三级 fallback 取帧)。None 时回退 camera_stream。
+    camera_manager: Any = None
     # 可变引用：scheduler_service 在 lifespan 后段才创建
     scheduler_service_ref: list = field(default_factory=lambda: [None])
 
@@ -66,17 +69,37 @@ def register_all_tools(deps: ToolDeps) -> None:
 def _register_vision_chat(deps: ToolDeps) -> None:
     async def handler(parameters: dict, session) -> dict:
         question = str(parameters.get("question", "") or "请描述画面内容。")
-        frame = deps.camera_stream.get_latest_frame()
+        camera_id = str(parameters.get("camera_id", "") or "").strip()
+        # Task 8:三级 fallback 取帧。优先用 camera_manager(多路);
+        # 未注入时回退 camera_stream(单摄旧路径)。
+        frame = None
+        used_camera_id = camera_id
+        if deps.camera_manager is not None:
+            # 三级:用户指定 → 弹窗当前路(_active_display_id)→ 第一个 enabled
+            if not used_camera_id:
+                used_camera_id = getattr(deps.camera_manager, "_active_display_id", "") or ""
+            if not used_camera_id:
+                cams = deps.camera_manager.list_cameras()
+                if cams:
+                    used_camera_id = cams[0]["id"]
+            if used_camera_id:
+                frame = deps.camera_manager.get_frame(used_camera_id)
+        else:
+            frame = deps.camera_stream.get_latest_frame()
         if frame is None:
             return {"answer": "摄像头当前没有画面,无法分析。", "question": question, "has_frame": False}
         answer = await deps.vision_client.ask_about_frame(frame, question)
-        return {"answer": answer, "question": question, "has_frame": True, "model": deps.vision_client.model}
+        return {"answer": answer, "question": question, "has_frame": True,
+                "camera_id": used_camera_id, "model": deps.vision_client.model}
 
     deps.mcp_client_manager.register_tool(MCPTool(
         client_id="local",
         tool_name="vision_chat",
-        description="拍摄当前摄像头画面，根据画面内容回答用户问题",
-        parameters={"type": "object", "properties": {"question": {"type": "string"}}},
+        description="拍摄指定摄像头画面，根据画面内容回答用户问题。可用摄像头列表请调用 get_entities 查看。",
+        parameters={"type": "object", "properties": {
+            "question": {"type": "string"},
+            "camera_id": {"type": "string", "description": "可选,指定摄像头ID;不传取当前查看路"},
+        }},
         handler=handler,
     ))
 
@@ -217,7 +240,7 @@ def _register_ha_call_service(deps: ToolDeps) -> None:
                             }
                 except Exception:
                     logger.warning("call_service: 语义校验失败，放行", exc_info=True)
-            result = await ha_client.call_service(domain, service, entity_id, data)
+            result = await call_with_probe(ha_client, domain, service, entity_id, data)
             new_state = None
             if entity_id:
                 try:
@@ -253,7 +276,8 @@ def _register_ha_call_service(deps: ToolDeps) -> None:
 
 def _register_verify_condition(deps: ToolDeps) -> None:
     handler = create_verify_condition_handler(
-        deps.camera_stream, deps.vision_client, deps.ha_client_ref[0]
+        deps.camera_stream, deps.vision_client, deps.ha_client_ref[0],
+        camera_manager=getattr(deps, "camera_manager", None),   # Task 8:多路 fallback
     )
     deps.mcp_client_manager.register_tool(MCPTool(
         client_id="local",

@@ -116,15 +116,18 @@ def register_local_tools(manager: MCPClientManager) -> None:
 # 验证工具工厂（需要运行时依赖注入）
 # ---------------------------------------------------------------------------
 
-def create_verify_condition_handler(camera_stream, vision_client, ha_client):
+def create_verify_condition_handler(camera_stream, vision_client, ha_client, camera_manager=None):
     """创建条件验证工具处理器。
 
     根据 condition_type 路由到合适的验证源，返回当前状态数据和条件判断结果。
     返回值中 condition_met 字段明确表示条件是否成立（true/false/null）。
+
+    Task 8:camera_manager 非空时 vision 分支走三级 fallback 取帧(与 vision_chat 一致)。
     """
     async def handler(parameters: dict, session) -> dict:
         condition = str(parameters.get("condition", ""))
         cond_type = str(parameters.get("condition_type", "auto")).lower()
+        camera_id = str(parameters.get("camera_id", "") or "").strip()
 
         if cond_type == "auto":
             cond_lower = condition.lower()
@@ -158,7 +161,18 @@ def create_verify_condition_handler(camera_stream, vision_client, ha_client):
             }
 
         if cond_type == "vision":
-            frame = camera_stream.get_latest_frame()
+            # Task 8:三级 fallback 取帧。camera_manager 优先(多路),否则回退 camera_stream。
+            frame = None
+            if camera_manager is not None:
+                cid = camera_id or getattr(camera_manager, "_active_display_id", "") or ""
+                if not cid:
+                    cams = camera_manager.list_cameras()
+                    if cams:
+                        cid = cams[0]["id"]
+                if cid:
+                    frame = camera_manager.get_frame(cid)
+            else:
+                frame = camera_stream.get_latest_frame()
             if frame is None:
                 return {
                     "condition_met": None,
