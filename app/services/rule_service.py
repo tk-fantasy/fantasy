@@ -233,11 +233,11 @@ class RuleService:
             "services_info": services_info,
         }
 
-    async def build_rule(self, text: str, user_id: str = "") -> dict:
+    async def build_rule(self, text: str, user_id: str = "", camera_id: str = "") -> dict:
         # 复用 _prepare_rule_context 加载 HA 数据 + 构造 system prompt
         ctx = await self._prepare_rule_context(text, user_id)
         if not ctx:
-            return self._fallback_rule(text)
+            return self._fallback_rule(text, camera_id=camera_id)
         client = ctx["client"]
         full_devices = ctx["full_devices"]
         services_info = ctx["services_info"]
@@ -268,6 +268,7 @@ class RuleService:
             parsed.setdefault("action_descriptions", [])
             parsed.setdefault("cooldown_seconds", get_config("automation.default_cooldown_seconds", 5))
             parsed.setdefault("summary", text)
+            parsed.setdefault("camera_id", camera_id)   # Task 5:透传摄像头绑定
 
             # 校验 actions（使用完整设备数据，带 attributes）
             errors = self._validate_actions(parsed.get("actions", []), full_devices, services_info)
@@ -355,6 +356,7 @@ class RuleService:
             parsed.setdefault("cooldown_seconds", current_rule.get("cooldown_seconds",
                               get_config("automation.default_cooldown_seconds", 5)))
             parsed.setdefault("summary", current_rule.get("summary", ""))
+            parsed.setdefault("camera_id", current_rule.get("camera_id", ""))   # Task 5
 
             # 校验 actions
             errors = self._validate_actions(parsed.get("actions", []), full_devices, services_info)
@@ -406,7 +408,7 @@ class RuleService:
             logger.warning("explain_rule failed: %s", e, exc_info=True)
             return f"解释失败：{e}"
 
-    def _fallback_rule(self, text: str) -> dict:
+    def _fallback_rule(self, text: str, camera_id: str = "") -> dict:
         return {
             "name": text[:20],
             "condition": "",
@@ -415,6 +417,7 @@ class RuleService:
             "action_descriptions": [],
             "cooldown_seconds": get_config("automation.default_cooldown_seconds", 5),
             "summary": text,
+            "camera_id": camera_id,   # Task 5:透传摄像头绑定
         }
 
     def _parse_json(self, content: str) -> dict:

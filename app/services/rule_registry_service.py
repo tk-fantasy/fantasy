@@ -32,6 +32,7 @@ class AutomationRule:
     cooldown_seconds: int = 5                            # 防重复触发冷却（数据类兜底默认；实际由 config automation.default_cooldown_seconds 驱动）
     last_triggered_at: float = 0.0                       # 上次触发时间(秒级)
     user_id: str = ""                                    # 创建者，用于 per-user LLM key 解析；空表示老规则回退全局
+    camera_id: str = ""                                  # Task 5:绑定摄像头;空串=全局规则(归所有摄像头)
 
     def to_dict(self) -> dict:
         return {
@@ -50,6 +51,7 @@ class AutomationRule:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "user_id": self.user_id,
+            "camera_id": self.camera_id,
         }
 
 
@@ -109,6 +111,7 @@ class RuleRegistryService:
                             cooldown_seconds=int(item.get("cooldown_seconds", get_config("automation.default_cooldown_seconds", 5))),
                             last_triggered_at=float(item.get("last_triggered_at", 0.0)),
                             user_id=str(item.get("user_id", "")),
+                            camera_id=str(item.get("camera_id", "")),
                         )
                     )
             logger.info("Loaded %d rules from database", len(rules_data))
@@ -172,6 +175,7 @@ class RuleRegistryService:
             cooldown_seconds=int(rule.get("cooldown_seconds", get_config("automation.default_cooldown_seconds", 5))),
             last_triggered_at=0.0,
             user_id=str(user_id or rule.get("user_id", "")),
+            camera_id=str(rule.get("camera_id", "")),
         )
         with self._lock:
             self._rules.append(normalized)

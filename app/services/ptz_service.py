@@ -59,7 +59,11 @@ class PtzService:
     连接失败标记 _broken，下次调用自动重连，避免每条指令都吃超时。
     """
 
-    def __init__(self) -> None:
+    def __init__(self, camera_id: str = "", config: dict | None = None) -> None:
+        # Task 5:per-camera 参数化。config 非空时从 cameras 行读 ptz_* 字段;
+        # config=None 时回退读全局 get_config("ptz.*")(向后兼容旧单例)。
+        self.camera_id = camera_id
+        self._config = config or {}
         self._cam = None
         self._ptz = None
         self._profile_token: str | None = None
@@ -68,6 +72,8 @@ class PtzService:
         self._step_token = 0  # 最新步进序号；新 step 使进行中的旧 step 提前交权
 
     def _enabled(self) -> bool:
+        if self._config:
+            return bool(self._config.get("ptz_enabled", 0))
         return bool(get_config("ptz.enabled", False))
 
     async def _ensure_connected(self) -> bool:
@@ -77,26 +83,27 @@ class PtzService:
             return True
         if not self._enabled():
             return False
-        ip = str(get_config("ptz.ip", ""))
-        port = int(get_config("ptz.port", 80))
-        user = str(get_config("ptz.username", ""))
-        # 密码从 .env 读：config 只存 env 变量名，不存明文
-        pwd_env = str(get_config("ptz.password_env", ""))
-        pwd = os.getenv(pwd_env, "") if pwd_env else ""
+        # Task 5:per-camera 从 config 读;旧路径从 get_config 读
+        if self._config:
+            ip = str(self._config.get("ptz_ip", ""))
+            port = int(self._config.get("ptz_port", 80))
+            user = str(self._config.get("ptz_username", ""))
+            pwd = str(self._config.get("ptz_password", ""))   # cameras 表存明文
+        else:
+            ip = str(get_config("ptz.ip", ""))
+            port = int(get_config("ptz.port", 80))
+            user = str(get_config("ptz.username", ""))
+            pwd_env = str(get_config("ptz.password_env", ""))
+            pwd = os.getenv(pwd_env, "") if pwd_env else ""
         if not ip:
-            logger.warning("PTZ ip not configured")
+            logger.warning("PTZ ip not configured (cam=%s)", self.camera_id or "global")
             return False
         try:
             import onvif
             from onvif import ONVIFCamera
-            logger.info("Connecting to PTZ camera %s:%d", ip, port)
-            # onvif-zeep-async 4.2.1 的 _WSDL_PATH 算错了一层目录（指向
-            # site-packages/wsdl，实际在 site-packages/onvif/wsdl），
-            # 显式传正确路径绕过，否则报 "No such file: .../wsdl/media.wsdl"。
+            logger.info("Connecting to PTZ camera %s:%d (cam=%s)", ip, port, self.camera_id or "global")
             wsdl_dir = os.path.join(os.path.dirname(onvif.__file__), "wsdl")
             self._cam = ONVIFCamera(ip, port, user, pwd, wsdl_dir=wsdl_dir)
-            # 4.x 必须先 update_xaddrs 发现设备服务端点，否则 create_media_service
-            # 不知道往哪发请求（报 "Device doesn't support service: media"）。
             await self._cam.update_xaddrs()
             media = await self._cam.create_media_service()
             profiles = await media.GetProfiles()
@@ -107,14 +114,16 @@ class PtzService:
             self._profile_token = profiles[0].token
             self._ptz = await self._cam.create_ptz_service()
             self._broken = False
-            logger.info("PTZ connected, profile=%s", self._profile_token)
+            logger.info("PTZ connected, profile=%s (cam=%s)", self._profile_token, self.camera_id or "global")
             return True
         except Exception:
-            logger.exception("PTZ connect failed")
+            logger.exception("PTZ connect failed (cam=%s)", self.camera_id or "global")
             self._broken = True
             return False
 
     def _speed(self) -> float:
+        if self._config:
+            return max(0.1, min(1.0, float(self._config.get("ptz_speed", 0.5))))
         return max(0.1, min(1.0, float(get_config("ptz.speed", 0.5))))
 
     def notify_ip_changed(self, new_ip: str, camera_id: str = "") -> None:
@@ -213,4 +222,32 @@ class PtzService:
         return {"success": True}
 
 
+class PtzRegistry:
+    """Task 5:按 camera_id 管理 PtzService 实例。每路独立连接态。
+
+    camera_routes 用 await registry.get(camera_id, row) 拿到该路的 PtzService;
+    discovery IP 变更时 registry.notify_ip_changed 通知该路重连。
+    """
+
+    def __init__(self) -> None:
+        self._by_cam: dict[str, PtzService] = {}
+        self._lock = asyncio.Lock()
+
+    async def get(self, camera_id: str, config: dict) -> PtzService:
+        async with self._lock:
+            svc = self._by_cam.get(camera_id)
+            if svc is None:
+                svc = PtzService(camera_id=camera_id, config=config)
+                self._by_cam[camera_id] = svc
+            return svc
+
+    def notify_ip_changed(self, camera_id: str, new_ip: str) -> None:
+        svc = self._by_cam.get(camera_id)
+        if svc is not None:
+            svc.notify_ip_changed(new_ip, camera_id=camera_id)
+
+
+ptz_registry = PtzRegistry()
+
+# deprecated:旧全局单例,Task 6 camera_routes 切到 ptz_registry 后删。
 ptz_service = PtzService()

@@ -546,3 +546,68 @@ class TestDeviceGate:
         vision.evaluate_condition.assert_not_awaited()  # 0 VL
         chat.chat.assert_not_awaited()                  # 0 chat
 
+
+# ============================================================================
+# Task 5: evaluate(frames, camera_id) 按摄像头过滤规则
+# ============================================================================
+
+
+class TestEvaluateFiltersByCamera:
+    """Task 5:evaluate(camera_id) 只评估该摄像头的规则 + 未绑定(camera_id='')的全局规则。"""
+
+    @pytest.mark.asyncio
+    async def test_filters_rules_by_camera(self):
+        """evaluate(camera_id='cam_a') 只看 cam_a + 全局规则;cam_b 被过滤。"""
+        reg = MagicMock()
+        reg.list_rules.return_value = [
+            {"id": "r1", "camera_id": "cam_a", "enabled": True, "type": "time",
+             "condition": "每天8点", "actions": [], "cooldown_seconds": 5,
+             "last_triggered_at": 0, "name": "r1"},
+            {"id": "r2", "camera_id": "cam_b", "enabled": True, "type": "time",
+             "condition": "每天9点", "actions": [], "cooldown_seconds": 5,
+             "last_triggered_at": 0, "name": "r2"},
+            {"id": "r3", "camera_id": "", "enabled": True, "type": "time",   # 全局
+             "condition": "每天10点", "actions": [], "cooldown_seconds": 5,
+             "last_triggered_at": 0, "name": "r3"},
+        ]
+        svc = AutomationService(reg, vision_service=MagicMock(), ha_service=None)
+        seen_conditions: list[str] = []
+
+        async def fake_ctx_only(condition, context, user_id=""):
+            seen_conditions.append(condition)
+            return 0
+
+        with patch.object(svc, "_evaluate_context_only", side_effect=fake_ctx_only), \
+             patch.object(svc, "_resolve_chat_client", return_value=MagicMock()):
+            await svc.evaluate(frames=None, camera_id="cam_a")
+        # 只看到 r1(cam_a)+ r3(全局);r2(cam_b)被过滤
+        assert "每天8点" in seen_conditions
+        assert "每天10点" in seen_conditions
+        assert "每天9点" not in seen_conditions
+
+    @pytest.mark.asyncio
+    async def test_empty_camera_id_evaluates_all(self):
+        """camera_id=''(默认)评估所有规则(向后兼容)。"""
+        reg = MagicMock()
+        reg.list_rules.return_value = [
+            {"id": "r1", "camera_id": "cam_a", "enabled": True, "type": "time",
+             "condition": "每天8点", "actions": [], "cooldown_seconds": 5,
+             "last_triggered_at": 0, "name": "r1"},
+            {"id": "r2", "camera_id": "cam_b", "enabled": True, "type": "time",
+             "condition": "每天9点", "actions": [], "cooldown_seconds": 5,
+             "last_triggered_at": 0, "name": "r2"},
+        ]
+        svc = AutomationService(reg, vision_service=MagicMock(), ha_service=None)
+        seen: list[str] = []
+
+        async def fake_ctx_only(condition, context, user_id=""):
+            seen.append(condition)
+            return 0
+
+        with patch.object(svc, "_evaluate_context_only", side_effect=fake_ctx_only), \
+             patch.object(svc, "_resolve_chat_client", return_value=MagicMock()):
+            await svc.evaluate(frames=None)   # 不传 camera_id
+        # 两路都评估(旧行为)
+        assert "每天8点" in seen and "每天9点" in seen
+
+

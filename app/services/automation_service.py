@@ -33,8 +33,12 @@ class AutomationService:
         # 缓存 chat LLM 客户端，避免每次规则评估都重新读取配置和解析 API key
         self._chat_client = None
 
-    async def evaluate(self, frames: list | None = None) -> list[dict]:
+    async def evaluate(self, frames: list | None = None, camera_id: str = "") -> list[dict]:
         """评估所有规则（async）——按 type 路由 + 设备状态门控。
+
+        Task 5 多路化:camera_id 非空时,只评估绑定该摄像头 + 未绑定(camera_id='')
+        的全局规则;camera_id 空串则评估所有(向后兼容单摄时代)。
+        规则的 camera_id 非空且与传入 camera_id 不匹配 → 跳过。
 
         路由（替代旧全局 use_context_only）：
           - type=time/weather → chat LLM（_evaluate_context_only，按时间+天气，无需帧）
@@ -81,6 +85,12 @@ class AutomationService:
                 logger.debug("Rule '%s' skipped: empty condition", rule.get("name", ""))
                 skipped_count += 1
                 continue  # 跳过无意义的空条件规则
+            # Task 5:按摄像头过滤。规则 camera_id 非空时必须匹配;
+            # 空串(未绑定)= 全局规则,归所有摄像头。camera_id='' 时评估全部(兼容)。
+            rule_cam = str(rule.get("camera_id", "") or "")
+            if camera_id and rule_cam and rule_cam != camera_id:
+                skipped_count += 1
+                continue
             # 设备状态门控：所有动作已在目标态 → 跳过（0 LLM、0 action）
             if self._device_already_in_target(rule, state_map):
                 gated_count += 1
