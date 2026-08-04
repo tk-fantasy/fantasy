@@ -174,6 +174,14 @@ class HAService:
             for s in states
         }
 
+    async def get_areas(self) -> list[dict[str, str]]:
+        """对外暴露 HA 区域列表(供摄像头管理页区域下拉)。
+
+        复用 _get_area_maps_cached 的 area_id→name 映射。
+        """
+        area_map, _ = await self._get_area_maps_cached()
+        return [{"area_id": aid, "name": name} for aid, name in area_map.items()]
+
     # 可控/可展示的设备 domain — 过滤掉 sun/zone/person/update 等 HA 内置实体
     _DEVICE_DOMAINS = frozenset({
         "light", "switch", "climate", "cover", "fan", "humidifier",
