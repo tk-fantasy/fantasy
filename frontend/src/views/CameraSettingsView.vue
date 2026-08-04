@@ -415,25 +415,6 @@ const sourceOptions = [
                 </div>
               </section>
 
-              <!-- ONVIF 发现 -->
-              <section class="cam-section">
-                <h3 class="cam-section-title">ONVIF 发现</h3>
-                <div class="cam-field">
-                  <label>设备 MAC</label>
-                  <input v-model="editing.device_mac" class="cam-input" readonly placeholder="自动发现" />
-                </div>
-                <label class="cam-check">
-                  <input type="checkbox" v-model="editing.discovery_enabled" :true-value="1" :false-value="0" /> 启用自动发现(IP 变化时自动重连)
-                </label>
-                <div class="cam-field test-row" v-if="isEdit">
-                  <button class="btn-test" :disabled="discovering" @click="doFindDevice">
-                    {{ discovering ? '发现中...' : '发现设备' }}
-                  </button>
-                  <button class="btn-test" @click="doManualIp">手动设 IP</button>
-                  <span v-if="discoverResult?.new_ip" class="test-ok">✅ 新 IP: {{ discoverResult.new_ip }}</span>
-                </div>
-              </section>
-
               <!-- PTZ 云台 -->
               <section class="cam-section">
                 <h3 class="cam-section-title">云台(PTZ)</h3>
@@ -469,45 +450,6 @@ const sourceOptions = [
                     <label>步进(ms)</label>
                     <input v-model.number="editing.ptz_step_ms" type="number" class="cam-input narrow" />
                   </div>
-                </div>
-              </section>
-
-              <!-- 高级参数 -->
-              <section class="cam-section">
-                <h3 class="cam-section-title">高级参数</h3>
-                <div class="cam-field-row">
-                  <div class="cam-field">
-                    <label>抓帧间隔(ms)</label>
-                    <input v-model.number="editing.frame_interval_ms" type="number" class="cam-input narrow" />
-                  </div>
-                  <div class="cam-field">
-                    <label>运动阈值</label>
-                    <input v-model.number="editing.motion_threshold" type="number" class="cam-input narrow" />
-                  </div>
-                </div>
-                <div class="cam-field-row">
-                  <div class="cam-field">
-                    <label>dHash 尺寸</label>
-                    <input v-model.number="editing.motion_hash_size" type="number" class="cam-input narrow" />
-                  </div>
-                  <div class="cam-field">
-                    <label>检测间隔(s)</label>
-                    <input v-model.number="editing.motion_check_interval" type="number" step="0.1" class="cam-input narrow" />
-                  </div>
-                </div>
-                <div class="cam-field-row">
-                  <div class="cam-field">
-                    <label>最小推理间隔(s)</label>
-                    <input v-model.number="editing.vision_min_infer_interval" type="number" step="0.5" class="cam-input narrow" />
-                  </div>
-                  <div class="cam-field">
-                    <label>最大空闲间隔(s)</label>
-                    <input v-model.number="editing.vision_max_idle_interval" type="number" step="1" class="cam-input narrow" />
-                  </div>
-                </div>
-                <div class="cam-field">
-                  <label>推理用帧数</label>
-                  <input v-model.number="editing.vision_use_img_count" type="number" min="1" max="8" class="cam-input narrow" />
                 </div>
               </section>
 
