@@ -40,11 +40,6 @@ const routes = [
     component: () => import('../views/ModelsView.vue'),
   },
   {
-    path: '/focus',
-    name: 'Focus',
-    component: () => import('../views/FocusView.vue'),
-  },
-  {
     path: '/task',
     name: 'Task',
     component: () => import('../views/TaskView.vue'),

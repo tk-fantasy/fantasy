@@ -14,7 +14,7 @@ const {
   cameras, areas, loading,
   loadCameras, loadAreas, createCamera, updateCamera, deleteCamera,
   testStream, enableDisplay, disableDisplay,
-  loadFocuses, addFocus, deleteFocus, findDevice, manualIp,
+  loadFocuses, addFocus, updateFocus, deleteFocus, findDevice, manualIp,
   loadRules, createRule, toggleRule, deleteRule,
 } = useCamera()
 
@@ -182,6 +182,18 @@ async function doDeleteFocus(fid) {
     editingFocuses.value = editingFocuses.value.filter(f => f.id !== fid)
   } catch (e) {
     console.error('deleteFocus failed:', e)
+  }
+}
+
+async function doToggleFocus(fid) {
+  const focus = editingFocuses.value.find(f => f.id === fid)
+  if (!focus) return
+  const newVal = !focus.enabled
+  try {
+    await updateFocus(editing.value.id, fid, { enabled: newVal })
+    focus.enabled = newVal
+  } catch (e) {
+    console.error('toggleFocus failed:', e)
   }
 }
 
@@ -441,16 +453,6 @@ const sourceOptions = [
                     <input v-model="editing.ptz_password" type="password" class="cam-input" :placeholder="isEdit ? '留空不改' : 'ONVIF 密码'" />
                   </div>
                 </div>
-                <div class="cam-field-row">
-                  <div class="cam-field">
-                    <label>速度</label>
-                    <input v-model.number="editing.ptz_speed" type="number" step="0.1" min="0.1" max="1.0" class="cam-input narrow" />
-                  </div>
-                  <div class="cam-field">
-                    <label>步进(ms)</label>
-                    <input v-model.number="editing.ptz_step_ms" type="number" class="cam-input narrow" />
-                  </div>
-                </div>
               </section>
 
               <!-- 关注项 -->
@@ -462,7 +464,8 @@ const sourceOptions = [
                 </div>
                 <div class="focus-list">
                   <div v-for="f in editingFocuses" :key="f.id" class="focus-item">
-                    <span>{{ f.text }}</span>
+                    <BaseToggle :modelValue="f.enabled !== false" @update:modelValue="doToggleFocus(f.id)" />
+                    <span :class="{ 'focus-disabled': f.enabled === false }">{{ f.text }}</span>
                     <button class="btn-del-sm" @click="doDeleteFocus(f.id)">✕</button>
                   </div>
                   <div v-if="editingFocuses.length === 0" class="focus-empty">暂无关注项,请添加</div>
@@ -792,6 +795,7 @@ const sourceOptions = [
 .focus-item {
   display: flex;
   align-items: center;
+  gap: var(--space-8);
   justify-content: space-between;
   padding: var(--space-4) var(--space-8);
   background: rgba(255, 255, 255, 0.02);
@@ -799,6 +803,15 @@ const sourceOptions = [
   border-radius: var(--radius-md);
   font-size: var(--text-sm);
   color: var(--color-text-secondary);
+}
+
+.focus-item span {
+  flex: 1;
+}
+
+.focus-disabled {
+  opacity: 0.4;
+  text-decoration: line-through;
 }
 
 .btn-del-sm {

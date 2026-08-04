@@ -63,6 +63,9 @@ export function useCamera() {
   async function addFocus(id, text) {
     return await apiPost(`/api/cameras/${id}/focuses`, { text })
   }
+  async function updateFocus(id, focusId, fields) {
+    return await apiPut(`/api/cameras/${id}/focuses/${focusId}`, fields)
+  }
   async function deleteFocus(id, focusId) {
     const res = await fetch(`/api/cameras/${id}/focuses/${focusId}`, {
       method: 'DELETE', credentials: 'include',
@@ -108,7 +111,7 @@ export function useCamera() {
     cameras, areas, loading,
     loadCameras, loadAreas, createCamera, updateCamera, deleteCamera,
     testStream, enableDisplay, disableDisplay,
-    loadFocuses, addFocus, deleteFocus, findDevice, manualIp,
+    loadFocuses, addFocus, updateFocus, deleteFocus, findDevice, manualIp,
     loadRules, createRule, toggleRule, deleteRule,
   }
 }

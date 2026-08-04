@@ -5,12 +5,13 @@ import AdvancedModal from '../components/AdvancedModal.vue'
 import { apiGet, apiPost } from '../utils/api'
 
 // ===== Modal 管理 =====
-const activeModal = ref(null) // 'weather' | 'exa' | 'ha' | 'unique' | 'keys' | 'automation'
+const activeModal = ref(null) // 'weather' | 'exa' | 'camparams' | 'ha' | 'unique' | 'keys' | 'automation'
 
 const modalTitle = computed(() => {
   const titles = {
     weather: '天气 API（和风天气）',
     exa: '网页搜索（Exa）',
+    camparams: '摄像头参数',
     ha: 'Home Assistant',
     unique: '助手角色',
     keys: 'API Keys',
@@ -406,6 +407,36 @@ async function testPtz() {
   }
 }
 
+// ===== 摄像头参数保存(运动检测+推理间隔走 vision 全局,云台速度+步进走 ptz 全局) =====
+const camParamsSaving = ref(false)
+const camParamsSaved = ref(false)
+async function saveCamParams() {
+  camParamsSaving.value = true
+  camParamsSaved.value = false
+  try {
+    // vision 段:只改 motion_threshold + min_infer_interval_seconds,其余字段原样回传
+    await apiPost('/api/advanced/config', {
+      vision: { ...visionConfig.value },
+    })
+    // ptz 段:只改 speed + step_ms,其余字段原样回传(不传 password)
+    await apiPost('/api/ptz/config', {
+      enabled: ptzConfig.value.enabled,
+      ip: ptzConfig.value.ip,
+      port: ptzConfig.value.port,
+      username: ptzConfig.value.username,
+      speed: ptzConfig.value.speed,
+      step_ms: ptzConfig.value.step_ms,
+    })
+    await loadAll()
+    camParamsSaved.value = true
+    setTimeout(() => { camParamsSaved.value = false }, 2000)
+  } catch (e) {
+    console.error('Failed to save cam params:', e)
+  } finally {
+    camParamsSaving.value = false
+  }
+}
+
 // ===== HA 保存 + 测试 =====
 async function saveHa() {
   haSaving.value = true
@@ -574,8 +605,7 @@ async function pollDocRebuild() {
 // ===== 卡片摘要 =====
 const weatherSummary = computed(() => weatherConfig.value.host || '未配置')
 const exaSummary = computed(() => webSearchConfig.value.exa?.api_key ? '已配置' : '匿名')
-const visionSummary = computed(() => visionConfig.value.rtsp_url || 'USB')
-const ptzSummary = computed(() => ptzConfig.value.enabled ? (ptzConfig.value.ip || '未配 IP') : '未启用')
+const camParamsSummary = computed(() => `阈值${visionConfig.value.motion_threshold} · 间隔${visionConfig.value.min_infer_interval_seconds}s`)
 const haSummary = computed(() => haConfig.value.url || '未配置')
 const uniqueSummary = computed(() => personaCustomized.value ? '已自定义' : '默认')
 const keysSummary = computed(() => `${keys.value.length} 个`)
@@ -624,6 +654,14 @@ onUnmounted(() => {
           <div class="config-info">
             <span class="config-title">网页搜索（Exa）</span>
             <span class="config-status">{{ exaSummary }}</span>
+          </div>
+        </div>
+
+        <div class="config-card" @click="openModal('camparams')">
+          <span class="config-icon">&#128247;</span>
+          <div class="config-info">
+            <span class="config-title">摄像头参数</span>
+            <span class="config-status">{{ camParamsSummary }}</span>
           </div>
         </div>
 
@@ -805,6 +843,43 @@ onUnmounted(() => {
         <div class="modal-save-bar">
           <button class="btn-primary" :class="{ saved: exaSaved }" @click="saveExa" :disabled="exaSaving">
             {{ exaSaving ? '保存中...' : exaSaved ? '已保存' : '保存' }}
+          </button>
+        </div>
+      </div>
+
+      <!-- 摄像头参数(运动检测+推理间隔+云台速度+步进,全局) -->
+      <div v-else-if="activeModal === 'camparams'" class="modal-content">
+        <div class="setting-row">
+          <label class="setting-label">
+            <span class="label-text">运动检测阈值</span>
+            <span class="label-desc">画面变化多大算"有动静"(1~256,拉满=关 dhash 降级定时器)</span>
+          </label>
+          <input v-model.number="visionConfig.motion_threshold" type="number" class="setting-input narrow" />
+        </div>
+        <div class="setting-row">
+          <label class="setting-label">
+            <span class="label-text">推理最小间隔 (秒)</span>
+            <span class="label-desc">防止频繁调用视觉模型</span>
+          </label>
+          <input v-model.number="visionConfig.min_infer_interval_seconds" type="number" step="0.5" class="setting-input narrow" />
+        </div>
+        <div class="setting-row">
+          <label class="setting-label">
+            <span class="label-text">云台转动速度</span>
+            <span class="label-desc">0.1~1.0,越大转得越快</span>
+          </label>
+          <input v-model.number="ptzConfig.speed" type="number" step="0.1" min="0.1" max="1.0" class="setting-input narrow" />
+        </div>
+        <div class="setting-row">
+          <label class="setting-label">
+            <span class="label-text">云台步进时长 (ms)</span>
+            <span class="label-desc">点一下转多长时间</span>
+          </label>
+          <input v-model.number="ptzConfig.step_ms" type="number" class="setting-input narrow" />
+        </div>
+        <div class="modal-save-bar">
+          <button class="btn-primary" :class="{ saved: camParamsSaved }" @click="saveCamParams" :disabled="camParamsSaving">
+            {{ camParamsSaving ? '保存中...' : camParamsSaved ? '已保存' : '保存' }}
           </button>
         </div>
       </div>
