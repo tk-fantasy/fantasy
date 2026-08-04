@@ -18,6 +18,7 @@ from .services.camera_discovery_service import discovery_service
 from .services.emoji_service import EmojiService
 from .services.ha_service import HAService
 from .services.llm_settings_service import LlmSettingsService
+from .services.ptz_service import ptz_registry
 from .services.rule_registry_service import RuleRegistryService
 from .services.rule_service import RuleService
 from .services.session_store import SessionStore
@@ -139,5 +140,8 @@ def initialize_services() -> dict[str, Any]:
 
     # ONVIF 摄像头自动发现（无状态,被动调用）
     services["discovery_service"] = discovery_service
+
+    # PTZ 多路注册表（模块单例,容器暴露给 camera_routes）
+    services["ptz_registry"] = ptz_registry
 
     return services

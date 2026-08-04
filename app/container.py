@@ -55,6 +55,8 @@ class AppContainer:
     # ── 调度器（lifespan 启动阶段赋值，初始化前为 None）──
     # 放在所有无默认值字段之后，因其有默认值。
     camera_manager: Any = None  # Task 7:CameraManager(多路)
+    discovery_service: Any = None  # Task 6:ONVIF 发现(模块单例,容器暴露给路由)
+    ptz_registry: Any = None  # Task 5:PtzRegistry(模块单例,容器暴露给路由)
     dispatcher: Any = None  # Dispatcher | None
     scheduler_service: Any = None  # SchedulerService | None
 
@@ -127,6 +129,8 @@ def init_container(services: dict[str, Any], metrics_service: Any) -> AppContain
         # 摄像头
         camera_stream=services["camera_stream"],
         camera_manager=services.get("camera_manager"),   # Task 7:可能未注入(过渡)
+        discovery_service=services.get("discovery_service"),  # Task 6:ONVIF 发现
+        ptz_registry=services.get("ptz_registry"),  # Task 5:PtzRegistry
         # 语义图
         sg_service=services["sg_service"],
         # 可变引用

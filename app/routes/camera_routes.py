@@ -9,6 +9,7 @@ from fastapi.responses import StreamingResponse
 
 from app.container import get_container
 from app.core.api_models import ApiResponse
+from app.core.database import Database
 
 router = APIRouter()
 
@@ -31,7 +32,7 @@ async def create_camera(body: dict):
 async def get_camera(camera_id: str):
     c = get_container()
     st = c.camera_manager.get_state(camera_id)
-    row = await c.db.cameras_get(camera_id)
+    row = await Database.get().cameras_get(camera_id)
     if row is None:
         raise HTTPException(status_code=404, detail="摄像头不存在")
     return ApiResponse(data={**row, "state": st})
@@ -108,7 +109,7 @@ async def camera_state(camera_id: str):
 @router.post("/cameras/{camera_id}/ptz/move")
 async def ptz_move(camera_id: str, body: dict):
     c = get_container()
-    row = await c.db.cameras_get(camera_id)
+    row = await Database.get().cameras_get(camera_id)
     svc = await c.ptz_registry.get(camera_id, row)
     return ApiResponse(data=await svc.move(body.get("direction", "")))
 
@@ -116,7 +117,7 @@ async def ptz_move(camera_id: str, body: dict):
 @router.post("/cameras/{camera_id}/ptz/stop")
 async def ptz_stop(camera_id: str):
     c = get_container()
-    row = await c.db.cameras_get(camera_id)
+    row = await Database.get().cameras_get(camera_id)
     svc = await c.ptz_registry.get(camera_id, row)
     return ApiResponse(data=await svc.stop())
 
@@ -124,7 +125,7 @@ async def ptz_stop(camera_id: str):
 @router.post("/cameras/{camera_id}/ptz/step")
 async def ptz_step(camera_id: str, body: dict):
     c = get_container()
-    row = await c.db.cameras_get(camera_id)
+    row = await Database.get().cameras_get(camera_id)
     svc = await c.ptz_registry.get(camera_id, row)
     return ApiResponse(data=await svc.step(body.get("direction", ""), int(body.get("duration_ms", 300))))
 
