@@ -14,6 +14,7 @@ class ApiResponse(BaseModel, Generic[T]):
 
 
 class CameraStateModel(BaseModel):
+    camera_id: str = ""   # Task 10:多路标识;空串=主摄像头/兼容单摄
     camera_opened: bool
     backend_name: str
     frame_width: int

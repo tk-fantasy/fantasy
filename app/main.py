@@ -807,9 +807,27 @@ async def global_rate_limit(request: Request, call_next):
 # ============ 系统状态路由 ============
 
 
+def _primary_camera_state() -> dict:
+    """Task 10:取主摄像头状态(第一个 enabled)。camera_manager 为空回退 camera_stream。
+
+    全局 health/state 端点用此保持兼容 —— 返回主摄像头状态,/camera 弹窗外
+    的前端引用不崩。manager 未 initialize 时返回空 CameraState。
+    """
+    cm = _services.get("camera_manager")
+    if cm is not None:
+        cams = cm.list_cameras()
+        if cams:
+            return cm.get_state(cams[0]["id"])
+        return {"camera_id": "", "camera_opened": False, "backend_name": "unknown",
+                "frame_width": 0, "frame_height": 0, "fps": 0.0, "last_frame_at": 0.0,
+                "last_error": None, "action": "idle", "feedback": "", "details": None,
+                "confirmed": False}
+    return camera_stream.get_state()
+
+
 @app.get("/api/health")
 async def health() -> ApiResponse[HealthData]:
-    state = CameraStateModel.model_validate(camera_stream.get_state())
+    state = CameraStateModel.model_validate(_primary_camera_state())
     health_status = health_checker.get_status()
     return ApiResponse(
         data=HealthData(
@@ -832,7 +850,7 @@ async def metrics() -> ApiResponse[dict]:
 
 @app.get("/api/state")
 async def state() -> ApiResponse[CameraStateModel]:
-    current_state = camera_stream.get_state()
+    current_state = _primary_camera_state()   # Task 10:主摄像头
     return ApiResponse(data=CameraStateModel.model_validate(current_state))
 
 
