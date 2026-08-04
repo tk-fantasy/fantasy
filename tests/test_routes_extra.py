@@ -23,6 +23,7 @@ def _mock_container(**overrides):
     c.scheduler_service = None
     c.automation_agent_ref = [None]
     c.camera_stream = MagicMock()
+    c.camera_manager = MagicMock()   # Task 7:多路
     for k, v in overrides.items():
         setattr(c, k, v)
     return c
@@ -409,3 +410,16 @@ class TestSchedulerCreateTask:
         assert call_args["name"]
         assert "提醒内容" in call_args["name"] or "每" in call_args["name"]
         assert call_args["user_id"] == "u1"
+
+
+# ============================================================================
+# Task 7: container 字段验证
+# ============================================================================
+
+def test_container_has_camera_manager_field():
+    """Task 7:AppContainer 有 camera_manager 字段(多路),保留 camera_stream(过渡)。"""
+    import dataclasses
+    from app.container import AppContainer
+    fields = {f.name for f in dataclasses.fields(AppContainer)}
+    assert "camera_manager" in fields
+    assert "camera_stream" in fields   # 过渡保留

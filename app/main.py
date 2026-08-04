@@ -506,7 +506,7 @@ async def lifespan(_: FastAPI):
     # 启动自动化评估（dhash 事件触发 + 定时器兜底，替代旧 10s 轮询 + 推理完成双触发）
     min_trigger_interval = max(0.5, float(get_config("vision.min_infer_interval_seconds", 3.0)))
     silent_eval_enabled = bool(get_config("automation.silent_eval_enabled", True))
-    silent_eval_interval = max(5.0, float(get_config("automation.silent_eval_interval_seconds", 60.0)))
+    silent_eval_interval = max(5.0, float(get_config("automation.silent_eval_interval_seconds", 300.0)))
     _automation_agent_ref[0] = AutomationAgent(
         automation_service=automation_service,
         camera_stream=camera_stream,
@@ -548,12 +548,40 @@ async def lifespan(_: FastAPI):
     camera_stream.set_camera_vl_display_enabled(bool(get_config("automation.camera_vl_display_enabled", True)))
     camera_stream.start()
 
+    # Task 7:多路 CameraManager 接线(db/ha/automation 后注入,顺序兜底)。
+    # CameraManager.initialize 从 cameras 表加载所有 enabled 路,各路 worker
+    # 抓帧 + 运动检测全跑;AI 预览只激活第一路 display_enabled=1(D4)。
+    camera_manager = _services.get("camera_manager")
+    if camera_manager is not None:
+        camera_manager.set_event_loop(asyncio.get_running_loop())
+        camera_manager.set_db(Database.get())
+        camera_manager.set_ha_service(ha_service)
+        camera_manager.set_automation_service(automation_service)
+        discovery_service.set_db(Database.get())
+        try:
+            await camera_manager.initialize()
+            logger.info("CameraManager initialized (%d stream(s))", len(camera_manager.list_cameras()))
+        except Exception:
+            logger.exception("CameraManager initialize failed (non-fatal, single-camera mode continues)")
+
     # 后台捕获摄像头 MAC（首次配对，不阻塞启动）
+    # Task 7:单摄旧路径 + 多路遍历 discovery_enabled 且 device_mac 为空的路
     async def _startup_capture_mac():
         try:
             await discovery_service.capture_mac_on_startup()
         except Exception:
-            logger.exception("startup MAC capture failed")
+            logger.exception("startup MAC capture failed (legacy path)")
+        # 多路:遍历所有 discovery_enabled 且 device_mac 为空的路
+        if camera_manager is not None:
+            try:
+                for row in await Database.get().cameras_all():
+                    if row.get("discovery_enabled", 1) and not str(row.get("device_mac", "")).strip():
+                        try:
+                            await discovery_service.capture_mac_on_startup(row["id"])
+                        except Exception:
+                            logger.exception("MAC capture failed for %s", row.get("id"))
+            except Exception:
+                logger.exception("multi-camera MAC capture failed (non-fatal)")
 
     _background_task_mgr.spawn(_startup_capture_mac(), name="capture_mac")
 
@@ -594,6 +622,13 @@ async def lifespan(_: FastAPI):
     await mcp_client_manager.disconnect_all_external()
     await session_store.shutdown()
     camera_stream.stop()
+    # Task 7:多路停止
+    cm = _services.get("camera_manager")
+    if cm is not None:
+        try:
+            cm.stop()
+        except Exception:
+            logger.exception("CameraManager stop failed (non-fatal)")
     # 回收 dispatcher 持有的所有 agent httpx 客户端（全局 + per-user），防连接池泄漏
     if dispatcher is not None:
         await dispatcher.close_all_agent_clients()

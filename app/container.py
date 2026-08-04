@@ -44,7 +44,7 @@ class AppContainer:
     tool_executor: Any  # ToolExecutor
 
     # ── 摄像头 ──
-    camera_stream: Any  # CameraStream
+    camera_stream: Any  # CameraStream(过渡保留,Task 9-10 切到 camera_manager 后删)
 
     # ── 可变引用（支持热替换）──
     ha_client_ref: list  # [HomeAssistantClient] — set_ha_config 时替换
@@ -54,6 +54,7 @@ class AppContainer:
 
     # ── 调度器（lifespan 启动阶段赋值，初始化前为 None）──
     # 放在所有无默认值字段之后，因其有默认值。
+    camera_manager: Any = None  # Task 7:CameraManager(多路)
     dispatcher: Any = None  # Dispatcher | None
     scheduler_service: Any = None  # SchedulerService | None
 
@@ -125,6 +126,7 @@ def init_container(services: dict[str, Any], metrics_service: Any) -> AppContain
         tool_executor=services["tool_executor"],
         # 摄像头
         camera_stream=services["camera_stream"],
+        camera_manager=services.get("camera_manager"),   # Task 7:可能未注入(过渡)
         # 语义图
         sg_service=services["sg_service"],
         # 可变引用

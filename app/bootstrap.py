@@ -5,6 +5,7 @@ import logging
 from typing import Any
 
 from .camera_stream import CameraStream
+from .services.camera_manager import CameraManager
 from .clients.ha_client import HomeAssistantClient
 from .clients.llm_chat_client import LlmChatClient
 from .clients.llm_vision_client import LlmVisionClient
@@ -43,6 +44,13 @@ def initialize_services() -> dict[str, Any]:
     # 摄像头流（camera_index 由 CameraStream 从 vision.camera_index 读取，默认 0）
     camera_stream = CameraStream(vision_service=vision_service)
     services["camera_stream"] = camera_stream
+
+    # Task 7:多路 CameraManager。db/ha/automation 后注入(bootstrap 顺序兜底)。
+    camera_manager = CameraManager(
+        vision_service=vision_service,
+        discovery_service=discovery_service,
+    )
+    services["camera_manager"] = camera_manager
 
     # 聊天客户端（用于摘要等后台任务）
     llm_chat_client = LlmChatClient()
