@@ -500,6 +500,7 @@ async def lifespan(_: FastAPI):
         validator=ValidatorAgent(max_retries=1),
         summarization_service=summarization_service,
         clients=_global_clients,
+        camera_manager=_services.get("camera_manager"),   # Task 9:多路
     )
     dispatcher._tools = langchain_tools  # 供 per-user agent 构建使用
     _container.dispatcher = dispatcher
@@ -514,6 +515,7 @@ async def lifespan(_: FastAPI):
         min_trigger_interval=min_trigger_interval,
         silent_eval_enabled=silent_eval_enabled,
         silent_eval_interval=silent_eval_interval,
+        camera_manager=_services.get("camera_manager"),   # Task 9:多路遍历
     )
     await _automation_agent_ref[0].start()
     logger.info(

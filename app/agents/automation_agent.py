@@ -31,9 +31,13 @@ class AutomationAgent:
         min_trigger_interval: float = 3.0,
         silent_eval_enabled: bool = True,
         silent_eval_interval: float = 60.0,
+        camera_manager: Any = None,
     ) -> None:
         self._automation_service = automation_service
         self._camera_stream = camera_stream
+        # Task 9:多路 CameraManager。非空时 _run_evaluation_cycle 遍历各路
+        # (各自 evaluate(camera_id=cid));为空回退单摄 _camera_stream。
+        self._camera_manager = camera_manager
         # dhash 触发节流闸：≥ min_trigger_interval 才放行一次 trigger。
         # 复用 vision.min_infer_interval_seconds（默认 3s）。
         self._min_trigger_interval = max(0.5, float(min_trigger_interval))
@@ -178,17 +182,28 @@ class AutomationAgent:
 
     async def _run_evaluation_cycle(self) -> None:
         # 并发保护：dhash 触发与定时器兜底可能重叠，丢弃重叠的一次。
-        # （旧 _tick_loop 串行 await，但 trigger_evaluate 可并发，本实现统一加闸。）
         if self._eval_running:
             logger.debug("Evaluation already running, skipping this trigger")
             return
         self._eval_running = True
         try:
             self._eval_count += 1
-            frames = await asyncio.to_thread(
-                self._camera_stream.get_recent_frames
-            ) if self._camera_stream else []
-            if self._automation_service is not None:
+            if self._automation_service is None:
+                return
+            # Task 9:多路 —— 遍历 manager 各路,各自取帧 + evaluate(camera_id=cid)。
+            # camera_manager 为空时回退单摄 _camera_stream(向后兼容)。
+            if self._camera_manager is not None:
+                for cam in self._camera_manager.list_cameras():
+                    cid = cam["id"]
+                    frames = await asyncio.to_thread(
+                        self._camera_manager.get_recent_frames, cid, 3
+                    )
+                    if frames:
+                        await self._automation_service.evaluate(frames=frames, camera_id=cid)
+            else:
+                frames = await asyncio.to_thread(
+                    self._camera_stream.get_recent_frames
+                ) if self._camera_stream else []
                 await self._automation_service.evaluate(frames=frames)
         except Exception:
             logger.exception("AutomationAgent evaluation cycle error")

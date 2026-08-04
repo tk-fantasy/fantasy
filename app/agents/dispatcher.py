@@ -203,6 +203,7 @@ class Dispatcher:
         ha_service: Any = None,
         validator: ValidatorAgent | None = None,
         summarization_service: Any = None,
+        camera_manager: Any = None,
     ) -> None:
         self._session_store = session_store
         self._agent = agent
@@ -210,6 +211,8 @@ class Dispatcher:
         self._user_agents: dict[str, Any] = {}  # user_id → agent 缓存
         self._user_agent_lock = asyncio.Lock()
         self._camera_stream = camera_stream
+        # Task 9:多路。取 focus/state 时按主摄像头(第一个 enabled);为空回退单摄。
+        self._camera_manager = camera_manager
         self._ha_catalog_provider = ha_catalog_provider
         self._ha_controls_provider = ha_controls_provider
         self._vision_service = vision_service
@@ -225,6 +228,22 @@ class Dispatcher:
         self._agent_clients: dict[int, tuple[Any, Any]] = {}
         if agent is not None and clients is not None:
             self._agent_clients[id(agent)] = clients
+
+    def _primary_camera_id(self) -> str:
+        """Task 9:取主摄像头 id(第一个 enabled)。camera_manager 为空返回空串。"""
+        if self._camera_manager is None:
+            return ""
+        cams = self._camera_manager.list_cameras()
+        return cams[0]["id"] if cams else ""
+
+    def _get_camera_state(self) -> dict:
+        """Task 9:取摄像头状态。camera_manager 优先(主摄像头),否则回退 camera_stream。"""
+        if self._camera_manager is not None:
+            cid = self._primary_camera_id()
+            if cid:
+                return self._camera_manager.get_state(cid)
+            return {}
+        return self._camera_stream.get_state()
 
     @staticmethod
     def _build_failure_retry_message(failed_tools: list[dict]) -> HumanMessage:
@@ -369,11 +388,11 @@ class Dispatcher:
             except Exception:
                 logger.exception("Failed to build HA device controls")
 
-        # 获取视觉关注重点 (focus)
+        # 获取视觉关注重点 (focus) —— Task 9:按主摄像头取 per-camera focus
         vision_focuses = None
         if self._vision_service is not None:
             try:
-                vision_focuses = self._vision_service.get_vision_focuses()
+                vision_focuses = self._vision_service.get_vision_focuses(self._primary_camera_id())
             except Exception:
                 logger.exception("Failed to get vision focuses")
 
@@ -420,7 +439,7 @@ class Dispatcher:
     async def dispatch(self, event: Event, user_id: str = "") -> list[Instruction]:
         """处理聊天事件，返回 instruction 列表（非流式，兼容 REST 回退）。"""
         session = await self._session_store.get_or_create(event.header.session_id, event.header.request_id, user_id=user_id)
-        session.latest_visual_state = self._camera_stream.get_state()
+        session.latest_visual_state = self._get_camera_state()
         session.history_events.append(event)
         query = event.payload.get("query", "")
         session.current_query = query
@@ -463,7 +482,7 @@ class Dispatcher:
         session = await self._session_store.get_or_create(
             event.header.session_id, event.header.request_id, user_id=user_id,
         )
-        session.latest_visual_state = self._camera_stream.get_state()
+        session.latest_visual_state = self._get_camera_state()
         session.history_events.append(event)
         query = event.payload.get("query", "")
         session.current_query = query
