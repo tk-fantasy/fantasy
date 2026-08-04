@@ -5,14 +5,12 @@ import AdvancedModal from '../components/AdvancedModal.vue'
 import { apiGet, apiPost } from '../utils/api'
 
 // ===== Modal 管理 =====
-const activeModal = ref(null) // 'weather' | 'exa' | 'vision' | 'ha' | 'unique' | 'keys' | 'automation'
+const activeModal = ref(null) // 'weather' | 'exa' | 'ha' | 'unique' | 'keys' | 'automation'
 
 const modalTitle = computed(() => {
   const titles = {
     weather: '天气 API（和风天气）',
     exa: '网页搜索（Exa）',
-    vision: '视觉参数',
-    ptz: '云台（PTZ）',
     ha: 'Home Assistant',
     unique: '助手角色',
     keys: 'API Keys',
@@ -629,22 +627,6 @@ onUnmounted(() => {
           </div>
         </div>
 
-        <div class="config-card" @click="openModal('vision')">
-          <span class="config-icon">&#128247;</span>
-          <div class="config-info">
-            <span class="config-title">视觉参数</span>
-            <span class="config-status">{{ visionSummary }}</span>
-          </div>
-        </div>
-
-        <div class="config-card" @click="openModal('ptz')">
-          <span class="config-icon">&#127919;</span>
-          <div class="config-info">
-            <span class="config-title">云台（PTZ）</span>
-            <span class="config-status">{{ ptzSummary }}</span>
-          </div>
-        </div>
-
         <div class="config-card" @click="openModal('ha')">
           <span class="config-icon">&#127968;</span>
           <div class="config-info">
@@ -823,145 +805,6 @@ onUnmounted(() => {
         <div class="modal-save-bar">
           <button class="btn-primary" :class="{ saved: exaSaved }" @click="saveExa" :disabled="exaSaving">
             {{ exaSaving ? '保存中...' : exaSaved ? '已保存' : '保存' }}
-          </button>
-        </div>
-      </div>
-
-      <!-- 视觉参数 -->
-      <div v-else-if="activeModal === 'vision'" class="modal-content">
-        <div class="setting-row">
-          <label class="setting-label">
-            <span class="label-text">摄像头源（RTSP）</span>
-            <span class="label-desc">填 RTSP 地址走网络摄像头，留空走 USB</span>
-          </label>
-          <input v-model="visionConfig.rtsp_url" class="setting-input" placeholder="rtsp://192.168.1.100:554/stream" />
-        </div>
-        <div class="setting-row">
-          <label class="setting-label">
-            <span class="label-text">RTSP 用户名</span>
-            <span class="label-desc">无鉴权摄像头留空</span>
-          </label>
-          <input v-model="visionConfig.rtsp_username" class="setting-input" placeholder="admin" />
-        </div>
-        <div class="setting-row">
-          <label class="setting-label">
-            <span class="label-text">RTSP 密码</span>
-            <span class="label-desc">{{ visionConfig.has_rtsp_password ? '已配置（留空保持不变）' : '未配置' }}</span>
-          </label>
-          <input v-model="rtspPassword" type="password" class="setting-input" placeholder="摄像头密码" />
-        </div>
-        <div class="setting-row">
-          <label class="setting-label">
-            <span class="label-text">运动检测阈值</span>
-            <span class="label-desc">画面变化多大算"有动静"</span>
-          </label>
-          <input v-model.number="visionConfig.motion_threshold" type="number" class="setting-input narrow" />
-        </div>
-        <div class="setting-row">
-          <label class="setting-label">
-            <span class="label-text">推理最小间隔 (秒)</span>
-            <span class="label-desc">防止频繁调用视觉模型</span>
-          </label>
-          <input v-model.number="visionConfig.min_infer_interval_seconds" type="number" step="0.5" class="setting-input narrow" />
-        </div>
-        <div class="setting-row test-row">
-          <label class="setting-label">
-            <span class="label-text">连接测试</span>
-            <span class="label-desc">验证 RTSP 凭证（会临时占一路流）</span>
-          </label>
-          <div class="test-actions">
-            <button class="btn-test" :disabled="visionTesting || !visionConfig.rtsp_url" @click="testVision">
-              {{ visionTesting ? '测试中...' : '测试' }}
-            </button>
-            <span v-if="visionProbeResult?.status === 'success'" class="test-result success">✅ 连接成功</span>
-            <span v-else-if="visionProbeResult?.status === 'fail'" class="test-result fail">
-              <template v-if="visionProbeResult.reason === 'unauthorized'">❌ 凭证无效或路径错（端口可达但无法开流）</template>
-              <template v-else-if="visionProbeResult.reason === 'unreachable'">❌ 摄像头地址不可达</template>
-              <template v-else-if="visionProbeResult.reason === 'busy'">❌ 单流被占用（请先停掉其他客户端）</template>
-              <template v-else-if="visionProbeResult.reason === 'bad_format'">❌ 格式错误：{{ visionProbeResult.detail }}</template>
-              <template v-else>❌ 连接失败：{{ visionProbeResult.detail || '未知错误' }}</template>
-            </span>
-          </div>
-        </div>
-        <div class="modal-save-bar">
-          <button class="btn-primary" :class="{ saved: visionSaved }" @click="saveVision" :disabled="visionSaving">
-            {{ visionSaving ? '保存中...' : visionSaved ? '已保存' : '保存' }}
-          </button>
-        </div>
-      </div>
-
-      <!-- 云台（PTZ）配置 -->
-      <div v-else-if="activeModal === 'ptz'" class="modal-content">
-        <div class="setting-row">
-          <label class="setting-label">
-            <span class="label-text">启用云台</span>
-            <span class="label-desc">通过 ONVIF 协议控制摄像头转动</span>
-          </label>
-          <input type="checkbox" v-model="ptzConfig.enabled" />
-        </div>
-        <div class="setting-row">
-          <label class="setting-label">
-            <span class="label-text">IP 地址</span>
-            <span class="label-desc">保存 RTSP 地址时自动提取；USB 摄像头手填</span>
-          </label>
-          <input v-model="ptzConfig.ip" class="setting-input" placeholder="192.168.1.100" />
-        </div>
-        <div class="setting-row">
-          <label class="setting-label">
-            <span class="label-text">ONVIF 端口</span>
-            <span class="label-desc">通常 80 或 2020，不同于 RTSP 端口 554</span>
-          </label>
-          <input v-model.number="ptzConfig.port" type="number" class="setting-input narrow" />
-        </div>
-        <div class="setting-row">
-          <label class="setting-label">
-            <span class="label-text">ONVIF 用户名</span>
-            <span class="label-desc">可能与 RTSP 用户名不同（部分品牌 ONVIF 独立账号）</span>
-          </label>
-          <input v-model="ptzConfig.username" class="setting-input" placeholder="admin" />
-        </div>
-        <div class="setting-row">
-          <label class="setting-label">
-            <span class="label-text">ONVIF 密码</span>
-            <span class="label-desc">{{ ptzConfig.has_password ? '已配置（留空保持不变）' : '未配置' }}</span>
-          </label>
-          <input v-model="ptzPassword" type="password" class="setting-input" placeholder="ONVIF 密码" />
-        </div>
-        <div class="setting-row">
-          <label class="setting-label">
-            <span class="label-text">转动速度</span>
-            <span class="label-desc">0.1~1.0，越大转得越快</span>
-          </label>
-          <input v-model.number="ptzConfig.speed" type="number" step="0.1" min="0.1" max="1.0" class="setting-input narrow" />
-        </div>
-        <div class="setting-row">
-          <label class="setting-label">
-            <span class="label-text">步进时长 (ms)</span>
-            <span class="label-desc">点一下转多长时间</span>
-          </label>
-          <input v-model.number="ptzConfig.step_ms" type="number" class="setting-input narrow" />
-        </div>
-        <div class="setting-row test-row">
-          <label class="setting-label">
-            <span class="label-text">连接测试</span>
-            <span class="label-desc">验证 ONVIF 凭证是否正确</span>
-          </label>
-          <div class="test-actions">
-            <button class="btn-test" :disabled="ptzTesting || !ptzConfig.ip" @click="testPtz">
-              {{ ptzTesting ? '测试中...' : '测试' }}
-            </button>
-            <span v-if="ptzProbeResult?.status === 'success'" class="test-result success">✅ 连接成功</span>
-            <span v-else-if="ptzProbeResult?.status === 'fail'" class="test-result fail">
-              <template v-if="ptzProbeResult.reason === 'unauthorized'">❌ 凭证无效（用户名/密码错）</template>
-              <template v-else-if="ptzProbeResult.reason === 'unreachable'">❌ 摄像头地址不可达（请检查 IP/端口）</template>
-              <template v-else-if="ptzProbeResult.reason === 'bad_format'">❌ 格式错误：{{ ptzProbeResult.detail }}</template>
-              <template v-else>❌ 连接失败：{{ ptzProbeResult.detail || '未知错误' }}</template>
-            </span>
-          </div>
-        </div>
-        <div class="modal-save-bar">
-          <button class="btn-primary" :class="{ saved: ptzSaved }" @click="savePtz" :disabled="ptzSaving">
-            {{ ptzSaving ? '保存中...' : ptzSaved ? '已保存' : '保存' }}
           </button>
         </div>
       </div>
