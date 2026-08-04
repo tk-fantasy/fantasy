@@ -23,10 +23,16 @@ class TestHAEntitiesRoute:
         from app.routes.ha_routes import ha_entities
         from app.services.ha_service import HAService
 
-        mock_ha_service = MagicMock(wraps=HAService)
+        mock_ha_service = MagicMock()
         mock_ha_service.get_all_devices = AsyncMock(return_value=[
             {"entity_id": "light.test", "state": "on", "domain": "light"},
         ])
+        mock_ha_service.get_all_devices_grouped = AsyncMock(return_value={
+            "devices": [
+                {"entities": [{"entity_id": "light.test", "domain": "light"}]},
+            ],
+        })
+        mock_ha_service.get_service_defs = AsyncMock(return_value=[])
         container = _mock_container(ha_service=mock_ha_service)
 
         with patch("app.services.entity_controls.resolve_controls") as mock_controls:
