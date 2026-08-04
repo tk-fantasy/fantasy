@@ -4,7 +4,8 @@ import { useRouter } from 'vue-router'
 import { SS_CHAT_SESSION } from '../utils/constants'
 import { toolIcon, summarizeToolCall, summarizeToolResult, parseToolResult } from '../utils/toolNames'
 import { useVoiceInput } from '../composables/useVoiceInput'
-import { apiGet } from '../utils/api'
+import { useCamera } from '../composables/useCamera'
+import { apiGet, apiPost } from '../utils/api'
 
 const router = useRouter()
 
@@ -35,6 +36,7 @@ async function onStatusHover() {
 const ROLE_LABELS = { chat: '对话', summary: '摘要', vision: '视觉', embed: '向量' }
 
 // 计算 video_feed URL（认证通过 cookie 自动处理）
+// Task 12:多路切换 — video_feed 走 /api/cameras/{activeCameraId}/video_feed
 const videoFeedUrl = ref('')
 const videoFeedKey = ref(0)  // 用于强制刷新 img src
 // 流断连状态：'live' 正常 | 'reconnecting' 重连中 | 'disconnected' 放弃
@@ -47,12 +49,19 @@ let feedRetryTimer = null
 const FEED_MAX_RETRIES = 10  // 设备掉线时最多重连 10 次（指数退避后约 5 分钟）
 let prevCameraOpened = null  // 上一拍设备状态，用于检测 false→true 翻转
 
+// Task 12:多路摄像头列表 + 当前选中路(D4 AI 预览单例)
+const { cameras, loadCameras } = useCamera()
+const activeCameraId = ref('')   // 当前弹窗预览的摄像头 id
+
 function refreshVideoFeed() {
   feedRetryCount = 0
   feedStatus.value = 'live'
   feedStatusSource.value = 'network'
   videoFeedKey.value++
-  videoFeedUrl.value = `/api/video_feed?_t=${videoFeedKey.value}`
+  const cid = activeCameraId.value
+  videoFeedUrl.value = cid
+    ? `/api/cameras/${cid}/video_feed?_t=${videoFeedKey.value}`
+    : `/api/video_feed?_t=${videoFeedKey.value}`
 }
 
 function onVideoFeedError() {
@@ -74,7 +83,10 @@ function onVideoFeedError() {
   feedRetryTimer = setTimeout(() => {
     if (!showCamera.value) return
     videoFeedKey.value++
-    videoFeedUrl.value = `/api/video_feed?_t=${videoFeedKey.value}`
+    const cid = activeCameraId.value
+    videoFeedUrl.value = cid
+      ? `/api/cameras/${cid}/video_feed?_t=${videoFeedKey.value}`
+      : `/api/video_feed?_t=${videoFeedKey.value}`
   }, delay)
 }
 
@@ -553,26 +565,54 @@ const showCamera = ref(false)
 const cameraState = ref(null)
 let cameraPollTimer = null
 
-function openCamera() {
+// Task 12:多路切换 — 弹窗打开时拉摄像头列表,默认选第一路 enabled 的
+async function openCamera() {
   showCamera.value = true
-  prevCameraOpened = null  // 重开弹窗时清空基准，避免误判设备翻转
-  refreshVideoFeed()  // 打开时刷新视频流 URL
+  prevCameraOpened = null
+  await loadCameras()
+  // 默认选第一路;后端 initialize 已把 display 单例给第一个 display_enabled,
+  // 这里前端弹窗直接拉那路的 video_feed(无需再 enable,后端已激活)。
+  const first = cameras.value.find(c => c.enabled) || cameras.value[0]
+  if (first) {
+    activeCameraId.value = first.id
+  }
+  refreshVideoFeed()
   startCameraPolling()
-  fetchPtzStatus()  // 拉取 PTZ 启用状态和预置点
+  fetchPtzStatus()
 }
 
-function closeCamera() {
+async function closeCamera() {
   showCamera.value = false
   stopCameraPolling()
   if (feedRetryTimer) {
     clearTimeout(feedRetryTimer)
     feedRetryTimer = null
   }
+  activeCameraId.value = ''
+}
+
+// Task 12:切路 — 旧路 disable 预览,新路 enable + 换 video_feed URL(D4 单例)
+async function switchCamera(id) {
+  if (activeCameraId.value === id) return
+  const oldId = activeCameraId.value
+  activeCameraId.value = id
+  // 旧路熄(D4:AI 预览单例,同一时刻只 1 路跑展示推理)
+  if (oldId) {
+    try { await apiPost(`/api/cameras/${oldId}/display/disable`, {}) } catch (e) { console.warn('disable old display:', e) }
+  }
+  // 新路亮
+  try { await apiPost(`/api/cameras/${id}/display/enable`, {}) } catch (e) { console.warn('enable new display:', e) }
+  prevCameraOpened = null
+  refreshVideoFeed()
+  fetchPtzStatus()
 }
 
 async function fetchCameraState() {
   try {
-    const res = await fetch('/api/state')
+    const cid = activeCameraId.value
+    // 有 activeCameraId 走 per-camera state;无则走主摄像头兼容端点
+    const url = cid ? `/api/cameras/${cid}/state` : '/api/state'
+    const res = await fetch(url)
     const json = await res.json()
     cameraState.value = json.data || json
     syncFeedStatusWithDevice()
@@ -633,6 +673,17 @@ let ptzCooldownTimer = null
 
 async function fetchPtzStatus() {
   try {
+    // Task 12:有 activeCameraId 时读 per-camera PTZ 配置(cameras 表 ptz_enabled/ptz_step_ms);
+    // 无则走旧 /api/ptz/status 兼容(读全局 config)。
+    const cid = activeCameraId.value
+    if (cid) {
+      const cam = cameras.value.find(c => c.id === cid)
+      if (cam) {
+        ptzEnabled.value = !!cam.ptz_enabled
+        ptzStepMs.value = cam.ptz_step_ms || 300
+        return
+      }
+    }
     const res = await fetch('/api/ptz/status')
     const json = await res.json()
     const data = json.data || json
@@ -649,7 +700,10 @@ function ptzStep(direction) {
   if (!ptzEnabled.value || ptzMoving.value) return
   ptzMoving.value = true
   if (ptzCooldownTimer) { clearTimeout(ptzCooldownTimer); ptzCooldownTimer = null }
-  fetch('/api/ptz/step', {
+  // Task 12:有 activeCameraId 走 per-camera PTZ 端点
+  const cid = activeCameraId.value
+  const url = cid ? `/api/cameras/${cid}/ptz/step` : '/api/ptz/step'
+  fetch(url, {
     method: 'POST',
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
@@ -958,6 +1012,16 @@ onUnmounted(() => {
                 </span>
                 <button class="camera-modal-close" @click="closeCamera">关闭</button>
               </div>
+            </div>
+            <!-- Task 12:多路切换标签 — 遍历 cameras,click 切路(D4 AI 预览单例) -->
+            <div v-if="cameras.length > 1" class="camera-tabs">
+              <button
+                v-for="cam in cameras"
+                :key="cam.id"
+                class="camera-tab"
+                :class="{ active: activeCameraId === cam.id }"
+                @click="switchCamera(cam.id)"
+              >{{ cam.name || cam.id }}</button>
             </div>
             <div class="camera-stage">
               <img
@@ -1659,6 +1723,37 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: var(--space-6);
+}
+
+/* Task 12:多路切换标签 */
+.camera-tabs {
+  display: flex;
+  gap: var(--space-2);
+  padding: var(--space-6) var(--space-16) 0;
+  flex-wrap: wrap;
+}
+
+.camera-tab {
+  padding: var(--space-3) var(--space-12);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-out);
+}
+
+.camera-tab:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text);
+}
+
+.camera-tab.active {
+  background: var(--color-primary-light);
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+  font-weight: var(--weight-semibold);
 }
 
 .camera-badge {
