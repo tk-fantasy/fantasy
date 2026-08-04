@@ -731,18 +731,20 @@ async def set_vision_focus(
     focus = payload.focus.strip()
     container.vision_service.set_vision_focus(focus)
     db = Database.get()
-    await db.kv_set("vision_focuses", json.dumps(container.vision_service.get_vision_focuses()))
+    await db.kv_set("vision_focuses", json.dumps(container.vision_service.get_all_focuses_flat()))
     return ApiResponse(data={"focus": container.vision_service.get_vision_focus()})
 
 
 # ---- 多条 focus CRUD ----
+# 旧全局端点:camera_id="" bucket。持久化用 get_all_focuses_flat 拍平全部 bucket,
+# 避免 only-serializing-global-bucket 的破坏性覆盖(per-camera 关注项被冲掉)。
 
 @router.get("/vision/focuses")
 async def get_vision_focuses(
     container: AppContainer = Depends(get_container),
 ) -> ApiResponse[list[dict]]:
-    """获取所有视觉关注项。"""
-    return ApiResponse(data=container.vision_service.get_vision_focuses())
+    """获取所有视觉关注项(全部摄像头,拍平)。"""
+    return ApiResponse(data=container.vision_service.get_all_focuses_flat())
 
 
 @router.post("/vision/focuses")
@@ -750,11 +752,11 @@ async def add_vision_focus(
     payload: VisionFocusesCreateRequest,
     container: AppContainer = Depends(get_container),
 ) -> ApiResponse[dict]:
-    """新增一条视觉关注。"""
+    """新增一条视觉关注(全局 bucket,camera_id="")。"""
     text = payload.text.strip()
     item = container.vision_service.add_focus(text)
     db = Database.get()
-    await db.kv_set("vision_focuses", json.dumps(container.vision_service.get_vision_focuses()))
+    await db.kv_set("vision_focuses", json.dumps(container.vision_service.get_all_focuses_flat()))
     return ApiResponse(data=item)
 
 
@@ -764,14 +766,14 @@ async def update_vision_focus(
     payload: VisionFocusesUpdateRequest,
     container: AppContainer = Depends(get_container),
 ) -> ApiResponse[dict]:
-    """更新一条视觉关注。"""
+    """更新一条视觉关注(全局 bucket)。"""
     text = payload.text
     enabled = payload.enabled
     item = container.vision_service.update_focus(focus_id, text=text, enabled=enabled)
     if item is None:
         raise AppException("focus 不存在", code="vision_focus_not_found", http_status=404)
     db = Database.get()
-    await db.kv_set("vision_focuses", json.dumps(container.vision_service.get_vision_focuses()))
+    await db.kv_set("vision_focuses", json.dumps(container.vision_service.get_all_focuses_flat()))
     return ApiResponse(data=item)
 
 
@@ -780,10 +782,10 @@ async def delete_vision_focus(
     focus_id: str,
     container: AppContainer = Depends(get_container),
 ) -> ApiResponse[dict]:
-    """删除一条视觉关注。"""
+    """删除一条视觉关注(全局 bucket)。"""
     ok = container.vision_service.delete_focus(focus_id)
     if not ok:
         raise AppException("focus 不存在", code="vision_focus_not_found", http_status=404)
     db = Database.get()
-    await db.kv_set("vision_focuses", json.dumps(container.vision_service.get_vision_focuses()))
+    await db.kv_set("vision_focuses", json.dumps(container.vision_service.get_all_focuses_flat()))
     return ApiResponse(data={"deleted": True})

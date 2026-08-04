@@ -145,7 +145,20 @@ async def discovery_manual_ip(camera_id: str, body: dict):
     return ApiResponse(data={"ok": True})
 
 
-# —— 视觉关注项(从 settings_routes 迁入)——
+# —— 视觉关注项(从 settings_routes 迁入,per-camera)——
+# 持久化:每次增删改后把全部 bucket 拍平写回 KV,重启 load_focuses 重新分桶。
+async def _persist_focuses():
+    """把 VisionService 全部关注项拍平写回 KV。"""
+    import json
+    c = get_container()
+    try:
+        db = Database.get()
+    except RuntimeError:
+        return  # 测试环境 DB 未初始化,跳过持久化
+    await db.kv_set("vision_focuses", json.dumps(
+        c.vision_service.get_all_focuses_flat(), ensure_ascii=False))
+
+
 @router.get("/cameras/{camera_id}/focuses")
 async def list_focuses(camera_id: str):
     c = get_container()
@@ -155,20 +168,26 @@ async def list_focuses(camera_id: str):
 @router.post("/cameras/{camera_id}/focuses")
 async def add_focus(camera_id: str, body: dict):
     c = get_container()
-    return ApiResponse(data=c.vision_service.add_focus(body.get("text", ""), camera_id=camera_id))
+    result = c.vision_service.add_focus(body.get("text", ""), camera_id=camera_id)
+    await _persist_focuses()
+    return ApiResponse(data=result)
 
 
 @router.put("/cameras/{camera_id}/focuses/{focus_id}")
 async def update_focus(camera_id: str, focus_id: str, body: dict):
     c = get_container()
-    return ApiResponse(data=c.vision_service.update_focus(
-        focus_id, text=body.get("text"), enabled=body.get("enabled"), camera_id=camera_id))
+    result = c.vision_service.update_focus(
+        focus_id, text=body.get("text"), enabled=body.get("enabled"), camera_id=camera_id)
+    await _persist_focuses()
+    return ApiResponse(data=result)
 
 
 @router.delete("/cameras/{camera_id}/focuses/{focus_id}")
 async def delete_focus(camera_id: str, focus_id: str):
     c = get_container()
-    return ApiResponse(data={"deleted": c.vision_service.delete_focus(focus_id, camera_id=camera_id)})
+    deleted = c.vision_service.delete_focus(focus_id, camera_id=camera_id)
+    await _persist_focuses()
+    return ApiResponse(data={"deleted": deleted})
 
 
 # —— HA areas(补 spec §7.1 区域下拉所需,当前缺)——

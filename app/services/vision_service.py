@@ -67,6 +67,16 @@ class VisionService:
         """获取指定摄像头的视觉关注项。"""
         return list(self._vision_focuses.get(camera_id, []))
 
+    def get_all_focuses_flat(self) -> list[dict]:
+        """所有摄像头的关注项拍平返回(KV 持久化用)。
+
+        每条已含 camera_id 字段,load_focuses 可按 camera_id 重新分桶。
+        """
+        result = []
+        for bucket in self._vision_focuses.values():
+            result.extend(bucket)
+        return result
+
     def add_focus(self, text: str, camera_id: str = "") -> dict:
         """新增一条视觉关注,归属指定摄像头。"""
         item = {

@@ -303,6 +303,22 @@ function getActionNodeIcon(ruleId) {
 
 const enabledCount = computed(() => rules.value.filter(r => r.enabled).length)
 
+// 规则按摄像头下拉过滤:选"全局"看 camera_id="" 的(定时/天气),
+// 选某摄像头看该摄像头的(视觉类)。后端 /api/rules 返回全部,前端按 camera_id 过滤。
+const filteredRules = computed(() => {
+  return rules.value.filter(r => {
+    const ruleCam = r.camera_id || ''
+    return ruleCam === selectedCameraId.value
+  })
+})
+
+// 摄像头 id → name 映射(卡片标签用)
+function cameraName(cid) {
+  if (!cid) return '全局'
+  const cam = cameras.value.find(c => c.id === cid)
+  return cam ? (cam.name || cam.id) : cid
+}
+
 onMounted(() => {
   loadRules()
   loadEmojiPrefs()
@@ -315,22 +331,26 @@ onMounted(() => {
     <header class="page-header page-header--split">
       <div>
         <h1>自动化规则</h1>
-        <p class="page-sub">{{ enabledCount }} 条规则启用中</p>
+        <p class="page-sub">{{ enabledCount }} 条规则启用中 · {{ filteredRules.length }} 条显示</p>
       </div>
-      <button class="btn-add" @click="showCreateForm = !showCreateForm">
-        {{ showCreateForm ? '取消' : '+ 新建规则' }}
-      </button>
+      <div class="header-right">
+        <select v-model="selectedCameraId" class="camera-filter-select">
+          <option value="">全局(定时/天气)</option>
+          <option v-for="cam in cameras" :key="cam.id" :value="cam.id">{{ cam.name || cam.id }}</option>
+        </select>
+        <button class="btn-add" @click="showCreateForm = !showCreateForm">
+          {{ showCreateForm ? '取消' : '+ 新建规则' }}
+        </button>
+      </div>
     </header>
 
     <!-- 创建规则表单 -->
     <div v-if="showCreateForm" class="create-form">
-      <div class="camera-select-row">
-        <label class="camera-select-label">作用范围</label>
-        <select v-model="selectedCameraId" class="camera-select">
-          <option value="">全局(定时/天气/所有摄像头)</option>
-          <option v-for="cam in cameras" :key="cam.id" :value="cam.id">{{ cam.name || cam.id }}</option>
-        </select>
-      </div>
+      <p class="create-scope-hint">
+        当前作用范围:<strong>{{ selectedCameraId ? cameraName(selectedCameraId) : '全局(定时/天气)' }}</strong>
+        <span v-if="!selectedCameraId"> — 适用于所有摄像头的定时/天气规则</span>
+        <span v-else> — 仅对该摄像头生效的视觉规则</span>
+      </p>
       <div class="create-input-row">
         <input
           v-model="newRuleText"
@@ -342,13 +362,13 @@ onMounted(() => {
           {{ creating ? '创建中...' : '创建' }}
         </button>
       </div>
-      <p class="create-hint">{{ selectedCameraId ? '该规则仅对所选摄像头生效' : '全局规则对所有摄像头生效(定时/天气类)' }}</p>
+      <p class="create-hint">AI 将自动解析你的描述,生成对应的条件和动作</p>
     </div>
 
     <div v-if="loading" class="loading-state">加载中...</div>
 
     <div v-else class="rules-list">
-      <div v-for="rule in rules" :key="rule.id" class="rule-card" @click="openRuleDetail(rule)">
+      <div v-for="rule in filteredRules" :key="rule.id" class="rule-card" @click="openRuleDetail(rule)">
         <div class="rule-toggle-col" @click.stop>
           <BaseToggle :modelValue="rule.enabled" @update:modelValue="toggleRule(rule.id)" />
         </div>
@@ -356,6 +376,9 @@ onMounted(() => {
         <div class="rule-flow">
           <div class="rule-header-row">
             <h3>{{ rule.name || rule.condition || `规则 #${rule.id}` }}</h3>
+            <span class="rule-camera-tag" :class="{ global: !rule.camera_id }">
+              {{ cameraName(rule.camera_id) }}
+            </span>
             <span class="rule-status" :class="{ active: rule.enabled }">
               {{ rule.enabled ? '启用' : '停用' }}
             </span>
@@ -391,8 +414,8 @@ onMounted(() => {
         </div>
       </div>
 
-      <div v-if="rules.length === 0" class="empty-state empty-state--card">
-        暂无自动化规则，点击右上角创建第一条规则
+      <div v-if="filteredRules.length === 0" class="empty-state empty-state--card">
+        {{ selectedCameraId ? '该摄像头暂无规则,点击右上角创建' : '暂无全局规则,点击右上角创建第一条规则' }}
       </div>
     </div>
 
@@ -514,6 +537,56 @@ onMounted(() => {
 
 .camera-select:focus {
   border-color: var(--color-border-active);
+}
+
+/* 顶部过滤器下拉 */
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+}
+
+.camera-filter-select {
+  padding: var(--space-4) var(--space-10);
+  border: 1px solid var(--color-border-hover);
+  border-radius: var(--radius-lg);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--color-text);
+  font-size: var(--text-sm);
+  font-family: inherit;
+  outline: none;
+  cursor: pointer;
+  transition: border-color var(--duration-normal) var(--ease-out);
+}
+
+.camera-filter-select:focus {
+  border-color: var(--color-primary);
+}
+
+/* 规则卡片摄像头标签 */
+.rule-camera-tag {
+  font-size: var(--text-xs);
+  padding: var(--space-1) var(--space-5);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--color-text-secondary);
+  flex-shrink: 0;
+}
+
+.rule-camera-tag.global {
+  background: var(--color-primary-light);
+  color: var(--color-primary);
+}
+
+/* 创建表单作用范围提示 */
+.create-scope-hint {
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+  margin-bottom: var(--space-6);
+  padding: var(--space-4) var(--space-8);
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: var(--radius-md);
+  border-left: 3px solid var(--color-primary);
 }
 
 .rules-list {

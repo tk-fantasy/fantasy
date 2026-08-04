@@ -134,7 +134,7 @@ const SLASH_COMMANDS = [
   { cmd: '/clear', desc: '清空当前会话消息', action: 'api', handler: doClear },
   { cmd: '/compress', desc: '压缩当前上下文生成摘要', action: 'api', handler: doCompress },
   { cmd: '/new', desc: '创建新会话', action: 'fn', handler: doNewSession },
-  { cmd: '/camera', desc: '打开摄像头预览', action: 'fn', handler: openCamera },
+  { cmd: '/camera', desc: '摄像头预览(切换后影响 AI 看哪路)', action: 'fn', handler: openCamera },
   { cmd: '/halist', desc: '查看智能家居设备', action: 'nav', url: '/halist' },
   { cmd: '/task', desc: '查看自动化规则', action: 'nav', url: '/task' },
   { cmd: '/scheduled', desc: '查看定时任务', action: 'nav', url: '/scheduled' },
@@ -588,7 +588,8 @@ async function closeCamera() {
     clearTimeout(feedRetryTimer)
     feedRetryTimer = null
   }
-  activeCameraId.value = ''
+  // 不清空 activeCameraId:后端 _active_display_id 保留,vision_chat 工具继续用当前摄像头。
+  // 下次打开弹窗恢复到上次选的路。
 }
 
 // Task 12:切路 — 旧路 disable 预览,新路 enable + 换 video_feed URL(D4 单例)
@@ -1101,6 +1102,9 @@ onUnmounted(() => {
             <div class="camera-feedback">
               <div class="label">识别反馈</div>
               <div class="value">{{ cameraState?.feedback || '等待识别。' }}</div>
+            </div>
+            <div class="camera-hint">
+              💡 当前预览的摄像头即 AI 对话中 vision_chat 工具默认使用的摄像头。切换上方标签可改变 AI 看哪路。
             </div>
           </div>
         </div>
@@ -1948,6 +1952,15 @@ onUnmounted(() => {
 .camera-feedback .value {
   font-size: var(--text-sm);
   color: var(--color-text-secondary);
+  line-height: var(--leading-relaxed);
+}
+
+.camera-hint {
+  padding: var(--space-8) var(--space-16);
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  background: rgba(74, 124, 112, 0.06);
+  border-top: 1px solid var(--color-border);
   line-height: var(--leading-relaxed);
 }
 

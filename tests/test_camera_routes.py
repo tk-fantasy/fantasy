@@ -29,6 +29,7 @@ def _mock_container():
     c.vision_service.get_vision_focuses = MagicMock(return_value=[])
     c.vision_service.add_focus = MagicMock(return_value={"id": "f1", "text": "人"})
     c.vision_service.delete_focus = MagicMock(return_value=True)
+    c.vision_service.get_all_focuses_flat = MagicMock(return_value=[])
     c.ha_service = MagicMock()
     c.ha_service.get_areas = AsyncMock(return_value=[{"area_id": "keting", "name": "客厅"}])
     c.db = MagicMock()
@@ -45,6 +46,11 @@ def _mock_container():
 def client(monkeypatch):
     cont = _mock_container()
     monkeypatch.setattr(camera_routes, "get_container", lambda: cont)
+    # Database.get() 在路由里直接调(detail/ptz 端点),mock 成返回带 cameras_get 的对象
+    mock_db = MagicMock()
+    mock_db.cameras_get = AsyncMock(return_value={"id": "cam_a", "name": "客厅"})
+    mock_db.kv_set = AsyncMock(return_value=None)
+    monkeypatch.setattr(camera_routes.Database, "get", classmethod(lambda cls: mock_db))
     app = FastAPI()
     app.include_router(camera_routes.router, prefix="/api")
     return TestClient(app), cont

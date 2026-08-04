@@ -83,6 +83,12 @@ onMounted(loadFocuses)
       </div>
     </header>
 
+    <div class="migrate-notice">
+      视觉关注项已迁移为按摄像头管理。请到
+      <router-link to="/cameras" class="migrate-link">摄像头管理</router-link>
+      页面,点击对应摄像头的「配置」进行管理。
+    </div>
+
     <div class="add-bar">
       <input
         v-model="newItem"
@@ -121,6 +127,27 @@ onMounted(loadFocuses)
 <style scoped>
 .loading-state {
   color: var(--color-text-muted);
+}
+
+.migrate-notice {
+  padding: var(--space-10) var(--space-14);
+  background: rgba(74, 124, 112, 0.08);
+  border: 1px solid rgba(74, 124, 112, 0.2);
+  border-radius: var(--radius-lg);
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+  margin-bottom: var(--space-16);
+  line-height: 1.6;
+}
+
+.migrate-link {
+  color: var(--color-primary);
+  font-weight: var(--weight-semibold);
+  text-decoration: none;
+}
+
+.migrate-link:hover {
+  text-decoration: underline;
 }
 
 .add-bar {

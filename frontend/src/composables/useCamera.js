@@ -78,10 +78,37 @@ export function useCamera() {
     return await apiPost(`/api/cameras/${id}/discovery/manual-ip`, { ip })
   }
 
+  // 自动化规则(per-camera):后端 /api/rules 返回全部,前端按 camera_id 过滤
+  async function loadRules(cameraId) {
+    const all = await apiGet('/api/rules')
+    return (all || []).filter(r => (r.camera_id || '') === cameraId)
+  }
+  async function createRule(cameraId, text) {
+    const res = await fetch('/api/task/rule', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, camera_id: cameraId }),
+    })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.message || `创建失败:HTTP ${res.status}`)
+    return json.data
+  }
+  async function toggleRule(id, enabled) {
+    await fetch(`/api/rules/${id}/enabled`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled }),
+    })
+  }
+  async function deleteRule(id) {
+    await fetch(`/api/rules/${id}`, { method: 'DELETE' })
+  }
+
   return {
     cameras, areas, loading,
     loadCameras, loadAreas, createCamera, updateCamera, deleteCamera,
     testStream, enableDisplay, disableDisplay,
     loadFocuses, addFocus, deleteFocus, findDevice, manualIp,
+    loadRules, createRule, toggleRule, deleteRule,
   }
 }

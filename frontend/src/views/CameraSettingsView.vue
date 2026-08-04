@@ -15,17 +15,21 @@ const {
   loadCameras, loadAreas, createCamera, updateCamera, deleteCamera,
   testStream, enableDisplay, disableDisplay,
   loadFocuses, addFocus, deleteFocus, findDevice, manualIp,
+  loadRules, createRule, toggleRule, deleteRule,
 } = useCamera()
 
 // —— 编辑态 ——
 const editing = ref(null)        // 当前编辑对象(null=列表态)
 const editingFocuses = ref([])   // 当前编辑摄像头的关注项
+const editingRules = ref([])     // 当前编辑摄像头的自动化规则
 const newFocusText = ref('')
+const newRuleText = ref('')
 const saving = ref(false)
 const testing = ref(false)
 const testResult = ref(null)     // null | { ok, error }
 const discovering = ref(false)
 const discoverResult = ref(null) // null | { new_ip }
+const creatingRule = ref(false)
 
 // 默认新摄像头(cameras 表列默认值,见 database.py DDL)
 function blankCamera() {
@@ -48,7 +52,9 @@ onMounted(async () => {
 function startCreate() {
   editing.value = blankCamera()
   editingFocuses.value = []
+  editingRules.value = []
   newFocusText.value = ''
+  newRuleText.value = ''
   testResult.value = null
   discoverResult.value = null
 }
@@ -58,17 +64,25 @@ async function startEdit(cam) {
   editing.value = { ...cam }
   testResult.value = null
   discoverResult.value = null
+  newRuleText.value = ''
   try {
     editingFocuses.value = await loadFocuses(cam.id) || []
   } catch (e) {
     console.error('loadFocuses failed:', e)
     editingFocuses.value = []
   }
+  try {
+    editingRules.value = await loadRules(cam.id) || []
+  } catch (e) {
+    console.error('loadRules failed:', e)
+    editingRules.value = []
+  }
 }
 
 function cancelEdit() {
   editing.value = null
   editingFocuses.value = []
+  editingRules.value = []
 }
 
 async function save() {
@@ -169,6 +183,74 @@ async function doDeleteFocus(fid) {
   } catch (e) {
     console.error('deleteFocus failed:', e)
   }
+}
+
+// 自动化规则(per-camera)
+async function doCreateRule() {
+  const text = newRuleText.value.trim()
+  if (!text || !editing.value?.id) return
+  creatingRule.value = true
+  try {
+    const rule = await createRule(editing.value.id, text)
+    if (rule) {
+      editingRules.value.unshift({ ...rule, enabled: rule.enabled !== false })
+      newRuleText.value = ''
+    }
+  } catch (e) {
+    console.error('createRule failed:', e)
+    alert('创建规则失败: ' + (e?.message || String(e)))
+  } finally {
+    creatingRule.value = false
+  }
+}
+
+async function doToggleRule(id) {
+  const rule = editingRules.value.find(r => r.id === id)
+  if (!rule) return
+  const newVal = !rule.enabled
+  try {
+    await toggleRule(id, newVal)
+    rule.enabled = newVal
+  } catch (e) {
+    console.error('toggleRule failed:', e)
+  }
+}
+
+async function doDeleteRule(id) {
+  if (!confirm('确定删除这条规则吗？')) return
+  try {
+    await deleteRule(id)
+    editingRules.value = editingRules.value.filter(r => r.id !== id)
+  } catch (e) {
+    console.error('deleteRule failed:', e)
+  }
+}
+
+function formatCondition(condition) {
+  if (typeof condition === 'string') return condition
+  if (condition?.description) return condition.description
+  if (condition?.type) return condition.type
+  if (condition?.visual) return `视觉: ${condition.visual}`
+  return JSON.stringify(condition)
+}
+
+function formatActions(actions) {
+  if (!actions) return []
+  if (typeof actions === 'string') return [actions]
+  if (Array.isArray(actions)) {
+    return actions.map(a => {
+      if (typeof a === 'string') return a
+      if (a?.description) return a.description
+      if (a?.mcp_tool_name) {
+        const input = a.mcp_tool_input || {}
+        const svc = input.service || ''
+        const eid = input.entity_id || ''
+        return `${eid} ${svc}`
+      }
+      return JSON.stringify(a)
+    })
+  }
+  return [JSON.stringify(actions)]
 }
 
 // ONVIF 发现
@@ -441,7 +523,33 @@ const sourceOptions = [
                     <span>{{ f.text }}</span>
                     <button class="btn-del-sm" @click="doDeleteFocus(f.id)">✕</button>
                   </div>
-                  <div v-if="editingFocuses.length === 0" class="focus-empty">暂无关注项(走全局关注项)</div>
+                  <div v-if="editingFocuses.length === 0" class="focus-empty">暂无关注项,请添加</div>
+                </div>
+              </section>
+
+              <!-- 自动化规则(per-camera) -->
+              <section v-if="isEdit" class="cam-section">
+                <h3 class="cam-section-title">自动化规则</h3>
+                <div class="focus-add-row">
+                  <input v-model="newRuleText" class="cam-input" placeholder="如:当检测到有人时,打开灯" @keydown.enter="doCreateRule" />
+                  <button class="btn-test" :disabled="creatingRule || !newRuleText.trim()" @click="doCreateRule">
+                    {{ creatingRule ? '创建中...' : '添加规则' }}
+                  </button>
+                </div>
+                <div class="rule-list-edit">
+                  <div v-for="rule in editingRules" :key="rule.id" class="rule-item-edit">
+                    <div class="rule-item-toggle" @click.stop>
+                      <BaseToggle :modelValue="rule.enabled" @update:modelValue="doToggleRule(rule.id)" />
+                    </div>
+                    <div class="rule-item-content">
+                      <div class="rule-item-cond">{{ formatCondition(rule.condition) }}</div>
+                      <div class="rule-item-actions">
+                        <span v-for="(a, i) in formatActions(rule.actions || rule.action)" :key="i" class="rule-item-action">{{ a }}</span>
+                      </div>
+                    </div>
+                    <button class="btn-del-sm" @click="doDeleteRule(rule.id)">✕</button>
+                  </div>
+                  <div v-if="editingRules.length === 0" class="focus-empty">暂无规则,该摄像头走全局规则</div>
                 </div>
               </section>
             </div>
@@ -767,6 +875,55 @@ const sourceOptions = [
   font-size: var(--text-xs);
   color: var(--color-text-muted);
   padding: var(--space-4);
+}
+
+/* 自动化规则编辑区块 */
+.rule-list-edit {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.rule-item-edit {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  padding: var(--space-4) var(--space-8);
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.rule-item-toggle {
+  flex-shrink: 0;
+}
+
+.rule-item-content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.rule-item-cond {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--color-text);
+}
+
+.rule-item-actions {
+  display: flex;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.rule-item-action {
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+  background: rgba(255, 255, 255, 0.04);
+  padding: var(--space-1) var(--space-4);
+  border-radius: var(--radius-sm);
 }
 
 .cam-modal-footer {

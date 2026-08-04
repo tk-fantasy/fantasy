@@ -73,3 +73,20 @@ class TestPerCameraFocuses:
         vs.add_focus("车", camera_id="cam_b")
         assert vs._get_combined_focus(camera_id="cam_a") == "人"
         assert vs._get_combined_focus(camera_id="cam_b") == "车"
+
+    def test_get_all_focuses_flat(self):
+        """get_all_focuses_flat 拍平所有 bucket,每条含 camera_id(持久化用)。"""
+        vs = VisionService(client=MagicMock())
+        vs.add_focus("人", camera_id="cam_a")
+        vs.add_focus("车", camera_id="cam_b")
+        vs.add_focus("桌", camera_id="cam_a")
+        flat = vs.get_all_focuses_flat()
+        assert len(flat) == 3
+        # 每条都有 camera_id
+        cids = {f["camera_id"] for f in flat}
+        assert cids == {"cam_a", "cam_b"}
+        # 拍平后可以 load_focuses 重新分桶(持久化往返)
+        vs2 = VisionService(client=MagicMock())
+        vs2.load_focuses(flat)
+        assert len(vs2.get_vision_focuses(camera_id="cam_a")) == 2
+        assert len(vs2.get_vision_focuses(camera_id="cam_b")) == 1
