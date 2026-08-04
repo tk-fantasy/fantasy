@@ -29,7 +29,7 @@ class TestPostLlmSettingsPerUser:
 
         mock_container = MagicMock()
         mock_container.dispatcher = MagicMock()
-        mock_container.dispatcher.invalidate_user_agent = MagicMock()
+        mock_container.dispatcher.invalidate_user_agent = AsyncMock()
         mock_container.llm_settings_service = MagicMock()
         mock_container.llm_settings_service.apply = MagicMock(return_value={})
 

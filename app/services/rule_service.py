@@ -6,6 +6,7 @@ import logging
 import re
 from typing import Awaitable, Callable
 
+from ..clients.client_factory import build_per_user_chat_client
 from ..clients.llm_chat_client import LlmChatClient
 from ..core.config import get_config
 from ..utils.json_extractor import extract_json_from_content
@@ -52,24 +53,12 @@ class RuleService:
     async def _resolve_client(self, user_id: str = "") -> LlmChatClient:
         """按 user_id 解析 per-user chat client；无配置则回退全局 self._client。
 
-        与 scheduler_service._resolve_reminder_client 同一模式：
-        resolve_key_for_role_user 拿到 per-user key → 构造独立 LlmChatClient，
-        覆盖 _api_key/_base_url/_model/_enabled=True（关键：_enabled=True 绕过全局 llm.enabled 开关）。
+        per-user 客户端构造走 build_per_user_chat_client（强制 _enabled=True，绕过全局
+        llm.enabled 开关）。无 per-user 配置时回退注入的全局 self._client。
         """
-        if user_id:
-            try:
-                from ..core.key_resolver import resolve_key_for_role_user
-                from ..clients.llm_chat_client import LlmChatClient as _LlmChatClient
-                key_info = await resolve_key_for_role_user("chat", user_id)
-                if key_info and key_info.get("api_key"):
-                    client = _LlmChatClient(role="chat")
-                    client._api_key = key_info["api_key"]
-                    client._base_url = key_info["base_url"]
-                    client._model = key_info["model"]
-                    client._enabled = True
-                    return client
-            except Exception:
-                logger.debug("Failed to resolve per-user rule client, using global", exc_info=True)
+        per_user = await build_per_user_chat_client("chat", user_id, force_enabled=True)
+        if per_user is not None:
+            return per_user
         return self._client
 
     def _parse_ha_catalog(self, catalog: str) -> list[dict]:
@@ -272,7 +261,9 @@ class RuleService:
             # 兜底:确保关键字段存在
             parsed.setdefault("name", text[:20])
             parsed.setdefault("condition", "")
-            parsed.setdefault("type", "vision")  # time/weather/vision；LLM 漏输出时兜底 vision
+            # type 归一化到合法值；LLM 漏输出或乱填时兜底 vision
+            _t = str(parsed.get("type", "vision") or "vision").strip().lower()
+            parsed["type"] = _t if _t in ("time", "weather", "vision") else "vision"
             parsed.setdefault("actions", [])
             parsed.setdefault("action_descriptions", [])
             parsed.setdefault("cooldown_seconds", get_config("automation.default_cooldown_seconds", 5))

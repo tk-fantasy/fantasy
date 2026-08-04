@@ -179,16 +179,24 @@ class TestSetupHa:
         container = _mock_container()
         container.ha_client.get_states = AsyncMock(return_value=[{"e": 1}])
 
-        with patch.object(setup_routes, "extract_token_from_request", return_value="tok"), \
-             patch.object(setup_routes, "verify_token", return_value={"sub": "u1"}), \
-             patch.object(setup_routes, "update_config_section") as mock_update:
-            result = await setup_routes.setup_ha(body, req, container=container)
+        # 隔离 HA_URL 环境变量：docker compose 会注入 HA_URL 覆盖用户填的 url，
+        # 测试要验证的是"无环境覆盖时回退用户 url"的路径，故临时清掉 HA_URL。
+        import os
+        saved_ha_url = os.environ.pop("HA_URL", None)
+        try:
+            with patch.object(setup_routes, "extract_token_from_request", return_value="tok"), \
+                 patch.object(setup_routes, "verify_token", return_value={"sub": "u1"}), \
+                 patch.object(setup_routes, "update_config_section") as mock_update:
+                result = await setup_routes.setup_ha(body, req, container=container)
+        finally:
+            if saved_ha_url is not None:
+                os.environ["HA_URL"] = saved_ha_url
 
         assert result.data["ha_connected"] is True
         assert result.data["entity_count"] == 1
-        # url 是 body.url.strip()（route 不在响应里 rstrip，只 rstrip 进 ha_client._base_url）
-        assert result.data["url"] == "http://ha:8123/"
-        # config 写入的是 strip 后的 url
+        # 无 HA_URL 环境变量时，effective_url = body.url.strip().rstrip("/")（route 会 rstrip 尾斜杠）
+        assert result.data["url"] == "http://ha:8123"
+        # config 写入的是 strip 后的原始 url（保留用户输入意图，不 rstrip）
         mock_update.assert_called_once_with("ha", {"url": "http://ha:8123/", "token": "abc"})
 
 

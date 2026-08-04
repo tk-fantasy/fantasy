@@ -168,7 +168,7 @@ class SemanticGraphService:
         # ---- Step 1: 解析文档 ----
         self._set(5, "解析文档...")
         index_path = str(docs_root / "index.json")
-        all_docs, entity_doc_map = parse_all(str(docs_root), index_path)
+        all_docs = parse_all(str(docs_root), index_path)
         if not all_docs:
             raise RuntimeError("未解析到任何文档，请检查 docs 目录")
         logger.info("SG step1: parsed %d docs", len(all_docs))

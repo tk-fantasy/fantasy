@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 
+from ..clients.client_factory import build_per_user_chat_client
 from ..core.config import get_config
 from .session_store import SessionState
 
@@ -91,23 +92,15 @@ class SummarizationService:
         return summaries
 
     async def _resolve_summary_client(self, user_id: str):
-        """按 user_id 解析 per-user summary 客户端。用户无配置时回退全局 self._chat_client。"""
-        if not user_id:
-            return self._chat_client
-        try:
-            from ..core.key_resolver import resolve_key_for_role_user
-            key_info = await resolve_key_for_role_user("summary", user_id)
-            if not key_info or not key_info.get("api_key"):
-                return self._chat_client
-            from ..clients.llm_chat_client import LlmChatClient
-            client = LlmChatClient(role="summary")
-            client._api_key = key_info["api_key"]
-            client._base_url = key_info["base_url"]
-            client._model = key_info["model"]
-            return client
-        except Exception:
-            logger.debug("Failed to resolve per-user summary client, using global", exc_info=True)
-            return self._chat_client
+        """按 user_id 解析 per-user summary 客户端。用户无配置时回退全局 self._chat_client。
+
+        注意：与 automation/rule/scheduler 不同，这里不强制 _enabled=True —— summary
+        客户端保留其角色的 enabled 开关语义（走 build_per_user_chat_client 的 force_enabled=False）。
+        """
+        per_user = await build_per_user_chat_client("summary", user_id, force_enabled=False)
+        if per_user is not None:
+            return per_user
+        return self._chat_client
 
     async def _summarize_chunk(self, chunk: list[str], chat_client=None) -> str:
         joined = "\n".join(chunk)

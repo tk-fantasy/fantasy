@@ -79,13 +79,16 @@ class CameraDiscoveryService:
         self._on_ip_changed: Any = None
         # find_camera 多路时缓存该路凭证供 _probe_candidate 用;None=走旧 config 路径
         self._probe_creds: tuple | None = None
+        # 并发保护:find_camera 扫描期间,后续触发(worker+手动、连点按钮)直接跳过,
+        # 不重复启动扫描轮,也不并发写 config + 通知 PTZ。非阻塞——已在扫就返回当前状态。
+        self._discovery_lock = asyncio.Lock()
 
     def set_db(self, db) -> None:
         """bootstrap 顺序兜底:db 在 Database.init() 后才有,允许后注入。"""
         self._db = db
 
     def set_on_ip_changed(self, callback) -> None:
-        """注册 IP 变更回调(由 CameraManager 注入,负责该路 stream/ptz 重连)。
+        """注册 IP 变现回调(由 CameraManager 注入,负责该路 stream/ptz 重连)。
 
         取代旧硬接线 ptz_service_notify_ip_changed —— 多路时代每路 stream/ptz
         各自重连,不能写死全局 ptz_service 单例。
@@ -150,7 +153,12 @@ class CameraDiscoveryService:
 
             info = await devicemgmt.GetDeviceInformation()
         finally:
-            pass
+            # 显式关闭 ONVIF transport(zeep/aiohttp 连接),不依赖 GC 回收。
+            # 探测候选设备时一轮可能连 1-5 台,不关会累积连接耗尽 fd。
+            try:
+                await cam.close()
+            except Exception:  # noqa: BLE001
+                logger.debug("ONVIFCamera close failed", exc_info=True)
 
         # 优先级 2: HardwareId(仅当长得像 MAC)
         hardware_id = str(getattr(info, "HardwareId", "") or "").strip()
@@ -225,7 +233,7 @@ class CameraDiscoveryService:
                 self.read_device_hardware_id(ip, port, user, pwd),
                 timeout=3.0,
             )
-        except (asyncio.TimeoutError, Exception) as e:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
             logger.debug("ONVIF probe failed for %s: %s", ip, e)
             return ""
 
@@ -311,6 +319,16 @@ class CameraDiscoveryService:
             self._last_error = "无法推断子网"
             return None
 
+        # 并发保护:已有扫描在进行(worker 触发 + 手动按钮,或连点),不重复启动。
+        # 非阻塞——拿不到锁直接返回,调用方(worker)照常退避,手动按钮可从 status 看到 scanning。
+        if self._discovery_lock.locked():
+            logger.info("find_camera: scan already in progress, skipping")
+            return None
+        async with self._discovery_lock:
+            return await self._scan_locked(target_mac, subnet, timeout)
+
+    async def _scan_locked(self, target_mac: str, subnet: str, timeout: float) -> str | None:
+        """实际扫描逻辑(find_camera 持锁后调用,假设已独占 _discovery_lock)。"""
         ips = self._list_subnet_ips(subnet)
         if not ips:
             self._status = "error"

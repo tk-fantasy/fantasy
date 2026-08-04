@@ -343,7 +343,7 @@ class TestReminderPerUser:
 
         with patch("app.core.key_resolver.resolve_key_for_role_user",
                    new=AsyncMock(return_value=per_user_key)):
-            with patch("app.clients.llm_chat_client.LlmChatClient") as MockClient:
+            with patch("app.clients.client_factory.LlmChatClient") as MockClient:
                 mock_instance = MagicMock()
                 mock_instance.chat = AsyncMock(return_value="该下班啦～")
                 MockClient.return_value = mock_instance
@@ -435,15 +435,19 @@ class TestReminderPerUser:
 
 
 # ---------------------------------------------------------------------------
-# _load_tasks — 升级迁移：无 user_id 旧任务打标禁用
+# _load_tasks — 无 user_id 旧任务不再被强制禁用（连接误关问题已在 dispatcher 修复）
 # ---------------------------------------------------------------------------
 
 class TestSchedulerLoadTasksMigration:
     @pytest.mark.asyncio
-    async def test_pre_upgrade_task_without_user_id_disabled(self):
-        """升级前创建的任务（无 user_id）启动时应被禁用，避免到点回退全局 agent 报错。"""
+    async def test_pre_upgrade_task_without_user_id_loaded_normally(self):
+        """升级前创建的任务（无 user_id）现在正常加载，enabled 保持 True。
+
+        历史上这类任务被启动禁用（防回退全局 agent 撞 Connection error）；该 bug
+        已在 dispatcher 的 agent→clients 映射修复，故禁用逻辑移除，旧任务恢复生效。
+        注意：message 类任务执行时仍受多租户约束拒绝（见 _execute_message_payload）。
+        """
         svc, db, *_ = _make_service()
-        # 模拟 DB 里有一条升级前的旧任务：无 user_id、enabled=True
         db.scheduled_tasks_all = AsyncMock(return_value=[{
             "id": "old-task",
             "name": "旧任务",
@@ -454,12 +458,9 @@ class TestSchedulerLoadTasksMigration:
         }])
         await svc._load_tasks()
         task = svc._tasks["old-task"]
-        assert task["enabled"] is False
-        assert task["next_run_at"] is None
-        assert task["last_status"] == "interrupted"
-        assert "创建者" in (task["last_error"] or "")
-        # 禁用状态已持久化
-        db.scheduled_task_update.assert_awaited()
+        assert task["enabled"] is True  # 不再禁用
+        assert task["next_run_at"] is not None  # 正常排程
+        assert task["last_status"] != "interrupted"
 
     @pytest.mark.asyncio
     async def test_task_with_user_id_loaded_normally(self):

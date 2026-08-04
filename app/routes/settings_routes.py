@@ -304,9 +304,9 @@ async def set_llm_settings(
         await _save_user_provider(
             current_user["user_id"], role, values.get("key_id", payload.key_id), values
         )
-        # 清除该用户的 agent 缓存，下次聊天用新 key 重建
+        # 清除该用户的 agent 缓存（含其 httpx 客户端回收），下次聊天用新 key 重建
         if hasattr(container.dispatcher, "invalidate_user_agent"):
-            container.dispatcher.invalidate_user_agent(current_user["user_id"])
+            await container.dispatcher.invalidate_user_agent(current_user["user_id"])
         logger.info("Per-user provider saved", extra={
             "role": role, "user_id": current_user["user_id"],
             "use_global": values.get("use_global"),

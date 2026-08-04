@@ -17,8 +17,8 @@ from unittest.mock import patch, AsyncMock
 from app.schema.api_schemas import PtzConfigRequest
 from app.services.config_probes import ProbeResult
 
-# probe 结果的复用 mock：POST /ptz/config 在 enabled+ip 时会先 probe_ptz 真连摄像头，
-# 测试环境连不上，必须 mock 掉避免 8s 超时。
+# probe 通过的复用 mock：POST /ptz/config 在 enabled+ip 时会先 probe_ptz 真连摄像头，
+# 测试只验证"写配置"逻辑，probe 用 mock 放行，避免真实网络超时（容器内不可达）。
 _PROBE_OK = AsyncMock(return_value=ProbeResult(ok=True))
 
 

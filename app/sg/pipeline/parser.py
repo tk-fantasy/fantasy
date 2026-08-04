@@ -89,24 +89,23 @@ def find_markdown_files(root: str) -> list[str]:
     return files
 
 
-def parse_all(docs_root: str, index_path: str = "") -> tuple[list[Document], dict[str, list[str]]]:
+def parse_all(docs_root: str, index_path: str = "") -> list[Document]:
     """解析 docs_root 下的所有 .md 文件。
 
     Args:
         docs_root: 文档根目录路径
         index_path: 可选的索引文件路径（含 category/subcategory 映射）
     Returns:
-        (文档列表, 实体-文档映射)
+        文档列表
     """
     index_entries: list[dict] = []
     if index_path and os.path.isfile(index_path):
         index_entries, _ = load_index(index_path)
 
     all_docs: list[Document] = []
-    entity_doc_map: dict[str, list[str]] = {}
 
     if not os.path.isdir(docs_root):
-        return all_docs, entity_doc_map
+        return all_docs
 
     # 自动发现 docs_root 下的所有一级子目录作为分类
     try:
@@ -171,4 +170,4 @@ def parse_all(docs_root: str, index_path: str = "") -> tuple[list[Document], dic
             )
             all_docs.append(doc)
 
-    return all_docs, entity_doc_map
+    return all_docs

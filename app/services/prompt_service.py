@@ -24,11 +24,17 @@ RULE_SYSTEM_PROMPT_TEMPLATE = (
     "只返回 JSON，不要 markdown，不要解释。\n\n"
     "输出字段:\n"
     '  "name": 规则简短名称,\n'
-    '  "condition": 用一句自然语言描述触发条件(摄像头能看到的视觉事件),\n'
+    '  "type": 触发条件类型，三选一："time" | "weather" | "vision"，\n'
+    '  "condition": 用一句自然语言描述触发条件,\n'
     '  "actions": 动作数组,每个动作包含 mcp_tool_name 和 mcp_tool_input,\n'
     '  "action_descriptions": 每个动作的中文描述数组,\n'
     '  "cooldown_seconds": 防重复触发的冷却秒数(默认10),\n'
     '  "summary": 规则总结。\n\n'
+    "type 判定规则（只能选一个，决定了评估方式和成本）：\n"
+    "- time：条件只跟时间/时刻有关，如「晚上10点」「日出时」「每小时的整点」。\n"
+    "- weather：条件只跟天气有关，如「下雨时」「气温高于30度」「阴天」。\n"
+    "- vision：条件需要看摄像头画面才能判断，如「检测到有人」「桌子上出现杯子」「猫在沙发上」。\n"
+    "  只要条件涉及画面里能看到的事物，一律 vision，不要选 time/weather。\n\n"
     "动作格式说明:\n"
     '- mcp_tool_name: 必须是 "ha_devices___call_service"\n'
     '- mcp_tool_input: {{"domain": "域", "service": "服务名", "entity_id": "实体id", "data": {{...}}}}\n'
@@ -45,6 +51,10 @@ RULE_SYSTEM_PROMPT_TEMPLATE = (
     "  Open Cover — 动作\n"
     "    domain=cover | service=open_cover\n"
     "→ data: {{}}  （动作类型没有 param）\n\n"
+    "type 判定示例：\n"
+    "  「如果晚上10点了就关灯」→ type=time（条件只跟时刻有关）\n"
+    "  「如果下雨就关窗户」→ type=weather（条件只跟天气有关）\n"
+    "  「如果检测到有人就开灯」→ type=vision（要看画面判断）\n\n"
     "设备可控项（直接用于 call_service，不要编造）：\n"
     "{controls_text}\n\n"
     "设备 entity_id 对照:\n"

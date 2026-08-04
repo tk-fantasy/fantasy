@@ -8,7 +8,7 @@ from typing import Any, Awaitable, Callable
 
 from langchain_core.messages import HumanMessage
 
-from .langgraph_agent import session_to_langchain_messages, run_agent_streaming, tool_call_signature, load_model_config_for_user, build_chat_agent, close_agent_http_clients
+from .langgraph_agent import session_to_langchain_messages, run_agent_streaming, tool_call_signature, load_model_config_for_user, build_chat_agent
 from .validator_agent import ValidatorAgent
 from ..schema.chat_schema import Dialog, Event, Instruction, Internal, Template, UI
 from ..services.priority_service import interactive_priority
@@ -198,6 +198,7 @@ class Dispatcher:
         camera_stream: Any,
         ha_catalog_provider: Any = None,
         ha_controls_provider: Any = None,
+        clients: tuple[Any, Any] | None = None,  # 全局 agent 的 (sync, async) httpx 客户端
         vision_service: Any = None,
         ha_service: Any = None,
         validator: ValidatorAgent | None = None,
@@ -217,6 +218,13 @@ class Dispatcher:
         self._summarization_service = summarization_service
         # 失败重试上限：与 validator 的 _max_retries 对齐，避免死循环
         self._max_failure_retries = 1
+        # agent → 它的 (sync, async) httpx 客户端 映射。
+        # langgraph agent 不透明，无法反查内部客户端，故由 dispatcher 显式登记。
+        # agent 失效（重建/换 key/退出）时只关它自己的客户端，不再全局清空——
+        # 避免 per-user agent 构建误关全局 agent 连接。
+        self._agent_clients: dict[int, tuple[Any, Any]] = {}
+        if agent is not None and clients is not None:
+            self._agent_clients[id(agent)] = clients
 
     @staticmethod
     def _build_failure_retry_message(failed_tools: list[dict]) -> HumanMessage:
@@ -239,19 +247,55 @@ class Dispatcher:
         )
         return HumanMessage(content="\n".join(lines))
 
-    def set_agent(self, agent: Any, tools: list | None = None) -> None:
-        """运行时替换 Agent 实例（MCP 工具变更后调用）。
+    async def set_agent(self, agent: Any, tools: list | None = None,
+                        clients: tuple[Any, Any] | None = None) -> None:
+        """运行时替换全局 Agent 实例（MCP 工具变更后调用）。
 
         同时更新工具列表并清空 per-user agent 缓存，下次各用户聊天时按新工具重建。
+        旧全局 agent 和所有 per-user agent 的 httpx 客户端在此一并关闭回收。
         """
+        # 先关闭被取代的旧客户端（全局 + 所有 per-user），再清缓存换新。
+        await self.close_all_agent_clients()
         self._agent = agent
         if tools is not None:
             self._tools = tools
         self._user_agents.clear()
+        if agent is not None and clients is not None:
+            self._agent_clients[id(agent)] = clients
 
-    def invalidate_user_agent(self, user_id: str) -> None:
-        """用户修改 chat key 绑定后清除其 agent 缓存，下次聊天用新 key 重建。"""
-        self._user_agents.pop(user_id, None)
+    async def invalidate_user_agent(self, user_id: str) -> None:
+        """用户修改 chat key 绑定后清除其 agent 缓存，下次聊天用新 key 重建。
+
+        清缓存前先关闭该 agent 的 httpx 客户端，回收连接池。
+        """
+        old = self._user_agents.pop(user_id, None)
+        if old is not None:
+            await self._close_agent_clients(old)
+
+    async def _close_agent_clients(self, agent: Any) -> None:
+        """关闭单个 agent 绑定的 httpx 客户端，从映射移除。agent 未登记则 no-op。"""
+        clients = self._agent_clients.pop(id(agent), None)
+        if clients is None:
+            return
+        sync_client, async_client = clients
+        try:
+            sync_client.close()
+        except Exception:  # noqa: BLE001
+            logger.debug("close sync httpx client failed", exc_info=True)
+        try:
+            await async_client.aclose()
+        except Exception:  # noqa: BLE001
+            logger.debug("close async httpx client failed", exc_info=True)
+
+    async def close_all_agent_clients(self) -> None:
+        """关闭所有已登记的 agent 客户端（全局 + per-user），清空映射。
+
+        供 set_agent（换全局 agent 前清理）和 lifespan 关闭收尾调用。
+        """
+        agents = list(self._user_agents.values()) + [self._agent]
+        for agent in agents:
+            if agent is not None:
+                await self._close_agent_clients(agent)
 
     async def _get_agent(self, user_id: str) -> Any:
         """按 user_id 获取 agent。用户有独立 key 配置时返回 per-user agent，
@@ -268,9 +312,9 @@ class Dispatcher:
             if user_id in self._user_agents:
                 return self._user_agents[user_id]
             try:
-                await close_agent_http_clients()
-                agent = build_chat_agent(self._tools, model_config=model_config)
+                agent, clients = build_chat_agent(self._tools, model_config=model_config)
                 self._user_agents[user_id] = agent
+                self._agent_clients[id(agent)] = clients
                 logger.info("Built per-user agent for user_id=%s, model=%s",
                             user_id, model_config.get("model"))
                 return agent

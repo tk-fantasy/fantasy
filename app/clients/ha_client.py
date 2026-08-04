@@ -21,7 +21,6 @@ logger = logging.getLogger(__name__)
 
 # HA 默认配置
 DEFAULT_HA_URL = "http://localhost:8123"
-DEFAULT_HA_TOKEN = ""
 
 
 class HomeAssistantClient:
@@ -29,7 +28,7 @@ class HomeAssistantClient:
 
     def __init__(self, base_url: str | None = None, token: str | None = None) -> None:
         self._base_url = (base_url or get_config("ha.url") or DEFAULT_HA_URL).rstrip("/")
-        self._token = token or get_config("ha.token") or DEFAULT_HA_TOKEN
+        self._token = token or get_config("ha.token") or ""
         self._client: httpx.AsyncClient | None = None
         self._client_lock = asyncio.Lock()
 

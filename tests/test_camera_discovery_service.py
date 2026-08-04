@@ -243,6 +243,29 @@ class TestFindCamera:
         assert found_ip is None
         assert svc._status == "not_found"
 
+    @pytest.mark.asyncio
+    async def test_concurrent_find_skipped_when_lock_held(self):
+        """锁已被占用时,find_camera 直接返回 None,不重复启动扫描。
+
+        场景:worker 掉线触发 + 用户手动点发现按钮并发,或连点按钮。
+        第二次发现应在锁忙时跳过,避免重复扫描 + 并发写 config。
+        """
+        svc = CameraDiscoveryService()
+        # 手动占住锁,模拟另一路 find_camera 正在扫描
+        await svc._discovery_lock.acquire()
+        try:
+            with patch.object(svc, "_scan_locked", AsyncMock()) as mock_scan, \
+                 patch.object(svc, "_scan_ports", AsyncMock()) as mock_ports:
+                result = await svc.find_camera(
+                    target_mac="aabbccddeeff", subnet="192.168.1.0/24",
+                )
+            # 锁忙 → 直接返回 None,扫描逻辑根本没启动
+            assert result is None
+            mock_scan.assert_not_called()
+            mock_ports.assert_not_called()
+        finally:
+            svc._discovery_lock.release()
+
 
 class TestApplyFoundIp:
     """apply_found_ip: 更新 vision.rtsp_url(只换 IP)+ ptz.ip,通知 ptz 重连。"""
