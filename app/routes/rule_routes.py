@@ -31,7 +31,7 @@ async def build_rule(
 ) -> ApiResponse[dict]:
     user_id = current_user.get("user_id", "")
     text = payload.text
-    rule = await container.rule_service.build_rule(text, user_id=user_id)
+    rule = await container.rule_service.build_rule(text, user_id=user_id, camera_id=payload.camera_id)
     condition = str(rule.get("condition", "")).strip()
     if not condition:
         return ApiResponse(

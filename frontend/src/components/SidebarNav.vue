@@ -130,6 +130,7 @@ window.addEventListener('home-info-changed', () => {
 
 const navItems = [
   { path: '/chat', icon: '&#128172;', label: '管家' },
+  { path: '/cameras', icon: '&#127909;', label: '摄像头' },
   { path: '/settings', icon: '&#9881;', label: '设置' },
   { path: '/advanced', icon: '&#128295;', label: '高级' },
 ]

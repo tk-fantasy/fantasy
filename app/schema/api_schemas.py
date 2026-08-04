@@ -394,6 +394,8 @@ class ModelTestRequest(BaseModel):
 class RuleCreateRequest(BaseModel):
     """POST /task/rule 请求体。"""
     text: str = ""
+    # D7:规则绑定摄像头;空串=全局规则(定时/天气/对所有摄像头生效)
+    camera_id: str = ""
 
 
 class RulePayloadRequest(BaseModel):

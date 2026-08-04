@@ -72,8 +72,8 @@ class TestBuildRuleRoute:
         result = await build_rule(payload, container=mock_container, current_user=current_user)
         assert result.code == "ok"
 
-        # build_rule 必须带 user_id（per-user chat key 解析依赖它）
-        mock_container.rule_service.build_rule.assert_awaited_once_with("晚上开灯", user_id="u1")
+        # build_rule 必须带 user_id + camera_id(D7:空串=全局规则)
+        mock_container.rule_service.build_rule.assert_awaited_once_with("晚上开灯", user_id="u1", camera_id="")
         # add_rule 是同步方法，必须带 user_id（持久化到 rules.user_id 列）
         mock_container.rule_registry_service.add_rule.assert_called_once()
         assert mock_container.rule_registry_service.add_rule.call_args.kwargs.get("user_id") == "u1"
@@ -96,6 +96,25 @@ class TestBuildRuleRoute:
         assert result.data is None
         assert "无法从输入中解析出" in result.message
         mock_container.rule_registry_service.add_rule.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_build_rule_passes_camera_id(self):
+        """D7:RuleCreateRequest.camera_id 透传给 build_rule(空串=全局,绑某路=该路)。"""
+        from app.routes.rule_routes import build_rule
+        from app.schema.api_schemas import RuleCreateRequest
+
+        mock_container = MagicMock()
+        mock_container.rule_service.build_rule = AsyncMock(return_value={
+            "name": "门口规则", "condition": "有人", "actions": [],
+        })
+        mock_container.rule_registry_service.add_rule.return_value = {"id": "r2"}
+
+        # 选某路 → camera_id 绑该摄像头
+        payload = RuleCreateRequest(text="门口有人", camera_id="cam_abc123")
+        current_user = {"user_id": "u1", "username": "alice"}
+        await build_rule(payload, container=mock_container, current_user=current_user)
+        mock_container.rule_service.build_rule.assert_awaited_once_with(
+            "门口有人", user_id="u1", camera_id="cam_abc123")
 
 
 class TestCreateRuleRoute:

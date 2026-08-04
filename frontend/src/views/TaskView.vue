@@ -4,6 +4,7 @@ import BaseToggle from '../components/BaseToggle.vue'
 import EmojiPicker from '../components/EmojiPicker.vue'
 import ReviseChatModal from '../components/ReviseChatModal.vue'
 import { apiGet } from '../utils/api'
+import { useCamera } from '../composables/useCamera'
 
 const rules = ref([])
 const loading = ref(true)
@@ -12,6 +13,10 @@ const newRuleText = ref('')
 const creating = ref(false)
 const selectedRule = ref(null)
 const showRuleDetail = ref(false)
+
+// D7:规则绑定摄像头;空串=全局规则(定时/天气),选某路=只对该路生效
+const { cameras, loadCameras } = useCamera()
+const selectedCameraId = ref('')
 
 // Emoji 偏好管理
 const emojiPrefs = ref({}) // { "task_condition:xxx": "🚶", "task_action:xxx": "💡" }
@@ -134,7 +139,7 @@ async function createRule() {
     const res = await fetch('/api/task/rule', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ text, camera_id: selectedCameraId.value }),
     })
     if (!res.ok) {
       const errText = await res.text()
@@ -301,6 +306,7 @@ const enabledCount = computed(() => rules.value.filter(r => r.enabled).length)
 onMounted(() => {
   loadRules()
   loadEmojiPrefs()
+  loadCameras()
 })
 </script>
 
@@ -318,18 +324,25 @@ onMounted(() => {
 
     <!-- 创建规则表单 -->
     <div v-if="showCreateForm" class="create-form">
+      <div class="camera-select-row">
+        <label class="camera-select-label">作用范围</label>
+        <select v-model="selectedCameraId" class="camera-select">
+          <option value="">全局(定时/天气/所有摄像头)</option>
+          <option v-for="cam in cameras" :key="cam.id" :value="cam.id">{{ cam.name || cam.id }}</option>
+        </select>
+      </div>
       <div class="create-input-row">
         <input
           v-model="newRuleText"
           class="create-input"
-          placeholder="用自然语言描述规则，如：当检测到有人时，关闭客厅灯..."
+          :placeholder="selectedCameraId ? '如:当检测到有人时,关闭该摄像头所在区域的灯...' : '用自然语言描述规则,如:日落时打开客厅灯...'"
           @keydown.enter="createRule"
         />
         <button class="btn-create" :disabled="creating || !newRuleText.trim()" @click="createRule">
           {{ creating ? '创建中...' : '创建' }}
         </button>
       </div>
-      <p class="create-hint">AI 将自动解析你的描述，生成对应的条件和动作</p>
+      <p class="create-hint">{{ selectedCameraId ? '该规则仅对所选摄像头生效' : '全局规则对所有摄像头生效(定时/天气类)' }}</p>
     </div>
 
     <div v-if="loading" class="loading-state">加载中...</div>
@@ -469,6 +482,38 @@ onMounted(() => {
   margin-top: var(--space-4);
   font-size: var(--text-xs);
   color: var(--color-text-muted);
+}
+
+/* D7:作用范围下拉 */
+.camera-select-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  margin-bottom: var(--space-6);
+}
+
+.camera-select-label {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+.camera-select {
+  padding: var(--space-4) var(--space-8);
+  border: 1px solid var(--color-border-hover);
+  border-radius: var(--radius-lg);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--color-text);
+  font-size: var(--text-sm);
+  font-family: inherit;
+  outline: none;
+  cursor: pointer;
+  transition: border-color var(--duration-normal) var(--ease-out);
+}
+
+.camera-select:focus {
+  border-color: var(--color-border-active);
 }
 
 .rules-list {

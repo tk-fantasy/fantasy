@@ -50,6 +50,11 @@ const routes = [
     component: () => import('../views/TaskView.vue'),
   },
   {
+    path: '/cameras',
+    name: 'Cameras',
+    component: () => import('../views/CameraSettingsView.vue'),
+  },
+  {
     path: '/scheduled',
     name: 'ScheduledTasks',
     component: () => import('../views/ScheduledTasksView.vue'),
