@@ -17,7 +17,7 @@ from .mcp.local_mcp_servers import (
     register_local_tools,
 )
 from .mcp.mcp_client_manager import MCPClientManager, MCPTool
-from .services.entity_controls import resolve_controls
+from .services.entity_controls import resolve_controls, controls_to_text
 from .services.control_probe import call_with_probe
 from .utils.text_match import match_devices
 
@@ -52,6 +52,8 @@ def register_all_tools(deps: ToolDeps) -> None:
     _register_vision_chat(deps)
     # 3. HA 设备查询
     _register_ha_get_entities(deps)
+    # 3b. 设备说明书（按需拉单台详情+备注）
+    _register_ha_get_device_manual(deps)
     # 4. HA 服务调用
     _register_ha_call_service(deps)
     # 5. 条件验证
@@ -166,6 +168,72 @@ def _register_ha_get_entities(deps: ToolDeps) -> None:
             "按用户意图从 entities 里匹配最合适的。"
         ),
         parameters={"type": "object", "properties": {}},
+        handler=handler,
+    ))
+
+
+def _register_ha_get_device_manual(deps: ToolDeps) -> None:
+    async def handler(parameters: dict, session) -> dict:
+        # 按需拉单台/多台设备的完整可控项明细 + 用户备注。
+        # 阶段一：作为补充手段，LLM 控制不熟悉或有怪癖的设备前可主动调用看详情。
+        try:
+            raw = str(parameters.get("entity_ids", "") or "").strip()
+            if not raw:
+                return {"manuals": "", "found": [], "missing": [], "error": "entity_ids 不能为空"}
+            eid_list = [e.strip() for e in raw.split(",") if e.strip()]
+            devices = await deps.ha_service.get_all_devices()
+            raw_svc_defs = await deps.ha_service.get_service_defs(
+                deps.ha_client_ref[0], domains=set(d.get("domain", "") for d in devices)
+            )
+            # 备注按 entity_id 查（一次读全部，O(1) 查 dict）
+            notes_map: dict[str, str] = {}
+            try:
+                from .core.database import Database
+                notes_map = await Database.get().prefs_get_by_scope("entity_note")
+            except Exception:  # noqa: BLE001
+                logger.warning("get_device_manual: 备注读取失败", exc_info=True)
+
+            dev_by_eid = {d["entity_id"]: d for d in devices}
+            found: list[str] = []
+            missing: list[str] = []
+            blocks: list[str] = []
+            for eid in eid_list:
+                dev = dev_by_eid.get(eid)
+                if not dev:
+                    missing.append(eid)
+                    continue
+                found.append(eid)
+                controls = resolve_controls(dev, raw_svc_defs)
+                blocks.append(
+                    controls_to_text(dev, controls, note=notes_map.get(eid))
+                )
+            return {
+                "manuals": "\n\n".join(blocks) if blocks else "(无匹配设备)",
+                "found": found,
+                "missing": missing,
+            }
+        except Exception as e:
+            logger.exception("get_device_manual failed")
+            return {"manuals": "", "found": [], "missing": [], "error": str(e)}
+
+    deps.mcp_client_manager.register_tool(MCPTool(
+        client_id="ha_devices",
+        tool_name="get_device_manual",
+        description=(
+            "查询单台或多台设备的详细操作手册（含 domain/service/param 明细和用户自定义备注）。"
+            "控制不熟悉的设备、或设备有特殊语义（如继电器 ON=关门、需调 turn_off）时调用本工具。"
+            "支持传一个或多个 entity_id（逗号分隔）。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "entity_ids": {
+                    "type": "string",
+                    "description": "一个或多个 entity_id，逗号分隔",
+                },
+            },
+            "required": ["entity_ids"],
+        },
         handler=handler,
     ))
 

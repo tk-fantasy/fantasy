@@ -108,6 +108,7 @@ GUIDELINES = (
     "\n"
     "## 工具\n"
     "- 动作前先 get_entities 看真实设备与可控项，domain/service/param/entity_id 都取自返回，不要自己拼造。\n"
+    "- 设备有用户备注（特殊语义/怪癖，如继电器 ON 实为关门）时，备注已在设备列表里；需要单台详情或复核时调 get_device_manual。\n"
     "- verify_condition / verify_action 只读，改状态只能 call_service。\n"
     "- 用户要核对/验证某状态时调 verify_action，不要凭印象回答。\n"
     "- 「如果…就…」类条件指令三步走：先 verify_condition 验条件；满足才 call_service 执行；再做 verify_action 核对。条件不满足就告诉用户、不执行。\n"
