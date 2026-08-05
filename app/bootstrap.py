@@ -144,4 +144,7 @@ def initialize_services() -> dict[str, Any]:
     # PTZ 多路注册表（模块单例,容器暴露给 camera_routes）
     services["ptz_registry"] = ptz_registry
 
+    # 集成插件平台（lifespan 阶段构造与启动，需要 event loop）
+    services["integration_layer"] = None
+
     return services

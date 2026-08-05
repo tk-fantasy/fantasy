@@ -66,6 +66,9 @@ class AppContainer:
     # ── 语义图构建服务（按需触发，复用 embed/chat 客户端）──
     sg_service: Any = None  # SemanticGraphService | None
 
+    # ── 集成插件平台（lifespan 启动阶段赋值）──
+    integration_layer: Any = None  # IntegrationLayer | None
+
     # ── 便捷属性（动态读取当前实例）──
     @property
     def ha_client(self) -> Any:
@@ -133,6 +136,8 @@ def init_container(services: dict[str, Any], metrics_service: Any) -> AppContain
         ptz_registry=services.get("ptz_registry"),  # Task 5:PtzRegistry
         # 语义图
         sg_service=services["sg_service"],
+        # 集成插件平台（lifespan 阶段赋值，此处占位 None）
+        integration_layer=services.get("integration_layer"),
         # 可变引用
         ha_client_ref=services["ha_client_ref"],
         automation_agent_ref=services["automation_agent_ref"],
