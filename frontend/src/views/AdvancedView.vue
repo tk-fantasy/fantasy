@@ -574,12 +574,19 @@ async function pollEmojiRebuild() {
 
 // ===== 文档向量重建 =====
 const docRebuilding = ref(false)
-const docRebuildStatus = ref({ rebuilding: false, model: '', chunk_count: 0 })
+const docRebuildStatus = ref({ rebuilding: false, total: 0, done: 0, errors: 0, message: '', model: '', chunk_count: 0 })
 let docPollTimer = null
+
+const docProgress = computed(() => {
+  const s = docRebuildStatus.value
+  if (!s.total) return 0
+  return Math.round((s.done / s.total) * 100)
+})
 
 async function startDocRebuild() {
   try {
     docRebuilding.value = true
+    docRebuildStatus.value = { rebuilding: true, total: 0, done: 0, errors: 0, message: '正在启动...', model: docRebuildStatus.value.model, chunk_count: docRebuildStatus.value.chunk_count }
     await fetch('/api/doc/rebuild', { method: 'POST' })
     docPollTimer = setInterval(pollDocRebuild, 2000)
   } catch (e) {
@@ -752,8 +759,17 @@ onUnmounted(() => {
               {{ docRebuilding ? '重建中...' : '重建向量' }}
             </button>
           </div>
-          <div v-if="docRebuilding" class="rebuild-info">
-            <div class="rebuild-message">正在后台重建文档向量索引...</div>
+          <div v-if="docRebuildStatus.message || docRebuilding" class="rebuild-info">
+            <div class="rebuild-message">{{ docRebuildStatus.message || '重建中...' }}</div>
+            <div v-if="docRebuildStatus.total > 0" class="rebuild-progress-bar">
+              <div class="rebuild-progress-fill" :style="{ width: docProgress + '%' }"></div>
+              <span class="rebuild-progress-text">
+                {{ docRebuildStatus.done }} / {{ docRebuildStatus.total }}
+                <span v-if="docRebuildStatus.errors > 0" class="rebuild-errors">
+                  (失败 {{ docRebuildStatus.errors }})
+                </span>
+              </span>
+            </div>
           </div>
         </div>
       </section>

@@ -118,6 +118,8 @@ async def doc_chat_ws(websocket: WebSocket):
                 while True:
                     kind, content = await loop.run_in_executor(None, token_queue.get)
                     if kind == "done":
+                        # 通知前端流结束,触发 finalizeStreaming() 隐藏闪烁光标
+                        await websocket.send_json({"type": "done"})
                         break
                     if kind == "error":
                         await websocket.send_json({"type": "error", "message": content})

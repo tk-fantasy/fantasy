@@ -106,12 +106,9 @@ async def rebuild_doc_index(container: AppContainer = Depends(get_container)) ->
 
 @router.get("/api/doc/rebuild/status")
 def doc_rebuild_status(container: AppContainer = Depends(get_container)) -> dict:
-    """查询 RAG 索引重建状态。"""
+    """查询 RAG 索引重建状态（含进度：total/done/errors/message）。"""
     rag_service = container.rag_service
     if rag_service is None:
-        return {"rebuilding": False, "model": "", "chunk_count": 0}
-    return {
-        "rebuilding": rag_service._rebuilding,
-        "model": rag_service._embed_model,
-        "chunk_count": rag_service.chunk_count,
-    }
+        return {"rebuilding": False, "total": 0, "done": 0, "errors": 0,
+                "message": "", "model": "", "chunk_count": 0}
+    return rag_service.rebuild_status

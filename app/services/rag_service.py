@@ -39,6 +39,11 @@ class RagService:
         # 记录构建索引时使用的 embed 模型，用于检测模型变更后自动重建
         self._embed_model: str = ""
         self._rebuilding: bool = False
+        # 重建进度计数器（build_index 期间更新，status 接口读取，GIL 下 int 读写原子）
+        self._rebuild_total: int = 0
+        self._rebuild_done: int = 0
+        self._rebuild_errors: int = 0
+        self._rebuild_message: str = ""
         # docs 指纹缓存：try_load 算好后供 _persist_index 复用，避免同一 build 周期重复扫盘
         self._last_fingerprint: dict[str, list[int]] | None = None
         # 索引持久化目录（与 SQLite 同卷 aether-data，跨重启复用）
@@ -52,6 +57,19 @@ class RagService:
     @property
     def chunk_count(self) -> int:
         return len(self.chunks)
+
+    @property
+    def rebuild_status(self) -> dict:
+        """重建进度快照，供 GET /api/doc/rebuild/status 返回。"""
+        return {
+            "rebuilding": self._rebuilding,
+            "total": self._rebuild_total,
+            "done": self._rebuild_done,
+            "errors": self._rebuild_errors,
+            "message": self._rebuild_message,
+            "model": self._embed_model,
+            "chunk_count": self.chunk_count,
+        }
 
     def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         """绑定主事件循环（后台线程构建索引用）。"""
@@ -69,18 +87,22 @@ class RagService:
             for attempt in range(1, max_retries + 1):
                 try:
                     if self.try_load():
+                        self._rebuild_message = f"从磁盘加载索引: {len(self.chunks)} chunks"
                         logger.info(
                             "RAG index loaded from disk: %d chunks, model=%s",
                             len(self.chunks), self._embed_model,
                         )
                         return
                     self.build_index()
+                    self._rebuild_message = f"重建完成: {self.chunk_count} chunks"
                     return  # 构建成功
                 except Exception as e:
+                    self._rebuild_message = f"重建失败(第{attempt}次): {e}"
                     logger.warning("RAG index build failed (attempt %d/%d): %s", attempt, max_retries, e)
                     if attempt < max_retries:
                         import time
                         time.sleep(5 * attempt)  # 递增等待：5s, 10s
+            self._rebuild_message = "重建失败，已重试 3 次"
         finally:
             self._rebuilding = False
 
@@ -195,7 +217,14 @@ class RagService:
                     chunks.append(sec)
         if not chunks:
             logger.warning("RAG: no chunks")
+            self._rebuild_message = "未找到文档内容"
             return
+
+        # 初始化进度计数器（在确定总 chunk 数后设置）
+        self._rebuild_total = len(chunks)
+        self._rebuild_done = 0
+        self._rebuild_errors = 0
+        self._rebuild_message = f"开始向量化 {len(chunks)} 个文档片段..."
 
         # 批量向量化：每批 16 条，一次 HTTP 请求拿多条向量（比逐条请求省 ~16x 往返）
         embed_client = self._embed_client
@@ -216,9 +245,26 @@ class RagService:
             raise last_err  # 重试耗尽，抛出最后的错误
 
         all_vecs: list[list[float]] = []
+        kept_chunks: list[str] = []  # 只保留成功向量化的 chunk，保证长度与向量一致
         batch = 16
         for i in range(0, len(chunks), batch):
-            all_vecs.extend(_embed_batch(chunks[i:i + batch]))
+            batch_texts = chunks[i:i + batch]
+            try:
+                vecs = _embed_batch(batch_texts)
+                all_vecs.extend(vecs)
+                kept_chunks.extend(batch_texts)
+            except Exception:
+                # 整批重试仍失败：跳过这些 chunk（不进索引，检索不到而已，不影响整体）
+                self._rebuild_errors += len(batch_texts)
+                logger.warning("RAG: 批次 %d-%d 向量化失败，跳过该批 chunk", i, i + len(batch_texts))
+            self._rebuild_done += len(batch_texts)
+            self._rebuild_message = f"向量化中 {self._rebuild_done}/{self._rebuild_total} chunks"
+
+        if not all_vecs:
+            logger.warning("RAG: 所有批次向量化失败，索引未构建")
+            self._rebuild_message = "向量化全部失败，请检查 embed 配置"
+            return
+        chunks = kept_chunks
 
         vectors = np.array(all_vecs, dtype=np.float32)
         faiss.normalize_L2(vectors)

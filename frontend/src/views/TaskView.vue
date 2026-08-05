@@ -3,6 +3,7 @@ import { ref, computed, onMounted } from 'vue'
 import BaseToggle from '../components/BaseToggle.vue'
 import EmojiPicker from '../components/EmojiPicker.vue'
 import ReviseChatModal from '../components/ReviseChatModal.vue'
+import FlowSelect from '../components/FlowSelect.vue'
 import { apiGet } from '../utils/api'
 import { useCamera } from '../composables/useCamera'
 
@@ -17,6 +18,10 @@ const showRuleDetail = ref(false)
 // D7:规则绑定摄像头;空串=全局规则(定时/天气),选某路=只对该路生效
 const { cameras, loadCameras } = useCamera()
 const selectedCameraId = ref('')
+const cameraFilterOptions = computed(() => [
+  { value: '', label: '全局(定时/天气)' },
+  ...cameras.value.map(c => ({ value: c.id, label: c.name || c.id })),
+])
 
 // Emoji 偏好管理
 const emojiPrefs = ref({}) // { "task_condition:xxx": "🚶", "task_action:xxx": "💡" }
@@ -174,9 +179,15 @@ function formatCondition(condition) {
   return JSON.stringify(condition)
 }
 
-function formatActions(actions) {
+// 优先用 LLM 生成的中文描述(action_descriptions,如"关闭大门"),
+// 缺了才从 actions 的 entity_id 解析。entity_id 常是机器拼音/ID 乱码,
+// 无法还原"大门"这类可读名字,故描述字段优先。
+function formatActions(actions, descriptions) {
+  const descs = Array.isArray(descriptions) ? descriptions : []
+  if (descs.length && !actions) return descs.slice()
   if (!actions) return []
   if (typeof actions === 'string') {
+    if (descs[0]) return [descs[0]]
     // Try to parse JSON string
     try {
       const parsed = JSON.parse(actions)
@@ -186,7 +197,8 @@ function formatActions(actions) {
     }
   }
   if (Array.isArray(actions)) {
-    return actions.map(a => {
+    return actions.map((a, idx) => {
+      if (descs[idx]) return descs[idx]
       if (typeof a === 'string') {
         // Try to parse JSON string
         try {
@@ -200,6 +212,7 @@ function formatActions(actions) {
     })
   }
   // Single object
+  if (descs[0]) return [descs[0]]
   return [formatSingleAction(actions)]
 }
 
@@ -334,10 +347,7 @@ onMounted(() => {
         <p class="page-sub">{{ enabledCount }} 条规则启用中 · {{ filteredRules.length }} 条显示</p>
       </div>
       <div class="header-right">
-        <select v-model="selectedCameraId" class="camera-filter-select">
-          <option value="">全局(定时/天气)</option>
-          <option v-for="cam in cameras" :key="cam.id" :value="cam.id">{{ cam.name || cam.id }}</option>
-        </select>
+        <FlowSelect v-model="selectedCameraId" :options="cameraFilterOptions" width="200px" />
         <button class="btn-add" @click="showCreateForm = !showCreateForm">
           {{ showCreateForm ? '取消' : '+ 新建规则' }}
         </button>
@@ -406,7 +416,7 @@ onMounted(() => {
               <div class="flow-content">
                 <div class="flow-label">则</div>
                 <div class="flow-tags">
-                  <span v-for="(action, idx) in formatActions(rule.actions || rule.action)" :key="idx" class="flow-tag">{{ action }}</span>
+                  <span v-for="(action, idx) in formatActions(rule.actions || rule.action, rule.action_descriptions)" :key="idx" class="flow-tag">{{ action }}</span>
                 </div>
               </div>
             </div>
@@ -544,23 +554,6 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: var(--space-8);
-}
-
-.camera-filter-select {
-  padding: var(--space-4) var(--space-10);
-  border: 1px solid var(--color-border-hover);
-  border-radius: var(--radius-lg);
-  background: rgba(255, 255, 255, 0.04);
-  color: var(--color-text);
-  font-size: var(--text-sm);
-  font-family: inherit;
-  outline: none;
-  cursor: pointer;
-  transition: border-color var(--duration-normal) var(--ease-out);
-}
-
-.camera-filter-select:focus {
-  border-color: var(--color-primary);
 }
 
 /* 规则卡片摄像头标签 */

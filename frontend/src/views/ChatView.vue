@@ -1047,6 +1047,7 @@ onUnmounted(() => {
                   </template>
                 </div>
                 <button v-if="feedStatus === 'disconnected'" class="camera-retry-btn" @click="refreshVideoFeed">重试</button>
+                <button v-if="feedStatus === 'reconnecting'" class="camera-retry-btn" @click="closeCamera">关闭预览</button>
               </div>
             </div>
             <!-- PTZ 云台控制：点一下转一小段后自动停（按一下动一下）。仅 ptz.enabled 时显示 -->
@@ -1791,6 +1792,7 @@ onUnmounted(() => {
 }
 
 .camera-stage {
+  position: relative;
   padding: var(--space-12);
   background: var(--color-bg);
   display: flex;

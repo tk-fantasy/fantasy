@@ -72,7 +72,7 @@ const summaryParts = computed(() => {
     const r = pendingJson.value
     return [
       { label: '如果', value: formatCondition(r.condition) },
-      { label: '则', value: formatActionsShort(r.actions) },
+      { label: '则', value: formatActionsShort(r.actions, r.action_descriptions) },
     ]
   }
   const t = pendingJson.value
@@ -191,9 +191,19 @@ function formatCondition(condition) {
   return JSON.stringify(condition)
 }
 
-function formatActionsShort(actions) {
-  if (!actions || !actions.length) return '—'
-  return actions.map(formatSingleAction).join('，')
+// 优先用 LLM 生成的中文描述(action_descriptions,如"关闭大门"),
+// 缺了才从 actions 的 entity_id 解析。entity_id 常是机器拼音/ID 乱码。
+function formatActionsShort(actions, descriptions) {
+  if (!actions || !actions.length) {
+    // 没有动作,但有描述也显示描述
+    if (Array.isArray(descriptions) && descriptions.length) return descriptions.join('，')
+    return '—'
+  }
+  const descs = Array.isArray(descriptions) ? descriptions : []
+  return actions.map((a, idx) => {
+    if (descs[idx]) return descs[idx]
+    return formatSingleAction(a)
+  }).join('，')
 }
 
 function formatSingleAction(action) {

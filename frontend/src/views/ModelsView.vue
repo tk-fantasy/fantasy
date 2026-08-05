@@ -45,6 +45,7 @@ const pendingUnlock = ref(null) // 'vision' | 'embed' | null
 // embed 模型变更后提示重建向量索引
 const embedChanged = ref(false)
 const docRebuilding = ref(false)
+const docRebuildStatus = ref({ rebuilding: false, total: 0, done: 0, errors: 0, message: '', model: '', chunk_count: 0 })
 let docPollTimer = null
 
 async function loadData() {
@@ -159,6 +160,7 @@ async function pollDocRebuild() {
     const res = await fetch('/api/doc/rebuild/status')
     const json = await res.json()
     const data = json.data || json
+    docRebuildStatus.value = data
     if (!data.rebuilding) {
       if (docPollTimer) { clearInterval(docPollTimer); docPollTimer = null }
       docRebuilding.value = false
@@ -192,6 +194,13 @@ const editingKey = ref(null) // null=不在编辑；{}=新增；{id:...}=编辑
 const keyForm = ref({ id: '', base_url: '', model: '', type: 'chat', api_key: '' })
 const keyFormError = ref('')
 const keySaving = ref(false)
+const keyTypeOptions = [
+  { value: 'chat', label: 'chat' },
+  { value: 'summary', label: 'summary' },
+  { value: 'vision', label: 'vision' },
+  { value: 'embed', label: 'embed' },
+  { value: 'stt', label: 'stt' },
+]
 
 // 全局 providers 编辑（每个角色选 key_id）
 const globalSelectedKeys = ref({ chat: '', vision: '', summary: '', embed: '', stt: '' })
@@ -542,6 +551,13 @@ onMounted(() => {
           </button>
           <button class="btn-rebuild" @click="router.push('/sg')">重建语义图</button>
         </div>
+        <div v-if="docRebuilding && docRebuildStatus.total > 0" class="banner-progress">
+          {{ docRebuildStatus.message }} · {{ docRebuildStatus.done }}/{{ docRebuildStatus.total }}
+          <span v-if="docRebuildStatus.errors > 0">(失败 {{ docRebuildStatus.errors }})</span>
+        </div>
+        <div v-else-if="docRebuilding && docRebuildStatus.message" class="banner-progress">
+          {{ docRebuildStatus.message }}
+        </div>
       </div>
 
       <div class="save-bar" v-if="saving">
@@ -640,13 +656,7 @@ onMounted(() => {
             <div class="form-title">{{ editingKey.id ? `编辑 ${editingKey.id}` : '新增全局 key' }}</div>
             <div class="form-row">
               <label>类型</label>
-              <select v-model="keyForm.type" class="setting-input">
-                <option value="chat">chat</option>
-                <option value="summary">summary</option>
-                <option value="vision">vision</option>
-                <option value="embed">embed</option>
-                <option value="stt">stt</option>
-              </select>
+              <FlowSelect v-model="keyForm.type" :options="keyTypeOptions" width="100%" />
             </div>
             <div class="form-row">
               <label>Base URL</label>
@@ -745,11 +755,19 @@ select.setting-input option {
 .embed-changed-banner {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--space-6);
   padding: var(--space-10) var(--space-14);
   background: var(--color-warning-bg, rgba(255, 193, 7, 0.1));
   border: 1px solid var(--color-warning, #ffc107);
   border-radius: var(--radius-lg);
+}
+
+.banner-progress {
+  flex-basis: 100%;
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+  margin-top: var(--space-2);
 }
 
 .banner-icon {
