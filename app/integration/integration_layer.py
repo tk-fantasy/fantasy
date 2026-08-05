@@ -26,11 +26,13 @@ class IntegrationLayer:
         api_version: str = "1",
         rpc_timeout: float = 30.0,
         max_restarts: int = 3,
+        env_per_plugin: dict[str, dict[str, str]] | None = None,
     ) -> None:
         self._plugin_dir = plugin_dir
         self._api_version = api_version
         self._supervisor = PluginSupervisor(
             rpc_timeout=rpc_timeout, max_restarts=max_restarts,
+            env_per_plugin=env_per_plugin,
         )
         self.sink_manager = SinkManager(self._supervisor)
         self._started = False

@@ -7,6 +7,7 @@
 import asyncio
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -32,10 +33,15 @@ class PluginProcess:
         manifest: Manifest,
         plugin_root: str,
         rpc_timeout: float = 30.0,
+        env: dict[str, str] | None = None,
     ) -> None:
         self.manifest = manifest
         self._plugin_root = plugin_root
         self._rpc_timeout = rpc_timeout
+        # 注入子进程的环境变量（继承宿主 + 额外覆盖，如 HA 凭证）
+        self._env: dict[str, str] = dict(os.environ)
+        if env:
+            self._env.update({k: str(v) for k, v in env.items()})
         self._process: asyncio.subprocess.Process | None = None
         self._reader_task: asyncio.Task | None = None
         self._stderr_task: asyncio.Task | None = None
@@ -59,6 +65,7 @@ class PluginProcess:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=self._env,
         )
         self._reader_task = asyncio.create_task(self._read_stdout())
         self._stderr_task = asyncio.create_task(self._drain_stderr())

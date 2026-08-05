@@ -19,9 +19,12 @@ class PluginSupervisor:
     职责单一：只管 spawn/stop/重试。崩溃检测的主动监控（心跳熔断）留给 Phase 5。
     """
 
-    def __init__(self, rpc_timeout: float = 30.0, max_restarts: int = 3) -> None:
+    def __init__(self, rpc_timeout: float = 30.0, max_restarts: int = 3,
+                 env_per_plugin: dict[str, dict[str, str]] | None = None) -> None:
         self._rpc_timeout = rpc_timeout
         self._max_restarts = max_restarts
+        # 每个插件的环境变量注入（如小爱需要 HA 凭证）
+        self._env_per_plugin = env_per_plugin or {}
         self._processes: dict[str, PluginProcess] = {}  # plugin_id → process
         self._manifests: dict[str, Manifest] = {}
 
@@ -38,12 +41,14 @@ class PluginSupervisor:
         """指数退避重试启动单个插件。超过 max_restarts 抛异常（由调用方记录）。"""
         backoff = 1.0
         attempts = 0
+        env = self._env_per_plugin.get(manifest.id)
         # attempts 上限 = max_restarts（首次 + 重试次数 = max_restarts 次尝试）
         while attempts <= self._max_restarts:
             proc = PluginProcess(
                 manifest=manifest,
                 plugin_root=f"{plugin_dir}/{manifest.id}",
                 rpc_timeout=self._rpc_timeout,
+                env=env,
             )
             try:
                 await proc.start()

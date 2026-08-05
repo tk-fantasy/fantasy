@@ -511,6 +511,7 @@ async def lifespan(_: FastAPI):
             api_version=get_config("integration.api_version", "1"),
             rpc_timeout=float(get_config("integration.default_rpc_timeout", 30.0)),
             max_restarts=int(get_config("integration.max_restarts", 3)),
+            env_per_plugin=_build_plugin_env(manifest_ids=["xiaoai"], ha_client=ha_client),
         )
         try:
             await integration_layer.start()
@@ -849,6 +850,27 @@ async def global_rate_limit(request: Request, call_next):
 
 
 # ============ 系统状态路由 ============
+
+
+def _build_plugin_env(manifest_ids: list[str], ha_client) -> dict[str, dict[str, str]]:
+    """为插件子进程构造环境变量注入表。
+
+    小爱插件 Phase 1 直连 HA，需 HA url/token。Phase 3 切换反向 RPC 后此函数可移除。
+    """
+    env_table: dict[str, dict[str, str]] = {}
+    if ha_client is None:
+        return env_table
+    ha_url = getattr(ha_client, "_base_url", "") or ""
+    ha_token = getattr(ha_client, "_token", "") or ""
+    if not ha_url or not ha_token:
+        return env_table
+    for plugin_id in manifest_ids:
+        env_table[plugin_id] = {
+            "XIAOAI_HA_URL": ha_url,
+            "XIAOAI_HA_TOKEN": ha_token,
+            "PYTHONPATH": "/aether",
+        }
+    return env_table
 
 
 def _primary_camera_state() -> dict:
