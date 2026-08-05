@@ -26,6 +26,11 @@ const entityAliases = ref({})         // {entity_id: alias}
 const editingName = ref(false)
 const nameInput = ref('')
 
+// 实体备注（用户自定义，注入 AI 认知，影响调用决策——如继电器反转语义）
+const entityNotes = ref({})          // {entity_id: note}
+const noteInput = ref('')
+const editingNote = ref(false)
+
 // ========================
 //  Emoji preferences
 // ========================
@@ -114,6 +119,53 @@ function resetName() {
   nameInput.value = original
 }
 
+// ========================
+//  Entity note (用户自定义备注，注入 AI 认知)
+// ========================
+
+async function loadEntityNotes() {
+  try {
+    const res = await fetch('/api/ha/entity-notes', { credentials: 'include' })
+    const json = await res.json()
+    entityNotes.value = json.data?.notes || {}
+  } catch (e) {
+    console.error('Failed to load entity notes:', e)
+  }
+}
+
+function startEditNote() {
+  if (!selectedEntity.value) return
+  noteInput.value = entityNotes.value[selectedEntity.value.entity_id] || ''
+  editingNote.value = true
+}
+
+async function saveNote() {
+  if (!selectedEntity.value) return
+  const eid = selectedEntity.value.entity_id
+  const note = noteInput.value.trim()
+  try {
+    await fetch('/api/ha/entity-notes', {
+      method: 'PUT',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ entity_id: eid, note }),
+    })
+    if (note) {
+      entityNotes.value[eid] = note
+    } else {
+      delete entityNotes.value[eid]
+    }
+  } catch (e) {
+    console.error('Failed to save entity note:', e)
+  }
+  editingNote.value = false
+}
+
+function resetNote() {
+  if (!selectedEntity.value) return
+  noteInput.value = entityNotes.value[selectedEntity.value.entity_id] || ''
+}
+
 // 同步更新 selectedDevice.entities 里同名实体的 name（卡片即时刷新）
 function refreshDeviceEntityName(entityId, newName) {
   if (!selectedDevice.value) return
@@ -183,6 +235,15 @@ function isControllable(entity) {
 function isClickable(entity) {
   const domain = getDomain(entity.entity_id)
   return isControllable(entity) || domain === 'sensor' || domain === 'binary_sensor'
+}
+
+// 是否显示历史趋势图：sensor 必须有 unit_of_measurement（排除音频ID等无单位标识符），
+// binary_sensor 的 on/off 自动转 0/1 阶梯线。
+function hasHistory(entity) {
+  const domain = getDomain(entity.entity_id)
+  if (domain === 'binary_sensor') return true
+  if (domain === 'sensor') return !!entity?.attributes?.unit_of_measurement
+  return false
 }
 
 // ========================
@@ -725,6 +786,7 @@ onMounted(() => {
   loadEntities()
   loadEmojiPrefs()
   loadEntityAliases()
+  loadEntityNotes()
 })
 </script>
 
@@ -753,7 +815,8 @@ onMounted(() => {
           <span class="area-name">{{ area }}</span>
           <span class="area-count">{{ items.length }}</span>
         </h2>
-        <div class="device-grid">
+        <div class="device-grid aurora-surface">
+          <div class="aurora-layer"></div>
           <div
             v-for="dev in items"
             :key="dev.device_id"
@@ -859,6 +922,21 @@ onMounted(() => {
                       <button class="name-btn" @click="resetName">还原</button>
                     </span>
                   </div>
+                  <div class="info-row note-row">
+                    <span class="info-label">备注</span>
+                    <span v-if="!editingNote" class="info-value note-display" @click="startEditNote" title="点击给设备写备注（影响 AI 调用，如继电器反转语义）">
+                      <span v-if="entityNotes[selectedEntity.entity_id]" class="note-text">{{ entityNotes[selectedEntity.entity_id] }}</span>
+                      <span v-else class="note-empty">点此添加（让 AI 理解设备怪癖）</span>
+                      <span class="edit-hint">✎</span>
+                    </span>
+                    <span v-else class="note-edit">
+                      <textarea v-model="noteInput" class="note-input" rows="3" maxlength="200" placeholder="如：继电器 ON=关门，OFF=开门；用户说开门时调 turn_off" @keyup.esc="editingNote = false"></textarea>
+                      <div class="note-btns">
+                        <button class="name-btn name-btn--save" @click="saveNote">保存</button>
+                        <button class="name-btn" @click="resetNote">还原</button>
+                      </div>
+                    </span>
+                  </div>
                   <div class="info-row">
                     <span class="info-label">状态</span>
                     <span class="info-value" :class="{ active: isOn(selectedEntity) }">{{ formatState(selectedEntity) }}</span>
@@ -869,8 +947,8 @@ onMounted(() => {
                   </div>
                 </div>
 
-                <div class="history-section" v-if="getDomain(selectedEntity.entity_id) === 'sensor'">
-                  <h3>近 24 小时趋势</h3>
+                <div class="history-section" v-if="hasHistory(selectedEntity)">
+                  <h3>历史趋势</h3>
                   <SensorChart :entityId="selectedEntity.entity_id" :unit="selectedEntity.attributes?.unit_of_measurement || ''" />
                 </div>
 
@@ -1440,5 +1518,47 @@ onMounted(() => {
   background: var(--color-accent, rgba(52,152,219,0.2));
   border-color: transparent;
   color: var(--color-text);
+}
+
+/* 实体备注编辑 */
+.note-row {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+.note-display {
+  cursor: pointer;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.03);
+  min-height: 24px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.note-display:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+.note-text {
+  display: inline;
+}
+.note-empty {
+  color: var(--text-muted, #888);
+  font-size: 0.9em;
+}
+.note-input {
+  width: 100%;
+  background: var(--bg-input, rgba(0, 0, 0, 0.2));
+  border: 1px solid var(--border-color, rgba(255, 255, 255, 0.1));
+  border-radius: 6px;
+  color: inherit;
+  padding: 6px 8px;
+  font-size: 0.92em;
+  resize: vertical;
+  font-family: inherit;
+}
+.note-btns {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
 }
 </style>
