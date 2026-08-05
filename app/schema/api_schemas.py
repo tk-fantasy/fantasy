@@ -283,6 +283,24 @@ class EntityAliasRequest(BaseModel):
         return str(v).strip() if isinstance(v, str) else str(v)
 
 
+class EntityNoteRequest(BaseModel):
+    """设置实体备注的请求体（用户自定义备注，注入 LLM 认知，影响 AI 调用决策）。
+
+    与 EntityAliasRequest 的差异：
+    - 别名同步到 HA（entity_registry.name），备注是 Aether 私有、不同步 HA。
+    - 别名改显示名，备注只影响 AI 理解，不改前端状态显示。
+    - 备注可多行（自由文本，描述设备怪癖如继电器反转语义）。
+    """
+
+    entity_id: str = Field(..., description="HA 实体 ID")
+    note: str = Field(default="", description="用户自定义备注，空串表示删除备注")
+
+    @field_validator("entity_id", "note", mode="before")
+    @classmethod
+    def _strip_str(cls, v: object) -> str:
+        return str(v).strip() if isinstance(v, str) else str(v)
+
+
 # --------------- Chat ---------------
 
 class ChatRequest(BaseModel):
