@@ -1,0 +1,8 @@
+{
+    "id": "crash",
+    "name": "崩溃测试",
+    "version": "1.0.0",
+    "aether_api_version": "1",
+    "entry": "plugin.py",
+    "capabilities": [{"type": "output_sink", "id": "c1"}]
+}
