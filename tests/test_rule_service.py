@@ -146,3 +146,49 @@ class TestRuleServicePerUser:
         # 不会走 fallback（fallback 的 condition 是空字符串）
         assert result.get("condition") == "晚上"
 
+
+class TestRuleServiceNotes:
+    """规则生成注入用户自定义备注（Task 3）。"""
+
+    @pytest.mark.asyncio
+    async def test_build_rule_injects_note_into_prompt(self):
+        """rule_service 把 entity_note 备注拼进 system prompt，LLM 据此正确选 service。"""
+        # Mock Database.get().prefs_get_by_scope 返回备注
+        mock_db = MagicMock()
+        mock_db.prefs_get_by_scope = AsyncMock(return_value={
+            "switch.gate": "ON=关门, OFF=开门。用户说开门时调 turn_off",
+        })
+
+        # mock client：截获 chat 调用，断言 prompt 含备注
+        mock_client = MagicMock()
+        mock_client.enabled = True
+        captured = {}
+
+        async def fake_chat(messages, max_tokens=None, **kw):
+            captured["prompt"] = messages[0]["content"] if messages else ""
+            return '{"name":"r","type":"vision","condition":"有人","actions":[],"action_descriptions":[],"cooldown_seconds":10,"summary":""}'
+
+        mock_client.chat = AsyncMock(side_effect=fake_chat)
+        svc = RuleService(client=mock_client)
+
+        async def _devices():
+            return [
+                {"entity_id": "switch.gate", "state": "off", "domain": "switch",
+                 "name": "大门", "attributes": {"friendly_name": "大门"}},
+            ]
+
+        async def _services():
+            return {"switch": {"turn_on": ["entity_id"], "turn_off": ["entity_id"]}}
+
+        # 注入 devices provider（含 attributes 的完整设备）
+        svc.set_ha_devices_provider(_devices)
+        svc.set_ha_services_provider(_services)
+        svc.set_ha_catalog_provider(lambda: "- switch.gate (类型:switch, 状态:off) 名称:大门")
+
+        with patch("app.core.database.Database.get", return_value=mock_db), \
+             patch("app.core.key_resolver.resolve_key_for_role_user", new=AsyncMock(return_value=None)):
+            await svc.build_rule("大门", user_id="u1")
+
+        assert "ON=关门, OFF=开门" in captured["prompt"]
+        assert "备注" in captured["prompt"]
+

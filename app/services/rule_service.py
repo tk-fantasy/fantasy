@@ -201,6 +201,13 @@ class RuleService:
                 domain: {svc: {"fields": fields} for svc, fields in svcs.items()}
                 for domain, svcs in services_info.items()
             }
+            # 用户自定义备注：让规则生成 LLM 也看到设备怪癖（如继电器反转语义）
+            notes_map: dict[str, str] = {}
+            try:
+                from ..core.database import Database
+                notes_map = await Database.get().prefs_get_by_scope("entity_note")
+            except Exception:  # noqa: BLE001
+                logger.warning("Failed to load entity notes for rule generation", exc_info=True)
             # 为所有 full_devices 预计算 _controls（用于校验 + 提示词）
             for d in full_devices:
                 d["_controls"] = resolve_controls(d, raw_svc_defs)
@@ -210,7 +217,9 @@ class RuleService:
             for d in filtered_devices:
                 controls = d.get("_controls", {})
                 if controls:
-                    c_lines.append(controls_to_text(d, controls))
+                    c_lines.append(
+                        controls_to_text(d, controls, note=notes_map.get(d.get("entity_id", "")))
+                    )
             controls_text = "\n\n".join(c_lines) if c_lines else ""
 
         # 构建设备列表文本（entity_id 映射）- 同样只包含匹配的 devices
