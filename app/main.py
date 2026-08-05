@@ -233,6 +233,14 @@ async def _refresh_ha_catalog() -> None:
         DIAGNOSTIC_DOMAINS = {"sensor", "binary_sensor"}
         lines = []
         controls_lines = []
+        # 用户自定义备注（entity_note scope）：按 entity_id 查 dict 注入 controls。
+        # 不常驻 DB 连接——每 60 秒刷新周期读一次即可（备注变更最多 60 秒生效）。
+        notes_map: dict[str, str] = {}
+        try:
+            from .core.database import Database
+            notes_map = await Database.get().prefs_get_by_scope("entity_note")
+        except Exception:  # noqa: BLE001
+            logger.warning("Failed to load entity notes for catalog")
         for dev in grouped.get("devices", []):
             dev_name = dev.get("name", "")
             area_name = dev.get("area_name")
@@ -274,7 +282,9 @@ async def _refresh_ha_catalog() -> None:
                     if flat:
                         controls = resolve_controls(flat, raw_svc_defs)
                         if controls:
-                            dev_controls_lines.append(controls_to_text(flat, controls, indent=1))
+                            dev_controls_lines.append(
+                                controls_to_text(flat, controls, indent=1, note=notes_map.get(e["entity_id"]))
+                            )
                 if len(dev_controls_lines) > 1:
                     controls_lines.append("\n".join(dev_controls_lines))
         catalog = "\n".join(lines) if lines else "(暂无 HA 设备)"
