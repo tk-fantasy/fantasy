@@ -44,6 +44,12 @@ COPY app/ ./app/
 # 测试配置（容器内跑 pytest 用，提供 asyncio_mode=auto 等）
 COPY pytest.ini ./
 
+# 拷贝测试代码（容器内 pytest 用）
+COPY tests/ ./tests/
+
+# 拷贝集成插件目录（插件子进程 spawn 时读取 manifest 与入口脚本）
+COPY integrations/ ./integrations/
+
 # 拷贝文档（RAG 服务读取 docs/ 做知识库索引）
 COPY docs/ ./docs/
 
@@ -55,10 +61,12 @@ COPY --from=frontend-builder /aether/app/static/frontend ./app/static/frontend
 COPY config.example.json ./config.json
 
 # 容器内加载进度端口需对宿主可见（宿主本机默认 127.0.0.1）
+# PYTHONPATH 包含工作目录，确保插件子进程能 import app.* 模块
 ENV STARTUP_PROGRESS_HOST=0.0.0.0 \
     TZ=Asia/Shanghai \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/aether
 
 EXPOSE 8010 8011
 

@@ -115,6 +115,15 @@
     "level": "INFO"
   },
   "external_mcp": [],
+  "integration": {
+    "enabled": true,
+    "plugin_dir": "integrations",
+    "api_version": "1",
+    "startup_timeout": 10,
+    "health_check_interval": 30,
+    "default_rpc_timeout": 30,
+    "max_restarts": 3
+  },
   "llm": {
     "enabled": true,
     "base_url": "http://127.0.0.1:11434",
