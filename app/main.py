@@ -497,6 +497,30 @@ async def lifespan(_: FastAPI):
     _services["langgraph_agent"] = langgraph_agent
     _services["langchain_tools"] = langchain_tools
 
+    # ── 集成插件平台启动（Dispatcher 之前，因 Dispatcher 要拿 sink_manager）──
+    integration_enabled = bool(get_config("integration.enabled", False))
+    integration_layer = None
+    if integration_enabled:
+        from pathlib import Path as _Path
+        from app.integration.integration_layer import IntegrationLayer
+        _plugin_dir_cfg = get_config("integration.plugin_dir", "integrations")
+        # plugin_dir 相对于项目根解析（容器内工作目录 /aether）
+        _plugin_dir = str(_Path("/aether") / _plugin_dir_cfg)
+        integration_layer = IntegrationLayer(
+            plugin_dir=_plugin_dir,
+            api_version=get_config("integration.api_version", "1"),
+            rpc_timeout=float(get_config("integration.default_rpc_timeout", 30.0)),
+            max_restarts=int(get_config("integration.max_restarts", 3)),
+        )
+        try:
+            await integration_layer.start()
+            _container.integration_layer = integration_layer
+            logger.info("集成插件平台已启动: %s",
+                        [p["id"] for p in integration_layer.list_plugins() if p["alive"]])
+        except Exception as exc:
+            logger.error("集成插件平台启动失败（不阻塞主服务）: %s", exc)
+            integration_layer = None
+
     # 创建 Dispatcher（使用 LangGraph Agent，传入其 httpx 客户端供生命周期管理）
     global dispatcher
     dispatcher = Dispatcher(
@@ -511,6 +535,7 @@ async def lifespan(_: FastAPI):
         summarization_service=summarization_service,
         clients=_global_clients,
         camera_manager=_services.get("camera_manager"),   # Task 9:多路
+        sink_manager=integration_layer.sink_manager if integration_layer else None,
     )
     dispatcher._tools = langchain_tools  # 供 per-user agent 构建使用
     _container.dispatcher = dispatcher
@@ -632,6 +657,13 @@ async def lifespan(_: FastAPI):
         await _automation_agent_ref[0].stop()
     if _container.scheduler_service is not None:
         await _container.scheduler_service.stop()
+    # 集成插件平台停止（停止所有插件子进程）
+    if _container.integration_layer is not None:
+        try:
+            await _container.integration_layer.stop()
+            logger.info("集成插件平台已停止")
+        except Exception:
+            logger.exception("IntegrationLayer stop failed (non-fatal)")
     await mcp_client_manager.disconnect_all_external()
     await session_store.shutdown()
     camera_stream.stop()
@@ -677,6 +709,7 @@ from .routes.camera_routes import router as camera_router
 from .routes.setup_routes import router as setup_router
 from .routes.doc_routes import router as doc_router
 from .routes.sg_routes import router as sg_router
+from .routes.integration_routes import router as integration_router
 from .routes.ws_routes import router as ws_router
 from .routes.automation_routes import router as automation_router
 app.include_router(settings_router, prefix="/api")
@@ -699,6 +732,7 @@ app.include_router(automation_router, prefix="/api")  # 自动化：/api/automat
 app.include_router(setup_router)  # 无 prefix，包含 / 和 /favicon.ico
 app.include_router(doc_router)  # 路径已包含 /api 前缀或无
 app.include_router(sg_router, prefix="/api")  # 语义图：/api/sg/*
+app.include_router(integration_router, prefix="/api")  # 集成插件平台：/api/integrations/*
 app.include_router(ws_router)  # WebSocket 路由，无 prefix
 
 # CORS
