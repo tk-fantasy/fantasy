@@ -204,6 +204,7 @@ class Dispatcher:
         validator: ValidatorAgent | None = None,
         summarization_service: Any = None,
         camera_manager: Any = None,
+        sink_manager: Any = None,
     ) -> None:
         self._session_store = session_store
         self._agent = agent
@@ -219,6 +220,8 @@ class Dispatcher:
         self._ha_service = ha_service
         self._validator = validator or ValidatorAgent()
         self._summarization_service = summarization_service
+        # 集成广播钩子：assistant final_content 产出后广播到 output_sink（如小爱）
+        self._sink_manager = sink_manager
         # 失败重试上限：与 validator 的 _max_retries 对齐，避免死循环
         self._max_failure_retries = 1
         # agent → 它的 (sync, async) httpx 客户端 映射。
@@ -714,6 +717,14 @@ class Dispatcher:
         session.model_messages.append({"role": "user", "content": query})
         if state.final_content:
             session.model_messages.append({"role": "assistant", "content": state.final_content})
+
+        # ── 集成广播钩子：把最终回复同步到 output_sink（如小爱）──
+        # 失败不阻塞主流程，仅记录警告（用户已通过 WS 收到文字回复）。
+        if state.final_content and self._sink_manager is not None:
+            try:
+                await self._sink_manager.broadcast(state.final_content, request_id)
+            except Exception as exc:
+                logger.warning("集成广播失败（不影响主流程）: %s", exc)
 
         # Finish 反映真实状态：仍有未解决失败或执行出错时标记失败
         finish_success = not state.unresolved_failed and not state.has_error
