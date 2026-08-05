@@ -1,0 +1,15 @@
+{
+    "id": "echo",
+    "name": "回声测试",
+    "version": "1.0.0",
+    "aether_api_version": "1",
+    "entry": "plugin.py",
+    "capabilities": [
+        {
+            "type": "output_sink",
+            "id": "echo_main",
+            "priority": 100,
+            "config_schema": {}
+        }
+    ]
+}
