@@ -227,6 +227,20 @@ class TestResolveControlsSlider:
         assert ctrl["step"] == 1
         assert ctrl["unit"] == "°C"
 
+    def test_slider_volume_level_is_0_to_1(self):
+        """media_player volume_level 按 HA 规范固定 0-1，而非默认 0-100。"""
+        entity = {
+            "entity_id": "media_player.speaker",
+            "state": "playing",
+            "attributes": {"volume_level": 0.3},
+        }
+        services = {"media_player": {"set_volume_level": {"fields": ["entity_id", "volume_level"]}}}
+        controls = resolve_controls(entity, services)
+        vol = controls["volume_level"]
+        assert vol["min"] == 0.0
+        assert vol["max"] == 1.0
+        assert vol["current"] == 0.3
+
 
 class TestResolveControlsAction:
     """动作控件：无参服务。"""
@@ -253,6 +267,39 @@ class TestResolveControlsAction:
             assert controls["close_cover"]["type"] == "action"
         # set_ 前缀的服务被跳过（line 101）
         assert "set_cover_position" not in controls or controls.get("set_cover_position", {}).get("type") != "action"
+
+    def test_media_player_turn_on_filtered_without_feature_bit(self):
+        """小爱类设备 supported_features 不含 TURN_ON(128)/TURN_OFF(256) → 过滤。"""
+        entity = {
+            "entity_id": "media_player.xiaoai",
+            "state": "idle",
+            # 仅 VOLUME_SET(4) | VOLUME_MUTE(8) | VOLUME_STEP(1024)，无 TURN_ON/OFF
+            "attributes": {"supported_features": 4 | 8 | 1024},
+        }
+        services = {"media_player": {
+            "turn_on": {"fields": ["entity_id"]},
+            "turn_off": {"fields": ["entity_id"]},
+            "volume_down": {"fields": ["entity_id"]},
+        }}
+        controls = resolve_controls(entity, services)
+        assert "turn_on" not in controls    # 无 128 位 → 过滤
+        assert "turn_off" not in controls   # 无 256 位 → 过滤
+        assert "volume_down" in controls    # 无参且无位约束 → 保留
+
+    def test_media_player_turn_on_kept_with_feature_bit(self):
+        """电视类设备 supported_features 含 TURN_ON(128) → turn_on 保留。"""
+        entity = {
+            "entity_id": "media_player.tv",
+            "state": "off",
+            # VOLUME_SET(4) | TURN_ON(128) | TURN_OFF(256)
+            "attributes": {"supported_features": 4 | 128 | 256},
+        }
+        services = {"media_player": {
+            "turn_on": {"fields": ["entity_id"]},
+            "set_volume_level": {"fields": ["entity_id", "volume_level"]},
+        }}
+        controls = resolve_controls(entity, services)
+        assert "turn_on" in controls        # 有 128 位 → 保留
 
 
 class TestResolveControlsEdgeCases:
@@ -336,3 +383,48 @@ class TestControlsToText:
         text = controls_to_text(entity, controls)
         assert "Open Cover" in text
         assert "action" in text.lower()
+
+    def test_note_injected_when_present(self):
+        """note 非空时，标题行下方插入备注行（优先级最高标记）。"""
+        entity = {"entity_id": "switch.gate", "attributes": {"friendly_name": "大门"}}
+        controls = {"turn_on": {"type": "action", "service": "turn_on", "param": None}}
+        text = controls_to_text(entity, controls, note="ON=关门, OFF=开门")
+        assert "大门 (switch.gate)" in text
+        assert "备注" in text
+        assert "ON=关门, OFF=开门" in text
+        # 备注行在标题行之后、可控项之前
+        title_idx = text.index("大门 (switch.gate)")
+        note_idx = text.index("ON=关门, OFF=开门")
+        action_idx = text.index("Turn On")
+        assert title_idx < note_idx < action_idx
+
+    def test_note_omitted_when_none_or_empty(self):
+        """note 为 None 或空串时不输出备注行（向后兼容）。"""
+        entity = {"entity_id": "switch.gate", "attributes": {"friendly_name": "大门"}}
+        controls = {"turn_on": {"type": "action", "service": "turn_on", "param": None}}
+        # None（默认值）
+        text_default = controls_to_text(entity, controls)
+        assert "备注" not in text_default
+        # 空串
+        text_empty = controls_to_text(entity, controls, note="")
+        assert "备注" not in text_empty
+        # 仅空白
+        text_blank = controls_to_text(entity, controls, note="   ")
+        assert "备注" not in text_blank
+
+    def test_note_multiline_supported(self):
+        """多行备注保留换行（每行都带备注前缀缩进）。"""
+        entity = {"entity_id": "switch.gate", "attributes": {"friendly_name": "大门"}}
+        controls = {"turn_on": {"type": "action", "service": "turn_on", "param": None}}
+        text = controls_to_text(entity, controls, note="第一行\n第二行")
+        assert "第一行" in text
+        assert "第二行" in text
+
+    def test_note_with_indent(self):
+        """indent>=1（子功能）时，备注行也带正确缩进。"""
+        entity = {"entity_id": "switch.gate", "attributes": {}}
+        controls = {"turn_on": {"type": "action", "service": "turn_on", "param": None}}
+        text = controls_to_text(entity, controls, indent=1, note="子功能备注")
+        # 子功能标题行存在
+        assert "子功能 switch.gate:" in text
+        assert "子功能备注" in text

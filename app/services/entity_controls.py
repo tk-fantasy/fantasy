@@ -91,6 +91,11 @@ def resolve_controls(entity: dict, services: dict) -> dict[str, dict]:
             max_v = attrs[max_key]
         if step_key:
             step = attrs[step_key]
+        # 规范范围表：HA 规范固定范围但不暴露 min/max 属性的属性（无 min/max → 套用规范）。
+        # 与 brightness 0-255 换算同一类规范处理。设备若暴露了 min/max 则优先用数据。
+        spec = _DOMAIN_SPEC_RANGES.get((domain, attr_name))
+        if spec and not (min_key or max_key):
+            min_v, max_v, step = spec
 
         current = attr_value if attr_value is not None else min_v
         is_pct = "_pct" in match["field"]
@@ -121,6 +126,14 @@ def resolve_controls(entity: dict, services: dict) -> dict[str, dict]:
         related = _concept_match(words, attr_names, domain, domain_svcs)
         if not related:
             continue
+        # media_player 动作按 supported_features 位过滤：
+        # HA 规范要求设备声明对应能力位才支持该服务，无位时调用会 500。
+        # 其他域不受影响（仅 media_player 进入此分支）。
+        if domain == "media_player":
+            bit = _MP_FEATURE_BITS.get(svc_name)
+            sf = attrs.get("supported_features", 0) or 0
+            if bit is not None and not (sf & bit):
+                continue
         controls[svc_name] = _action(svc_name)
 
     # 4. 反推缺失的 _pct 滑块（如灯关时无 brightness 属性），只取最短字段名
@@ -191,7 +204,7 @@ def _concept_match(words: list[str], attr_names: set, domain: str, domain_svcs: 
     return True
 
 
-def controls_to_text(entity: dict, controls: dict, indent: int = 0) -> str:
+def controls_to_text(entity: dict, controls: dict, indent: int = 0, note: str | None = None) -> str:
     """把 resolve_controls 的结果转成给 LLM 看的中文可控项文本。
 
     Args:
@@ -200,6 +213,10 @@ def controls_to_text(entity: dict, controls: dict, indent: int = 0) -> str:
         indent: 缩进层级。0=独立块（标题用 friendly_name + entity_id）；
             >=1=作为子项，标题用 entity_id（不用 friendly_name——MIoT 子实体名常带
             噪声如「麦克风 静音」，会被 LLM 当独立设备念出），由上层用设备名作总标题。
+        note: 用户自定义备注（如继电器反转语义）。非空时在标题行下方、可控项之前
+            插入「备注」行，让 LLM 看到设备的怪癖；为空（None/空串/纯空白）时不输出
+            （保持现状，零回归）。三条消费链路（后台预编译/规则生成/get_entities）
+            经此一处同时注入。
     """
     eid = entity["entity_id"]
     pad = "  " * indent
@@ -208,6 +225,10 @@ def controls_to_text(entity: dict, controls: dict, indent: int = 0) -> str:
         lines = [f"{name} ({eid})"]
     else:
         lines = [f"{pad}子功能 {eid}:"]
+    # 备注行：在标题之后、可控项之前。多行备注逐行带前缀（缩进对齐可控项层级）。
+    if note and note.strip():
+        for ln in note.split("\n"):
+            lines.append(f"{pad}  备注（用户自定义，优先级最高）：{ln}")
     if not controls:
         lines.append(f"{pad}  (no controls)")
         return "\n".join(lines)
@@ -232,6 +253,26 @@ def controls_to_text(entity: dict, controls: dict, indent: int = 0) -> str:
 
 
 # ===== 内部工具函数 =====
+
+# media_player supported_features 能力位掩码（HA MediaPlayerEntityFeature 枚举值）。
+# 仅列「无参 action 服务」对应的位，用于过滤设备未声明的能力。
+# 完整定义见 homeassistant/components/media_player/const.py
+_MP_FEATURE_BITS: dict[str, int] = {
+    "play_media": 512,        # PLAY_MEDIA
+    "turn_on": 128,           # TURN_ON
+    "turn_off": 256,          # TURN_OFF
+    "select_sound_mode": 65536,  # SELECT_SOUND_MODE
+    # select_source 是带参服务（被 set_/select_ 前缀过滤跳过），此处不列
+}
+
+# HA 规范固定范围表：(domain, attr_name) → (min, max, step)。
+# 这些属性 HA 规范定义了固定范围，但不通过 min/max 属性暴露（与 climate 的 min_temp 不同），
+# 动态推导拿不到范围 → 靠规范常量兜底。等同 brightness 固定 0-255 的换算处理。
+# 设备若自行暴露了 min/max 属性则优先用数据（见滑块分支 not (min_key or max_key) 守卫）。
+_DOMAIN_SPEC_RANGES: dict[tuple[str, str], tuple[float, float, float]] = {
+    ("media_player", "volume_level"): (0.0, 1.0, 0.01),  # HA 规范恒为 0-1 浮点
+}
+
 
 def _enum(svc, param, options, current):
     return {"type": "enum", "service": svc, "param": param, "options": options, "current": current}
