@@ -161,3 +161,69 @@ class TestHAHistoryRoute:
         )
         assert result.code == "ok"
         assert result.data["count"] == 0
+
+
+class TestEntityNotesRoute:
+    """测试 /api/ha/entity-notes 路由（Task 5）。"""
+
+    @pytest.fixture
+    async def _db(self, tmp_path):
+        from app.core.database import Database
+        Database._instance = None
+        Database._db = None
+        Database._write_lock = None
+        with patch("app.core.database.DB_PATH", tmp_path / "t.db"):
+            await Database.init()
+            yield Database.get()
+
+    @pytest.mark.asyncio
+    async def test_get_entity_notes_empty(self, _db):
+        from app.routes.ha_routes import get_entity_notes
+        result = await get_entity_notes()
+        assert result.code == "ok"
+        assert result.data == {"notes": {}}
+
+    @pytest.mark.asyncio
+    async def test_put_then_get_entity_note(self, _db):
+        from app.routes.ha_routes import get_entity_notes, set_entity_note
+        from app.schema.api_schemas import EntityNoteRequest
+
+        container = _mock_container(ha_service=MagicMock())
+        await set_entity_note(EntityNoteRequest(entity_id="switch.gate", note="ON=关门, OFF=开门"), container=container)
+
+        result = await get_entity_notes()
+        assert result.data["notes"]["switch.gate"] == "ON=关门, OFF=开门"
+
+    @pytest.mark.asyncio
+    async def test_put_empty_note_deletes(self, _db):
+        from app.routes.ha_routes import get_entity_notes, set_entity_note
+        from app.schema.api_schemas import EntityNoteRequest
+
+        container = _mock_container(ha_service=MagicMock())
+        await set_entity_note(EntityNoteRequest(entity_id="switch.gate", note="备注1"), container=container)
+        # 空串删除
+        await set_entity_note(EntityNoteRequest(entity_id="switch.gate", note=""), container=container)
+
+        result = await get_entity_notes()
+        assert "switch.gate" not in result.data["notes"]
+
+    @pytest.mark.asyncio
+    async def test_put_invalidates_ha_cache(self, _db):
+        """写入后调 invalidate_states_cache，让后台 _refresh_ha_catalog 下周期重读。"""
+        from app.routes.ha_routes import set_entity_note
+        from app.schema.api_schemas import EntityNoteRequest
+
+        mock_ha_service = MagicMock()
+        container = _mock_container(ha_service=mock_ha_service)
+        await set_entity_note(EntityNoteRequest(entity_id="switch.gate", note="x"), container=container)
+        mock_ha_service.invalidate_states_cache.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_put_missing_entity_id_rejected(self, _db):
+        from app.routes.ha_routes import set_entity_note
+        from app.schema.api_schemas import EntityNoteRequest
+        from app.core.exceptions import AppException
+
+        container = _mock_container(ha_service=MagicMock())
+        with pytest.raises(AppException):
+            await set_entity_note(EntityNoteRequest(entity_id="", note="x"), container=container)

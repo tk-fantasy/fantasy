@@ -11,8 +11,9 @@ from ..clients.ha_client import HomeAssistantClient
 from ..core.api_models import ApiResponse
 from ..core.config import get_config, update_config_section
 from ..core.exceptions import AppException
-from ..schema.api_schemas import HAConfigRequest, HAServiceCallRequest, ModelTestRequest, UniqueSettingsRequest, EntityAliasRequest
+from ..schema.api_schemas import HAConfigRequest, HAServiceCallRequest, ModelTestRequest, UniqueSettingsRequest, EntityAliasRequest, EntityNoteRequest
 from ..services.ha_service import HAService
+from ..services.control_probe import call_with_probe
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +100,41 @@ async def set_entity_alias(
     return ApiResponse(data={"entity_id": entity_id, "alias": alias})
 
 
+@router.get("/ha/entity-notes")
+async def get_entity_notes() -> ApiResponse[dict]:
+    """获取全部实体备注映射 {entity_id: note}（用户自定义，注入 LLM 认知）。"""
+    from ..core.database import Database
+    db = Database.get()
+    notes = await db.prefs_get_by_scope("entity_note")
+    return ApiResponse(data={"notes": notes})
+
+
+@router.put("/ha/entity-notes")
+async def set_entity_note(
+    payload: EntityNoteRequest, container: AppContainer = Depends(get_container)
+) -> ApiResponse[dict]:
+    """设置/更新一个实体备注。空串 note 表示删除备注。
+
+    备注只写 Aether DB（不同步 HA——HA 无此概念），用于注入 LLM 认知：
+    让 AI 看到设备怪癖（如继电器 ON=关门），据此正确调用 service。
+    写入后清 HA 状态缓存，让后台 _refresh_ha_catalog 下个周期重读备注。
+    """
+    from ..core.database import Database
+    entity_id = payload.entity_id
+    note = payload.note
+    if not entity_id:
+        raise AppException("缺少 entity_id", code="missing_params", http_status=400)
+
+    db = Database.get()
+    if note:
+        await db.emoji_pref_upsert("entity_note", entity_id, note)
+    else:
+        await db.emoji_pref_delete("entity_note", entity_id)
+    # 清缓存让后台刷新周期重读备注（与 set_entity_alias 同模式）
+    container.ha_service.invalidate_states_cache()
+    return ApiResponse(data={"entity_id": entity_id, "note": note})
+
+
 @router.get("/ha/services")
 async def ha_services(container: AppContainer = Depends(get_container)) -> ApiResponse[dict]:
     """返回 HA 服务定义，格式: {domain: {service_name: {fields: [...], required: [...]}}}"""
@@ -151,7 +187,7 @@ async def ha_call_service(payload: HAServiceCallRequest, container: AppContainer
     if entity_id and "." not in str(entity_id):
         entity_id = f"{domain}.{entity_id}"
     try:
-        result = await container.ha_client.call_service(domain, service, entity_id, data)
+        result = await call_with_probe(container.ha_client, domain, service, entity_id, data)
         # 调用服务后立即清掉 HAService 的状态缓存，确保前端重拉拿到最新状态
         container.ha_service.invalidate_states_cache()
         return ApiResponse(data={"success": True, "result": result})
