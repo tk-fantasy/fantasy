@@ -10,22 +10,22 @@ from app.integration.rpc_protocol import (
 
 
 def test_build_request_with_params():
-    msg = build_request(id=1, method="sink.speak", params={"text": "hi"})
+    msg = build_request(msg_id=1, method="sink.speak", params={"text": "hi"})
     assert msg == {"jsonrpc": "2.0", "id": 1, "method": "sink.speak", "params": {"text": "hi"}}
 
 
 def test_build_request_without_params():
-    msg = build_request(id=2, method="health.check")
+    msg = build_request(msg_id=2, method="health.check")
     assert msg == {"jsonrpc": "2.0", "id": 2, "method": "health.check"}
 
 
 def test_build_response():
-    msg = build_response(id=1, result={"ok": True})
+    msg = build_response(msg_id=1, result={"ok": True})
     assert msg == {"jsonrpc": "2.0", "id": 1, "result": {"ok": True}}
 
 
 def test_build_error():
-    msg = build_error(id=1, code=-32601, message="method not found")
+    msg = build_error(msg_id=1, code=-32601, message="method not found")
     assert msg == {"jsonrpc": "2.0", "id": 1, "error": {"code": -32601, "message": "method not found"}}
 
 
