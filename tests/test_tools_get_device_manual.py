@@ -108,3 +108,39 @@ async def test_get_device_manual_missing_reported():
 
     assert "switch.gate" in result["found"]
     assert "light.ghost" in result["missing"]
+
+
+@pytest.mark.asyncio
+async def test_get_entities_includes_note_field():
+    """get_entities 返回的 entities 每项带 note 字段（Task 7）。"""
+    from app.tools import register_all_tools, ToolDeps
+    from app.mcp.mcp_client_manager import MCPClientManager
+
+    mgr = MCPClientManager()
+    mock_ha_service = MagicMock()
+    mock_ha_service.get_all_devices = AsyncMock(return_value=[
+        {"entity_id": "switch.gate", "state": "off", "domain": "switch",
+         "attributes": {"friendly_name": "大门"}},
+    ])
+    mock_ha_service.get_all_devices_grouped = AsyncMock(return_value={"devices": [
+        {"name": "大门", "model": None, "area_name": None,
+         "entities": [{"entity_id": "switch.gate", "domain": "switch"}]},
+    ]})
+    mock_ha_service.get_service_defs = AsyncMock(return_value={
+        "switch": {"turn_on": {"fields": ["entity_id"]}},
+    })
+
+    from app.core.database import Database
+    await Database.get().emoji_pref_upsert("entity_note", "switch.gate", "ON=关门")
+
+    deps = ToolDeps(
+        mcp_client_manager=mgr, camera_stream=MagicMock(), vision_client=MagicMock(),
+        ha_service=mock_ha_service, ha_client_ref=[MagicMock()],
+    )
+    register_all_tools(deps)
+
+    tool = mgr.get_tool("ha_devices___get_entities")
+    result = await tool.handler({}, session=MagicMock())
+
+    gate = next(e for e in result["entities"] if e["entity_id"] == "switch.gate")
+    assert gate.get("note") == "ON=关门"
