@@ -1,0 +1,36 @@
+{
+    "id": "xiaoai",
+    "name": "小爱音箱",
+    "version": "1.0.0",
+    "aether_api_version": "1",
+    "author": "Aether",
+    "description": "小爱 TTS 广播（Phase 1: 直连 HA intelligent_speaker）",
+    "entry": "plugin.py",
+    "capabilities": [
+        {
+            "type": "output_sink",
+            "id": "xiaoai_pro",
+            "priority": 100,
+            "config_schema": {
+                "entity_id": {
+                    "type": "string",
+                    "required": true,
+                    "label": "小爱实体ID",
+                    "default": "media_player.xiaomi_cn_2166464483_lx06"
+                },
+                "execute_mode": {
+                    "type": "enum",
+                    "options": ["speak", "execute"],
+                    "default": "speak",
+                    "label": "默认模式"
+                }
+            }
+        }
+    ],
+    "permissions": [],
+    "resources": {
+        "max_memory_mb": 128,
+        "restart_on_crash": true,
+        "max_restarts": 3
+    }
+}
