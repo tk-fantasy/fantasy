@@ -9,6 +9,7 @@
 import { ref, onMounted, computed } from 'vue'
 import { useCamera } from '../composables/useCamera'
 import BaseToggle from '../components/BaseToggle.vue'
+import FlowSelect from '../components/FlowSelect.vue'
 
 const {
   cameras, areas, loading,
@@ -128,24 +129,32 @@ async function tryTestStream() {
 
 // AI 预览单例切换(D4):列表态直接切,切到新的会自动停旧路
 async function toggleDisplay(cam) {
+  // optimistic:立即视觉切换,失败再回滚
+  cam.display_enabled = cam.display_enabled ? 0 : 1
   try {
     if (cam.display_enabled) {
-      await disableDisplay(cam.id)
-    } else {
       await enableDisplay(cam.id)
+    } else {
+      await disableDisplay(cam.id)
     }
     await loadCameras()
   } catch (e) {
+    cam.display_enabled = cam.display_enabled ? 0 : 1  // 回滚
     console.error('toggleDisplay failed:', e)
     alert('切换预览失败: ' + (e?.message || String(e)))
   }
 }
 
 async function toggleEnabled(cam) {
+  // optimistic:立即视觉切换,失败再回滚
+  cam.enabled = cam.enabled ? 0 : 1
   try {
-    await updateCamera(cam.id, { enabled: cam.enabled ? 0 : 1 })
+    await updateCamera(cam.id, { enabled: cam.enabled })
+    await loadCameras()
   } catch (e) {
+    cam.enabled = cam.enabled ? 0 : 1  // 回滚
     console.error('toggleEnabled failed:', e)
+    alert('切换启用失败: ' + (e?.message || String(e)))
   }
 }
 
@@ -222,6 +231,10 @@ const sourceOptions = [
   { value: 'rtsp', label: 'RTSP 网络摄像头' },
   { value: 'usb', label: 'USB 本地摄像头' },
 ]
+const areaOptions = computed(() => [
+  { value: '', label: '未分配' },
+  ...areas.value.map(a => ({ value: a.name, label: a.name })),
+])
 </script>
 
 <template>
@@ -254,14 +267,14 @@ const sourceOptions = [
           </div>
         </div>
         <div class="cam-card-actions">
-          <label class="cam-toggle" @click.stop>
+          <div class="cam-toggle">
             <span class="cam-toggle-label">启用</span>
             <BaseToggle :modelValue="!!cam.enabled" @update:modelValue="toggleEnabled(cam)" />
-          </label>
-          <label class="cam-toggle" @click.stop>
+          </div>
+          <div class="cam-toggle">
             <span class="cam-toggle-label">预览</span>
             <BaseToggle :modelValue="!!cam.display_enabled" @update:modelValue="toggleDisplay(cam)" />
-          </label>
+          </div>
           <button class="btn-config" @click="startEdit(cam)">配置</button>
           <button class="btn-del" @click="remove(cam.id)">删除</button>
         </div>
@@ -291,16 +304,11 @@ const sourceOptions = [
                 </div>
                 <div class="cam-field">
                   <label>区域</label>
-                  <select v-model="editing.area" class="cam-input">
-                    <option value="">未分配</option>
-                    <option v-for="a in areas" :key="a.area_id" :value="a.name">{{ a.name }}</option>
-                  </select>
+                  <FlowSelect v-model="editing.area" :options="areaOptions" width="100%" />
                 </div>
                 <div class="cam-field">
                   <label>来源</label>
-                  <select v-model="editing.source_type" class="cam-input">
-                    <option v-for="o in sourceOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
-                  </select>
+                  <FlowSelect v-model="editing.source_type" :options="sourceOptions" width="100%" />
                 </div>
                 <div class="cam-field-row">
                   <label class="cam-check">

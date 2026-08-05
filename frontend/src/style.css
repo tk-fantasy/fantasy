@@ -8,6 +8,7 @@
 
 :root {
   --aether-scheme: dark;
+  color-scheme: dark;
   /* Brand */
   --color-primary: #4a7c70;
   --color-primary-dark: #2d5a4e;
@@ -125,6 +126,7 @@
 
 .light-mode {
   --aether-scheme: light;
+  color-scheme: light;
   --color-primary-light: rgba(74, 124, 112, 0.12);
   --color-primary-hover: rgba(74, 124, 112, 0.2);
   --color-primary-glow: rgba(74, 124, 112, 0.15);
@@ -176,6 +178,43 @@
 }
 .light-mode ::-webkit-scrollbar-thumb:hover {
   background: rgba(0, 0, 0, 0.15);
+}
+
+/* 浏览器自动填充(用户名/密码/API Key 等凭据字段)会强制覆盖文字色与背景,
+   常导致暗色主题下文字变白看不清。这里夺回主题色,跟随暗/亮自动切换。 */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus,
+input:-webkit-autofill:active,
+textarea:-webkit-autofill,
+textarea:-webkit-autofill:hover,
+textarea:-webkit-autofill:focus,
+select:-webkit-autofill,
+select:-webkit-autofill:hover,
+select:-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--color-text);
+  caret-color: var(--color-text);
+  -webkit-box-shadow: 0 0 0 1000px var(--color-bg-app) inset;
+  transition: background-color 5000s ease-in-out 0s;
+}
+
+/* 所有原生 select 统一暗色适配。
+   !important 是故意的:各 class(.setting-input/.cam-input 等)用了 background 简写,
+   会把 background-image 重置为 none 覆盖掉箭头;标签选择器优先级又低于 class,
+   只有 !important 能确保箭头和 appearance 在所有视图生效。 */
+select {
+  appearance: none !important;
+  -webkit-appearance: none !important;
+  -moz-appearance: none !important;
+  cursor: pointer;
+  padding-right: 36px !important;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23ffffff' fill-opacity='0.35'/%3E%3C/svg%3E") !important;
+  background-repeat: no-repeat !important;
+  background-position: right 14px center !important;
+}
+
+.light-mode select {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23000000' fill-opacity='0.4'/%3E%3C/svg%3E") !important;
 }
 
 html {
@@ -540,6 +579,51 @@ body {
 .modal-body {
   padding: var(--space-10) var(--space-14);
   overflow-y: auto;
+}
+
+/* ============ 共享极光下拉层 ============
+   供 FlowSelect / SidebarNav 等下拉菜单复用的极光流光配方。
+   颜色源 = App.vue 注册的 --g1..--g5(@property 动画色),
+   暗色模式由 @property 提供,亮色模式在 .light-mode 已降透明度覆盖。 */
+
+@keyframes auroraFlow {
+  0% {
+    background-position: 10% 20%, 80% 25%, 35% 80%, 50% 40%, 30% 60%;
+  }
+  25% {
+    background-position: 40% 35%, 55% 50%, 60% 45%, 30% 60%, 50% 35%;
+  }
+  50% {
+    background-position: 25% 15%, 65% 55%, 45% 65%, 55% 30%, 20% 50%;
+  }
+  75% {
+    background-position: 50% 30%, 45% 20%, 30% 55%, 65% 45%, 40% 55%;
+  }
+  100% {
+    background-position: 10% 20%, 80% 25%, 35% 80%, 50% 40%, 30% 60%;
+  }
+}
+
+/* 极光流光层: 绝对定位铺满宿主(需 position:relative + overflow:hidden 裁切)。 */
+.aurora-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse 60% 50% at 25% 30%, var(--g1) 0%, transparent 50%),
+    radial-gradient(ellipse 50% 45% at 70% 25%, var(--g2) 0%, transparent 45%),
+    radial-gradient(ellipse 55% 50% at 45% 70%, var(--g3) 0%, transparent 45%),
+    radial-gradient(ellipse 50% 45% at 60% 50%, var(--g4) 0%, transparent 45%),
+    radial-gradient(ellipse 45% 40% at 35% 55%, var(--g5) 0%, transparent 40%);
+  background-size: 300% 300%, 300% 300%, 300% 300%, 300% 300%, 300% 300%;
+  animation: auroraFlow 12s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+  opacity: 0.9;
+  will-change: background-position;
+}
+
+.light-mode .aurora-layer {
+  opacity: 0.4;
 }
 
 /* ============ 共享响应式 ============ */

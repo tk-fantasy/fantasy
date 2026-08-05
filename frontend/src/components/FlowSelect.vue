@@ -6,6 +6,7 @@ const props = defineProps({
   options: { type: Array, default: () => [] },
   placeholder: { type: String, default: '-- 未选择 --' },
   disabled: { type: Boolean, default: false },
+  width: { type: String, default: '' },
 })
 
 const emit = defineEmits(['update:modelValue', 'change'])
@@ -46,7 +47,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="flow-select" :class="{ open, disabled }">
+  <div class="flow-select" :class="{ open, disabled }" :style="width ? { width } : null">
     <div ref="triggerRef" class="trigger" @click="toggle">
       <span class="trigger-text">{{ selectedLabel }}</span>
       <svg class="chevron" :class="{ rotated: open }" width="10" height="6" viewBox="0 0 10 6">
@@ -56,7 +57,7 @@ onBeforeUnmount(() => {
 
     <Transition name="dropdown">
       <div v-if="open" ref="dropdownRef" class="dropdown">
-        <div class="dropdown-glow"></div>
+        <div class="aurora-layer"></div>
         <div class="options">
           <div
             v-for="opt in options"
@@ -144,40 +145,7 @@ onBeforeUnmount(() => {
   box-shadow: var(--shadow-xl);
 }
 
-/* 流光层 */
-.dropdown-glow {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  z-index: 0;
-  background:
-    radial-gradient(ellipse 60% 50% at 25% 30%, rgba(45, 90, 78, 0.3) 0%, transparent 50%),
-    radial-gradient(ellipse 50% 45% at 70% 25%, rgba(74, 124, 112, 0.25) 0%, transparent 45%),
-    radial-gradient(ellipse 55% 50% at 45% 70%, rgba(30, 60, 110, 0.25) 0%, transparent 45%),
-    radial-gradient(ellipse 50% 45% at 60% 50%, rgba(232, 168, 124, 0.3) 0%, transparent 45%),
-    radial-gradient(ellipse 45% 40% at 35% 55%, rgba(183, 128, 176, 0.25) 0%, transparent 40%);
-  background-size: 300% 300%, 300% 300%, 300% 300%, 300% 300%, 300% 300%;
-  animation: dropdownFlow 12s cubic-bezier(0.45, 0, 0.55, 1) infinite;
-  opacity: 0.6;
-}
-
-@keyframes dropdownFlow {
-  0% {
-    background-position: 10% 20%, 80% 25%, 35% 80%, 50% 40%, 30% 60%;
-  }
-  25% {
-    background-position: 40% 35%, 55% 50%, 60% 45%, 30% 60%, 50% 35%;
-  }
-  50% {
-    background-position: 25% 15%, 65% 55%, 45% 65%, 55% 30%, 20% 50%;
-  }
-  75% {
-    background-position: 50% 30%, 45% 20%, 30% 55%, 65% 45%, 40% 55%;
-  }
-  100% {
-    background-position: 10% 20%, 80% 25%, 35% 80%, 50% 40%, 30% 60%;
-  }
-}
+/* 流光层 = 全局 .aurora-layer(style.css),.dropdown 已 overflow:hidden 裁切 */
 
 .options {
   position: relative;
@@ -236,10 +204,6 @@ onBeforeUnmount(() => {
   background: #ffffff;
   border-color: rgba(0, 0, 0, 0.1);
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.12), 0 4px 12px rgba(0, 0, 0, 0.08);
-}
-
-.light-mode .dropdown-glow {
-  opacity: 0.35;
 }
 
 .light-mode .option:hover {

@@ -815,8 +815,7 @@ onMounted(() => {
           <span class="area-name">{{ area }}</span>
           <span class="area-count">{{ items.length }}</span>
         </h2>
-        <div class="device-grid aurora-surface">
-          <div class="aurora-layer"></div>
+        <div class="device-grid">
           <div
             v-for="dev in items"
             :key="dev.device_id"

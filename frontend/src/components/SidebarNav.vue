@@ -720,6 +720,7 @@ watch(user, () => {
   animation: dropdownFadeIn 0.15s ease-out;
 }
 
+/* 极光流光层: 复用全局 auroraFlow + --g1..--g5(style.css) */
 .user-dropdown::before {
   content: '';
   position: absolute;
@@ -727,22 +728,15 @@ watch(user, () => {
   pointer-events: none;
   z-index: 0;
   background:
-    radial-gradient(ellipse 60% 50% at 25% 30%, rgba(45, 90, 78, 0.3) 0%, transparent 50%),
-    radial-gradient(ellipse 50% 45% at 70% 25%, rgba(74, 124, 112, 0.25) 0%, transparent 45%),
-    radial-gradient(ellipse 55% 50% at 45% 70%, rgba(30, 60, 110, 0.25) 0%, transparent 45%),
-    radial-gradient(ellipse 50% 45% at 60% 50%, rgba(232, 168, 124, 0.3) 0%, transparent 45%),
-    radial-gradient(ellipse 45% 40% at 35% 55%, rgba(183, 128, 176, 0.25) 0%, transparent 40%);
+    radial-gradient(ellipse 60% 50% at 25% 30%, var(--g1) 0%, transparent 50%),
+    radial-gradient(ellipse 50% 45% at 70% 25%, var(--g2) 0%, transparent 45%),
+    radial-gradient(ellipse 55% 50% at 45% 70%, var(--g3) 0%, transparent 45%),
+    radial-gradient(ellipse 50% 45% at 60% 50%, var(--g4) 0%, transparent 45%),
+    radial-gradient(ellipse 45% 40% at 35% 55%, var(--g5) 0%, transparent 40%);
   background-size: 300% 300%, 300% 300%, 300% 300%, 300% 300%, 300% 300%;
-  animation: sidebarDropdownFlow 12s cubic-bezier(0.45, 0, 0.55, 1) infinite;
-  opacity: 0.55;
-}
-
-@keyframes sidebarDropdownFlow {
-  0%   { background-position: 10% 20%, 80% 25%, 35% 80%, 50% 40%, 30% 60%; }
-  25%  { background-position: 40% 35%, 55% 50%, 60% 45%, 30% 60%, 50% 35%; }
-  50%  { background-position: 25% 15%, 65% 55%, 45% 65%, 55% 30%, 20% 50%; }
-  75%  { background-position: 50% 30%, 45% 20%, 30% 55%, 65% 45%, 40% 55%; }
-  100% { background-position: 10% 20%, 80% 25%, 35% 80%, 50% 40%, 30% 60%; }
+  animation: auroraFlow 12s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+  opacity: 0.9;
+  will-change: background-position;
 }
 
 .light-mode .user-dropdown {
@@ -752,7 +746,7 @@ watch(user, () => {
 }
 
 .light-mode .user-dropdown::before {
-  opacity: 0.3;
+  opacity: 0.4;
 }
 
 .user-dropdown > * {
