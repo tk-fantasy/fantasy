@@ -34,7 +34,8 @@ def _make_plugin_with_mock_ha():
     return plugin
 
 
-def test_speak_calls_intelligent_speaker_with_execute_false():
+def test_speak_calls_notify_send_message():
+    """speak 应通过 notify.send_message 调用 play_text 实体。"""
     plugin = _make_plugin_with_mock_ha()
 
     result = asyncio.new_event_loop().run_until_complete(
@@ -44,14 +45,15 @@ def test_speak_calls_intelligent_speaker_with_execute_false():
     assert result["spoken"] == "床头灯已打开"
     plugin.ha_caller.call_service.assert_awaited_once()
     kwargs = plugin.ha_caller.call_service.call_args.kwargs
-    assert kwargs["domain"] == "xiaomi_miot"
-    assert kwargs["service"] == "intelligent_speaker"
-    assert kwargs["entity_id"].startswith("media_player.")
-    assert kwargs["data"]["text"] == "床头灯已打开"
-    assert kwargs["data"]["execute"] is False
+    assert kwargs["domain"] == "notify"
+    assert kwargs["service"] == "send_message"
+    # play_text 实体 id 应由 media_player entity 推导出来
+    assert "play_text" in kwargs["data"]["entity_id"]
+    assert kwargs["data"]["message"] == "床头灯已打开"
 
 
 def test_interrupt_calls_media_stop():
+    """interrupt 应调用 media_player.media_stop。"""
     plugin = _make_plugin_with_mock_ha()
 
     result = asyncio.new_event_loop().run_until_complete(
@@ -63,6 +65,15 @@ def test_interrupt_calls_media_stop():
     kwargs = plugin.ha_caller.call_service.call_args.kwargs
     assert kwargs["domain"] == "media_player"
     assert kwargs["service"] == "media_stop"
+    assert kwargs["entity_id"].startswith("media_player.")
+
+
+def test_play_text_entity_derived_from_media_player():
+    """play_text 实体 id 应正确从 media_player entity 推导。"""
+    plugin = _make_plugin_with_mock_ha()
+    sink = plugin.sinks[0]
+    entity = sink._play_text_entity()
+    assert entity == "notify.xiaomi_cn_2166464483_lx06_play_text_a_5_1"
 
 
 def test_concurrent_speaks_are_serialized_by_lock():

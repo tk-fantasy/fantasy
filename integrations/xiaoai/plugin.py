@@ -1,8 +1,8 @@
 """小爱音箱插件 —— Phase 1 直连 HA 实现。
 
-通过 xiaomi_miot.intelligent_speaker 服务做 TTS：
-  execute=False → 念文字（默认 speak 模式）
-  execute=True  → 当语音指令执行（Phase 2 直通模式用）
+通过 xiaomi_home 集成暴露的 notify 实体做 TTS：
+  play_text notify 实体：notify.send_message(message=文字) → 小爱念字
+  execute_text_directive notify 实体：Phase 2 直通模式用（execute=true 语义）
 
 软件串行锁：Aether 自己的多次 speak 排队，不并发占用小爱。
 外部程序（米家/HA 自动化）对小爱的控制不在此锁范围。
@@ -56,14 +56,32 @@ class XiaoAiSink(OutputSink):
     """小爱输出 sink。
 
     软件串行锁 + 队列：Aether 多条 speak 排队，Aether 主动 interrupt 可清队列。
+
+    HA 调用方式：xiaomi_home 集成把小爱暴露为 notify 实体：
+      - play_text notify 实体：notify.send_message(message=文字) → 小爱念字
+      - execute_text_directive notify 实体：直通模式用（Phase 2）
+    media_player 实体只用于 media_stop 打断。
     """
 
-    def __init__(self, ha_caller, entity_id: str, execute_mode: str = "speak") -> None:
+    # 默认 notify 实体后缀（拼在 device 段后）
+    PLAY_TEXT_SUFFIX = "play_text_a_5_1"
+    EXECUTE_DIRECTIVE_SUFFIX = "execute_text_directive_a_5_5"
+
+    def __init__(self, ha_caller, media_player_entity: str, execute_mode: str = "speak") -> None:
         self._ha = ha_caller
-        self._entity_id = entity_id
+        self._media_player = media_player_entity
         self._execute = (execute_mode == "execute")
         self._seq_lock = asyncio.Lock()
         self._queue: asyncio.Queue = asyncio.Queue()
+
+    def _play_text_entity(self) -> str:
+        """从 media_player entity_id 推导 play_text notify 实体 id。
+
+        media_player.xiaomi_cn_2166464483_lx06 → notify.xiaomi_cn_2166464483_lx06_play_text_a_5_1
+        """
+        # 去掉 domain 前缀，加 notify. + suffix
+        dev = self._media_player.split(".", 1)[-1]  # xiaomi_cn_2166464483_lx06
+        return f"notify.{dev}_{self.PLAY_TEXT_SUFFIX}"
 
     async def speak(self, text: str, msg_id: str = "") -> dict:
         await self._queue.put(text)
@@ -71,11 +89,11 @@ class XiaoAiSink(OutputSink):
             spoken_all: list[str] = []
             while not self._queue.empty():
                 msg = await self._queue.get()
+                play_text = self._play_text_entity()
                 await self._ha.call_service(
-                    domain="xiaomi_miot",
-                    service="intelligent_speaker",
-                    entity_id=self._entity_id,
-                    data={"text": msg, "execute": self._execute, "silent": False},
+                    domain="notify",
+                    service="send_message",
+                    data={"entity_id": play_text, "message": msg},
                 )
                 spoken_all.append(msg)
             return {"spoken": " | ".join(spoken_all), "msg_id": msg_id}
@@ -87,10 +105,11 @@ class XiaoAiSink(OutputSink):
                 self._queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
+        # 小爱的 media_player 支持 media_stop
         await self._ha.call_service(
             domain="media_player",
             service="media_stop",
-            entity_id=self._entity_id,
+            entity_id=self._media_player,
             data={},
         )
         return {"interrupted": True}
