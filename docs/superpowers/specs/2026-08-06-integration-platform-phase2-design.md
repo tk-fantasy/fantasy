@@ -1,4 +1,4 @@
-# Aether 集成平台 Phase 2 设计：全局打断（W3）+ 小爱直通模式（W2）
+# Aether 集成平台 Phase 2 设计：全局打断 + 小爱直通模式（W2）
 
 **日期**: 2026-08-06
 **状态**: 待评审
@@ -8,20 +8,30 @@
 
 ## 1. 背景与目标
 
-Phase 1 完成了"Aether 回复 → 小爱播报"的 MVP。Phase 2 交付两个用户在最初头脑风暴里确认的核心需求：
+本次工作实际包含**两件归属不同的事**，协同交付：
 
-- **W3 全局打断**：用户原话"对话没有打断功能这是全局的"。同时打断 AI 思考 + 小爱播报。
-- **W2 小爱直通模式**：用户在 ChatView 切"小爱模式"打字（如"播放周杰伦的歌"），文字原样转小爱原生执行（execute=true），不进 LLM。
+### 1A. 全局打断（框架级，独立需求）
+
+Aether 的对话一直缺失打断能力——AI 思考时 WS 循环阻塞，用户既不能停 AI、也发不了新消息。这是 Aether 本身的对话能力缺陷，**与插件系统/小爱无关**。本就该补，与"小爱插件"是两码事。
+
+框架做全局打断时会调 `interrupt_all()`：有 output_sink 插件就顺带停播报，没有插件也不影响（纯 cancel AI 思考）。
+
+### 1B. 小爱直通模式（W2，插件级）
+
+用户在 ChatView 切"小爱"模式打字（如"播放周杰伦的歌"），文字原样转小爱原生执行（execute=true），不进 LLM。这是小爱插件的新功能。
+
+> **关于"打断小爱"**：Phase 1 的 `xiaoai/plugin.py` 已实现 `interrupt()`（清队列 + `media_player.media_stop`）。框架全局打断调 `interrupt_all()` 时会自动命中它——**插件不新增打断代码**，只是被框架搭便车调用。因此"打断物理小爱"算插件能力（Phase 1 已交付），但触发它的是框架的全局打断。
 
 ### 1.1 验收标准
 
-| 验收项 | 行为 |
-|--------|------|
-| 点打断 | AI 立即停止 + 小爱立即停止播报 + 前端不卡死 |
-| AI 思考时发新消息 | 自动打断旧的 AI + 停小爱，开始新对话 |
-| AI 结束但小爱还在念 | 点打断 → 只停小爱（无 task 可 cancel） |
-| 切小爱模式打字 | 小爱原生执行（播放音乐/讲笑话），不进 LLM，不消耗 token |
-| 两用户并发 | AI 思考各自独立；小爱共享设备队列排队 |
+| 验收项 | 归属 | 行为 |
+|--------|------|------|
+| 点打断 | 框架+插件协同 | AI 立即停止（框架）+ 小爱立即停止播报（插件 interrupt，Phase 1 已有）+ 前端不卡死 |
+| AI 思考时发新消息 | 框架 | 自动打断旧的 AI + 停小爱，开始新对话 |
+| AI 结束但小爱还在念 | 框架调插件 | 点打断 → 无 task 可 cancel → 只调 interrupt_all 停小爱 |
+| 无插件时点打断 | 框架 | 纯 cancel AI，interrupt_all 无 sink 为 no-op，正常工作 |
+| 切小爱模式打字 | 插件(W2) | 小爱原生执行（播放音乐/讲笑话），不进 LLM，不消耗 token |
+| 两用户并发 | 框架 | AI 思考各自独立；小爱共享设备队列排队 |
 
 ---
 
@@ -29,6 +39,7 @@ Phase 1 完成了"Aether 回复 → 小爱播报"的 MVP。Phase 2 交付两个�
 
 | 决策项 | 选择 | 理由 |
 |--------|------|------|
+| **工作归属** | **全局打断=框架独立需求；W2 直通=插件功能** | 全局打断是 Aether 对话能力缺陷，与插件无关；打断小爱复用 Phase 1 sink.interrupt，插件不新增打断代码 |
 | WS 循环改造 | **方案 B：单活跃 task** | 单用户单对话场景，不需要 request_id 精确匹配。`current_task` 局部变量，简单 |
 | 新消息冲突 | **自动打断旧的** | 类 ChatGPT 体验，最自然 |
 | request_id 跟踪 | **不需要** | 一个 WS 连接 = 一个对话，同时只有一个活跃 task。客户端零改动 |
@@ -150,7 +161,9 @@ async def _handle_direct(websocket, container, payload, rid, user_id):
 
 ---
 
-## 4. W3 全局打断
+## 4. 全局打断（框架级，独立需求）
+
+> **归属说明**：本节全是 Aether 框架自身改动（`ws_routes.py` / `dispatcher.py` / ChatView），补全对话缺失的打断能力，与插件系统无关。无插件时全局打断照常工作（纯 cancel AI，`interrupt_all` 无 sink 为 no-op）。"打断小爱"是副作用——框架调 `interrupt_all` 命中 Phase 1 已有的 `xiaoai/plugin.py:interrupt()`，插件不新增打断代码。
 
 ### 4.1 后端：Dispatcher CancelledError 处理
 
@@ -164,7 +177,7 @@ try:
     async for stream_event in run_agent_streaming(...):
         ...
 except asyncio.CancelledError:
-    # 被打断：通知前端 + 停小爱
+    # 被打断：通知前端 + 停所有 sink（有插件就停，没有也无所谓）
     await emit(Dialog.Finish(success=False))  # 让前端知道结束
     if self._sink_manager:
         await self._sink_manager.interrupt_all()
@@ -180,13 +193,14 @@ except asyncio.CancelledError:
 
 收到 `{type:"interrupt"}` → 调 `_cancel_current(current_task, container)`。
 
-### 4.3 后端：SinkManager.interrupt_all()
+### 4.3 后端：SinkManager.interrupt_all()（框架，复用 Phase 1 插件 interrupt）
 
-已实现（`app/integration/sink_manager.py:56-68`），并发 fan-out `sink.interrupt` RPC 到所有 output_sink 插件。不受 `broadcast_enabled` 限制（打断总是生效）。**无需改动。**
+已实现（`app/integration/sink_manager.py:56-68`），并发 fan-out `sink.interrupt` RPC 到所有 output_sink 插件。不受 `broadcast_enabled` 限制（打断总是生效）。**框架侧无需改动。** 命中的 `xiaoai/plugin.py:interrupt()`（Phase 1 已实现：清队列 + `media_player.media_stop`）也无需改动——这就是"打断物理小爱算插件"的部分，但插件代码 Phase 1 已交付，本次只是被框架搭便车调用。
 
 ### 4.4 前端：打断按钮
 
 - **位置**：输入框工具栏，与 IntegrationSlot 同行
+- **归属**：框架自带 UI（打断是 Aether 对话能力，非插件贡献）
 - **可见性**：始终可见（stop 图标）。理由：无法精确知道小爱何时念完（HA 不回调 TTS 完成事件），始终可见确保用户随时能停。idle 时点击为 no-op（interrupt_all 对无活跃播报是 no-op）
 - **点击行为**：
   1. 发 WS `{type:"interrupt"}`
@@ -455,29 +469,46 @@ onMounted(() => {
 
 ## 7. 代码结构
 
-### 7.1 新增文件
+### 7.1 归属划分
+
+| 归属 | 内容 | 文件 |
+|------|------|------|
+| **框架（全局打断，独立需求）** | WS 改 task 式 + AI cancel + CancelledError 处理 + 打断按钮 + interrupt_all 调度 | `ws_routes.py`, `dispatcher.py`, `ChatView.vue`(打断按钮) |
+| **插件 SDK（通用，非小爱）** | InboundRouter ABC + router.handle 路由 + METHOD_ROUTE 常量 + route_inbound + mode_option 渲染 + mode state/action | `sdk/router_base.py`, `sdk/plugin_base.py`, `rpc_protocol.py`, `integration_layer.py`, `integration_routes.py`, `IntegrationSlot.vue`, `ModeOptionContribution.vue` |
+| **小爱插件（本次新增功能）** | XiaoAiRouter 直通 + manifest 加 inbound_router/mode_option | `integrations/xiaoai/plugin.py`, `integrations/xiaoai/manifest.json` |
+
+> **注意**：小爱插件的 `interrupt()` 是 Phase 1 已交付代码，本次不改动。框架全局打断通过 `interrupt_all` 搭便车调用它。
+
+### 7.2 新增文件
 
 ```
-app/integration/sdk/router_base.py                       ← InboundRouter ABC
-frontend/src/components/integration/ModeOptionContribution.vue  ← 模式按钮通用渲染
+app/integration/sdk/router_base.py                       ← InboundRouter ABC（通用 SDK）
+frontend/src/components/integration/ModeOptionContribution.vue  ← 模式按钮通用渲染（通用 SDK）
 ```
 
-### 7.2 修改文件
+### 7.3 修改文件
 
 ```
+# 框架（全局打断）
 app/routes/ws_routes.py                     ← 循环改 task 式 + interrupt + 通用 mode 路由
 app/agents/dispatcher.py                    ← _run_turn 加 CancelledError 处理
+frontend/src/views/ChatView.vue             ← 打断按钮 + 框架默认 Aether 按钮 + IntegrationSlot(mode_selector) + Finish(false) 处理
+
+# 插件 SDK（通用）
 app/integration/rpc_protocol.py             ← 加 METHOD_ROUTE 常量
 app/integration/integration_layer.py        ← 加 route_inbound 方法
 app/integration/sdk/plugin_base.py          ← handle() 加 router.handle 分支
 app/routes/integration_routes.py            ← STATE_HANDLERS 加 current_mode，ACTION_HANDLERS 加 set_mode
+frontend/src/components/integration/IntegrationSlot.vue  ← TYPE_COMPONENTS 加 mode_option
+
+# 小爱插件（本次新增功能）
 integrations/xiaoai/manifest.json           ← 加 inbound_router capability + mode_option ui_contribution
 integrations/xiaoai/plugin.py               ← 加 XiaoAiRouter + 挂到 plugin
-frontend/src/views/ChatView.vue             ← 框架默认 Aether 按钮 + IntegrationSlot(mode_selector) + 打断按钮 + Finish(false) 处理
-frontend/src/components/integration/IntegrationSlot.vue  ← TYPE_COMPONENTS 加 mode_option
 ```
 
 ### 7.3 测试文件
+
+### 7.4 测试文件
 
 ```
 tests/test_ws_interrupt.py                  ← WS 循环打断行为（task 式 + interrupt 消息 + 自动打断）
@@ -488,7 +519,7 @@ tests/integrations/test_xiaoai_router.py    ← XiaoAiRouter 直通逻辑（不 
 tests/test_mode_state_routes.py             ← current_mode state + set_mode action 路由
 ```
 
-### 7.4 解耦验证标准
+### 7.5 解耦验证标准
 
 - **删 `integrations/xiaoai/` 目录** → WS route 仍正常（mode != aether 时 route_inbound 返回 no router，前端显示"直通失败"，但主程序不崩）
 - **删 `integrations/xiaoai/` 目录** → ChatView 模式选择器只有框架默认 Aether 按钮（`chat_mode_selector` slot 无贡献）
@@ -500,6 +531,7 @@ tests/test_mode_state_routes.py             ← current_mode state + set_mode ac
 
 | 场景 | 行为 |
 |------|------|
+| 无任何插件时点打断 | 纯 cancel AI task，`interrupt_all` 无 sink 为 no-op，全局打断照常工作 |
 | 直通模式但无 inbound_router 插件（未启用/未加载） | `route_inbound` 返回 `{ok:false, error:"no inbound router available"}`，前端显示"直通失败" |
 | 直通模式插件 HA 调用失败 | 插件 `route()` 抛异常 → RPC 返回 error → WS emit `Dialog.Finish(success=false, message="直通执行失败")` |
 | 打断时无活跃 task | `_cancel_current` 检查 `task.done()`，跳过 cancel，仍调 `interrupt_all`（no-op if 无播报） |
