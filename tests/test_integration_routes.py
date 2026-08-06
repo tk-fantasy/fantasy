@@ -189,19 +189,40 @@ def test_get_state_no_layer_returns_error():
 # ── 插件启用/禁用测试 ──
 
 def test_toggle_plugin_enabled_flips_state():
-    """toggle-enabled 路由翻转插件 enabled 态并调 set_plugin_enabled。"""
+    """禁用时调 stop_plugin（立即停进程），启用时只调 set_plugin_enabled。"""
     mock_layer = MagicMock()
     mock_layer.list_plugins.return_value = [
         {"id": "xiaoai", "enabled": True, "alive": True, "name": "小爱"}
     ]
+    mock_layer.stop_plugin = AsyncMock(return_value=True)
     mock_layer.set_plugin_enabled = MagicMock()
     from app.routes.integration_routes import toggle_plugin_enabled
     result = asyncio.new_event_loop().run_until_complete(
         toggle_plugin_enabled("xiaoai", container=_mock_container(layer=mock_layer))
     )
     assert result["success"] is True
-    assert result["data"]["enabled"] is False  # True → False
-    mock_layer.set_plugin_enabled.assert_called_once_with("xiaoai", False)
+    assert result["data"]["enabled"] is False  # True → False（禁用）
+    # 禁用应立即停进程
+    mock_layer.stop_plugin.assert_awaited_once_with("xiaoai")
+
+
+def test_toggle_plugin_enabled_to_on_does_not_start_process():
+    """启用时不立即启动进程（留给重启）。"""
+    mock_layer = MagicMock()
+    mock_layer.list_plugins.return_value = [
+        {"id": "xiaoai", "enabled": False, "alive": False, "name": "小爱"}
+    ]
+    mock_layer.stop_plugin = AsyncMock(return_value=False)
+    mock_layer.set_plugin_enabled = MagicMock()
+    from app.routes.integration_routes import toggle_plugin_enabled
+    result = asyncio.new_event_loop().run_until_complete(
+        toggle_plugin_enabled("xiaoai", container=_mock_container(layer=mock_layer))
+    )
+    assert result["success"] is True
+    assert result["data"]["enabled"] is True  # False → True（启用）
+    # 启用不应停进程
+    mock_layer.stop_plugin.assert_not_awaited()
+    mock_layer.set_plugin_enabled.assert_called_once_with("xiaoai", True)
 
 
 def test_toggle_plugin_enabled_unknown_returns_error():
