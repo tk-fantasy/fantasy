@@ -1,7 +1,7 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { SS_CHAT_SESSION } from '../utils/constants'
+import { SS_CHAT_SESSION, LS_BROADCAST_ENABLED } from '../utils/constants'
 import { toolIcon, summarizeToolCall, summarizeToolResult, parseToolResult } from '../utils/toolNames'
 import { useVoiceInput } from '../composables/useVoiceInput'
 import { useCamera } from '../composables/useCamera'
@@ -101,6 +101,9 @@ function onVideoFeedLoad() {
 // ============ State ============
 const messages = ref([])
 const inputText = ref('')
+// 小爱广播开关：本地缓存 + 后端全局状态同步。
+// 点击切换时同时更新 localStorage 和后端（/api/integrations/broadcast/toggle）。
+const broadcastEnabled = ref(true)
 const voiceError = ref('')
 const voice = useVoiceInput({
   // 识别文本追加到输入框（不自动发送），错误短暂提示
@@ -139,7 +142,6 @@ const SLASH_COMMANDS = [
   { cmd: '/task', desc: '查看自动化规则', action: 'nav', url: '/task' },
   { cmd: '/scheduled', desc: '查看定时任务', action: 'nav', url: '/scheduled' },
   { cmd: '/models', desc: '模型配置与切换', action: 'nav', url: '/models' },
-  { cmd: '/focus', desc: '设置视觉关注重点', action: 'nav', url: '/focus' },
   { cmd: '/sessions', desc: '浏览并切换历史会话', action: 'nav', url: '/sessions' },
   { cmd: '/doc', desc: '打开RAG文档助手', action: 'nav', url: '/doc' },
   { cmd: '/sg', desc: '构建与管理语义图', action: 'nav', url: '/sg' },
@@ -402,6 +404,22 @@ function scrollToBottom() {
     const el = document.querySelector('.chat-messages')
     if (el) el.scrollTop = el.scrollHeight
   })
+}
+
+// ============ Broadcast Toggle ============
+// 切换小爱广播：同步本地状态 + 调后端 toggle API 持久化。
+// 后端切换失败时回滚本地状态并提示。
+async function toggleBroadcast() {
+  const prev = broadcastEnabled.value
+  try {
+    const data = await apiPost('/api/integrations/broadcast/toggle', {})
+    broadcastEnabled.value = !!data.broadcast_enabled
+    localStorage.setItem(LS_BROADCAST_ENABLED, String(broadcastEnabled.value))
+  } catch (e) {
+    // 后端切换失败（如集成平台未启用），回滚本地状态
+    broadcastEnabled.value = prev
+    console.warn('toggle broadcast failed:', e)
+  }
 }
 
 // ============ Send Message ============
@@ -780,6 +798,16 @@ async function showGreetingMessage() {
 onMounted(async () => {
   connectWS()
 
+  // 初始化小爱广播开关：以后端状态为准，localStorage 做离线兜底
+  try {
+    const data = await apiGet('/api/integrations')
+    broadcastEnabled.value = data?.broadcast_enabled ?? true
+  } catch (e) {
+    // 集成平台未启用或请求失败时，回退到 localStorage 缓存
+    const cached = localStorage.getItem(LS_BROADCAST_ENABLED)
+    broadcastEnabled.value = cached === null ? true : cached === 'true'
+  }
+
   // 静态读取 chat 模型名（不耗 API，仅显示配置）
   try {
     const settingsData = await apiGet('/api/llm/settings')
@@ -956,6 +984,12 @@ onUnmounted(() => {
         >
           {{ voice.transcribing.value ? '…' : voice.recording.value ? '■' : '🎤' }}
         </button>
+        <button
+          class="mic-btn broadcast-btn"
+          :class="{ off: !broadcastEnabled }"
+          :title="broadcastEnabled ? '小爱广播已开启（点击关闭）' : '小爱广播已关闭（点击开启）'"
+          @click="toggleBroadcast"
+        >🔊</button>
         <button @click="sendMessage" class="send-btn">发送</button>
       </div>
       <div class="voice-error" v-if="voiceError">{{ voiceError }}</div>
@@ -1534,6 +1568,25 @@ onUnmounted(() => {
 .mic-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* 广播按钮：开启时继承 mic-btn 默认样式；关闭时置灰 + 划线效果 */
+.broadcast-btn.off {
+  opacity: 0.4;
+  filter: grayscale(0.8);
+}
+.broadcast-btn.off::after {
+  content: '';
+  position: absolute;
+  left: 12%;
+  right: 12%;
+  top: 50%;
+  height: 2px;
+  background: #e74c3c;
+  transform: rotate(-30deg);
+}
+.broadcast-btn {
+  position: relative;
 }
 
 @keyframes mic-pulse {
