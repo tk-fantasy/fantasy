@@ -35,7 +35,8 @@ Phase 1 完成了"Aether 回复 → 小爱播报"的 MVP。Phase 2 交付两个�
 | 打断按钮可见性 | **始终可见** | 无法精确知道小爱何时念完（HA 不回调），始终可见最可靠。idle 时点击为 no-op |
 | CancelledError 处理 | **吞掉不 re-raise** | emit Finish + interrupt_all 后正常返回，避免 WS handler 崩 |
 | 直通模式 session | **不进 history** | 完全绕过 LLM，不消耗 token，不污染对话历史 |
-| 模式选择器 | **框架自带 UI（非插件贡献）** | 模式切换是框架能力，直接写在 ChatView 里 |
+| 模式选择器 | **插件 UI 贡献（mode_option）** | 与 Phase 1 广播开关同机制：manifest 声明 `ui_contribution`，框架通用渲染。没小爱插件 → 只有默认 Aether 按钮，零硬编码 |
+| 打断按钮 | **框架自带 UI** | 打断是横切能力（非小爱专属），框架自带按钮合理 |
 | 多用户小爱打断 | **全局（defer Phase 4）** | 共享家庭设备，全局打断符合直觉。与 spec §14 Q3 一致 |
 
 ---
@@ -70,11 +71,8 @@ async def ws_chat(websocket, container, user_id):
             rid = payload.get("request_id") or new_request_id()
             set_request_id(rid)
 
-            if mode == "xiaoai_direct":
-                current_task = asyncio.create_task(
-                    _handle_direct(websocket, container, payload, rid, user_id)
-                )
-            else:
+            if mode == "aether":
+                # 默认模式：走 LLM
                 event = Event.build_event(
                     Nlp.Request(query=payload.get("query", "")),
                     request_id=rid,
@@ -82,6 +80,11 @@ async def ws_chat(websocket, container, user_id):
                 )
                 current_task = asyncio.create_task(
                     _run_dispatch(container, event, websocket, user_id, rid)
+                )
+            else:
+                # 任意非默认模式：通用路由到 inbound_router 插件（不硬编码模式名）
+                current_task = asyncio.create_task(
+                    _handle_direct(websocket, container, payload, rid, user_id)
                 )
             set_request_id("-")
 ```
@@ -118,8 +121,24 @@ async def _run_dispatch(container, event, websocket, user_id, rid):
 
 
 async def _handle_direct(websocket, container, payload, rid, user_id):
-    """直通小爱模式：文字原样转小爱原生执行。"""
-    # 见 §5
+    """直通模式：文字路由到 inbound_router 插件（通用，不硬编码任何插件）。"""
+    try:
+        text = payload.get("query", "")
+        mode = payload.get("mode", "")
+        # 通用路由：找声明了 inbound_router 的插件
+        result = await container.integration_layer.route_inbound(text, mode)
+        if result.get("ok"):
+            await websocket.send_json(
+                _build_instruction(Dialog.Finish(success=True, message="已转交处理"))
+            )
+        else:
+            await websocket.send_json(
+                _build_instruction(Dialog.Finish(success=False, message=result.get("error", "直通失败")))
+            )
+    except Exception as exc:
+        await websocket.send_json(
+            _build_instruction(Dialog.Finish(success=False, message="直通执行失败"))
+        )
 ```
 
 ### 3.4 并发模型
@@ -184,6 +203,10 @@ except asyncio.CancelledError:
 
 ## 5. W2 小爱直通模式
 
+### 5.0 完全解耦原则
+
+与 Phase 1 广播开关同机制：主程序不出现"小爱"字眼，不硬编码模式名。模式选择器由插件 manifest 声明 `ui_contribution`（`mode_option` 类型），框架通用渲染。没小爱插件 → 模式选择器只有默认 Aether → 永远走 LLM，零硬编码。
+
 ### 5.1 全链路新增
 
 | 层 | 文件 | 改动 |
@@ -193,30 +216,34 @@ except asyncio.CancelledError:
 | SDK 路由 | `app/integration/sdk/plugin_base.py` | `handle()` 加 `router.handle` 分支 → 调 `self.router.route(text)` |
 | 门面 | `app/integration/integration_layer.py` | 加 `route_inbound(text, mode) -> dict`：找声明 `inbound_router` 的插件，RPC 调 `router.handle` |
 | schema | `app/integration/schema.py` | `INBOUND_ROUTER` 枚举已有，无需改 |
-| 小爱 manifest | `integrations/xiaoai/manifest.json` | 加 `inbound_router` capability |
+| State/Action 注册表 | `app/routes/integration_routes.py` | STATE_HANDLERS 加 `current_mode`（默认 "aether"），ACTION_HANDLERS 加 `set_mode` |
+| 小爱 manifest | `integrations/xiaoai/manifest.json` | 加 `inbound_router` capability + `ui_contribution`（mode_option） |
 | 小爱插件 | `integrations/xiaoai/plugin.py` | 实现 `XiaoAiRouter.route(text)`：调 `notify.send_message` 到 `execute_text_directive` 实体 |
+| 前端通用渲染 | `frontend/src/components/integration/ModeOptionContribution.vue` | 新增：渲染模式按钮，点击设 current_mode |
+| 前端注册 | `frontend/src/components/integration/IntegrationSlot.vue` | TYPE_COMPONENTS 加 `mode_option` 映射 |
 
 ### 5.2 直通数据流
 
 ```
-用户切"小爱模式"，输入"播放周杰伦的歌"
+用户切"小爱"模式（插件贡献的 mode_option 按钮），输入"播放周杰伦的歌"
   → WS {type:"chat", mode:"xiaoai_direct", query:"播放周杰伦的歌", session_id:...}
-  → WS route: mode=xiaoai_direct
-  → current_task = create_task(_handle_direct(...))
+  → WS route: mode != "aether" → current_task = create_task(_handle_direct(...))
   → _handle_direct:
-      ├─ emit 用户气泡（query 原文）
       ├─ integration_layer.route_inbound("播放周杰伦的歌", "xiaoai_direct")
-      │   → 找到 xiaoai 插件（声明了 inbound_router）
-      │   → RPC router.handle {text:"播放周杰伦的歌"}
+      │   → 找到声明 inbound_router 的插件（xiaoai）
+      │   → RPC router.handle {text:"播放周杰伦的歌", mode:"xiaoai_direct"}
       │   → XiaoAiRouter.route("播放周杰伦的歌")
       │       → HA notify.send_message(entity_id=...execute_text_directive_a_5_5, message="播放周杰伦的歌")
       │       → 小爱原生执行（播放音乐）
       │       → return {ok:true, executed:"播放周杰伦的歌"}
-      └─ emit Dialog.Finish(success=true, message="已转交小爱处理")
-  → 前端渲染助手消息"已转交小爱处理"
+      └─ emit Dialog.Finish(success=true, message="已转交处理")
+  → 前端渲染助手消息"已转交处理"
 ```
 
-**关键**：直通模式完全绕过 LLM，不进 session history，不消耗 token。
+**关键**：
+- 直通模式完全绕过 LLM，不进 session history，不消耗 token
+- WS route 只判断 `mode != "aether"`，不硬编码 "xiaoai_direct"——任何插件声明的 mode 都走 route_inbound
+- "已转交处理"是通用文案，不写"小爱"
 
 ### 5.3 XiaoAiRouter 实现
 
@@ -247,6 +274,8 @@ class XiaoAiRouter(InboundRouter):
 
 ### 5.4 manifest.json 改动
 
+加 `inbound_router` capability + 模式选择器 UI 贡献：
+
 ```json
 "capabilities": [
   {
@@ -261,8 +290,34 @@ class XiaoAiRouter(InboundRouter):
     "priority": 50,
     "config_schema": {}
   }
+],
+"ui_contributions": [
+  {
+    "slot": "chat_input_toolbar",
+    "type": "toggle_button",
+    ... (Phase 1 广播开关，不变)
+  },
+  {
+    "slot": "chat_mode_selector",
+    "type": "mode_option",
+    "props": {
+      "label": "小爱",
+      "icon": "🎵",
+      "mode": "xiaoai_direct"
+    },
+    "state_key": "current_mode",
+    "action": "set_mode"
+  }
 ]
 ```
+
+**mode_option 机制**：
+- `props.mode`：该按钮代表的模式值（由插件声明，框架不硬编码）
+- `props.label/icon`：按钮显示文字/图标（"小爱"字眼在 manifest 里，不在前端代码里）
+- `state_key: "current_mode"`：框架全局状态，记录当前选中模式
+- `action: "set_mode"`：点击时调此 action，参数 `{mode: props.mode}`
+
+没小爱插件 → `chat_mode_selector` slot 无贡献 → 模式选择器只有框架默认的 Aether 按钮 → 零硬编码。
 
 ### 5.5 IntegrationLayer.route_inbound
 
@@ -283,15 +338,22 @@ V1 只有一个 inbound_router 插件（小爱），直接调第一个匹配的�
 
 ## 6. 前端改动（ChatView.vue）
 
-### 6.1 模式选择器
+### 6.1 模式选择器（框架默认 + 插件贡献）
 
-- 输入框旁加按钮组 `[Aether | 小爱]`（两个 toggle 按钮，默认 Aether）
-- 这是框架自带 UI，不走 IntegrationSlot 插件贡献机制（模式切换是框架能力）
-- 选"小爱"时按钮高亮，发送消息附带 `mode: "xiaoai_direct"`
-- 选"Aether"时 `mode: "aether"`（或不发 mode，后端默认 aether）
+- **框架默认按钮**：ChatView 里写一个 "Aether" 按钮（框架默认模式，总是显示），点击设 `current_mode = "aether"`
+- **插件贡献按钮**：`<IntegrationSlot slot="chat_mode_selector" />` 通用占位，渲染插件声明的 mode_option（小爱插件贡献"小爱"按钮）。没插件时此占位为空
+- `current_mode` 通过 `GET /api/integrations/state/current_mode` 读取（默认 "aether"）
+- 选中的按钮高亮，发送消息附带 `mode: current_mode`
 
 ```javascript
-const chatMode = ref('aether')  // 'aether' | 'xiaoai_direct'
+const chatMode = ref('aether')  // 框架默认，从 /api/integrations/state/current_mode 读
+
+onMounted(async () => {
+  try {
+    const state = await apiGet('/api/integrations/state/current_mode')
+    if (state?.value) chatMode.value = state.value
+  } catch {}
+})
 
 function sendMessage() {
   ...
@@ -299,7 +361,7 @@ function sendMessage() {
     type: 'chat',
     query: text,
     session_id: sessionId.value,
-    mode: chatMode.value,
+    mode: chatMode.value,  // 'aether' 或插件声明的 mode 值
   }))
   ...
 }
@@ -308,6 +370,7 @@ function sendMessage() {
 ### 6.2 打断按钮
 
 - 输入框工具栏，stop 图标，始终可见
+- 这是框架自带 UI（打断是横切能力，非小爱专属）
 - 点击：`ws.send(JSON.stringify({type:'interrupt'}))` + `finalizeStreaming()`
 
 ### 6.3 指令处理
@@ -318,7 +381,75 @@ function sendMessage() {
 
 ### 6.4 直通响应显示
 
-`_handle_direct` emit 的 `Dialog.Finish(success=true, message="已转交小爱处理")` 走现有 Finish 处理路径，渲染为助手消息。
+`_handle_direct` emit 的 `Dialog.Finish(success=true, message="已转交处理")` 走现有 Finish 处理路径，渲染为助手消息。（不写"小爱"——通用文案，任何 inbound_router 插件都适用）
+
+### 6.5 ModeOptionContribution.vue（新增通用组件）
+
+```vue
+<!-- 渲染插件贡献的模式按钮，点击设 current_mode -->
+<template>
+  <button
+    class="mode-option-btn"
+    :class="{ active: isActive }"
+    @click="selectMode"
+    :title="contribution.props?.label"
+  >
+    <span v-if="contribution.props?.icon">{{ contribution.props.icon }}</span>
+    {{ contribution.props?.label }}
+  </button>
+</template>
+
+<script setup>
+import { ref, onMounted } from 'vue'
+import { apiGet, apiPost } from '../../utils/api'
+
+const props = defineProps({ contribution: Object })
+const isActive = ref(false)
+const currentMode = ref('aether')
+
+onMounted(async () => {
+  await refreshState()
+})
+
+async function refreshState() {
+  try {
+    const state = await apiGet('/api/integrations/state/current_mode')
+    currentMode.value = state?.value || 'aether'
+    isActive.value = currentMode.value === props.contribution.props?.mode
+  } catch {}
+}
+
+async function selectMode() {
+  const mode = props.contribution.props?.mode
+  await apiPost(`/api/integrations/action/set_mode`, { mode })
+  currentMode.value = mode
+  isActive.value = true
+  // 通知 ChatView 更新（通过全局事件或 pinia store）
+  window.dispatchEvent(new CustomEvent('mode-changed', { detail: { mode } }))
+}
+</script>
+```
+
+### 6.6 IntegrationSlot.vue 注册 mode_option
+
+```javascript
+const TYPE_COMPONENTS = {
+  toggle_button: ToggleButtonContribution,
+  mode_option: ModeOptionContribution,  // 新增
+}
+```
+
+### 6.7 ChatView 监听模式变化
+
+ChatView 监听 `mode-changed` 事件更新 `chatMode`（插件贡献的按钮点击后同步）：
+
+```javascript
+onMounted(() => {
+  window.addEventListener('mode-changed', (e) => {
+    chatMode.value = e.detail.mode
+  })
+})
+```
 
 ---
 
@@ -327,31 +458,41 @@ function sendMessage() {
 ### 7.1 新增文件
 
 ```
-app/integration/sdk/router_base.py          ← InboundRouter ABC
+app/integration/sdk/router_base.py                       ← InboundRouter ABC
+frontend/src/components/integration/ModeOptionContribution.vue  ← 模式按钮通用渲染
 ```
 
 ### 7.2 修改文件
 
 ```
-app/routes/ws_routes.py                     ← 循环改 task 式 + interrupt + mode 路由
+app/routes/ws_routes.py                     ← 循环改 task 式 + interrupt + 通用 mode 路由
 app/agents/dispatcher.py                    ← _run_turn 加 CancelledError 处理
 app/integration/rpc_protocol.py             ← 加 METHOD_ROUTE 常量
 app/integration/integration_layer.py        ← 加 route_inbound 方法
 app/integration/sdk/plugin_base.py          ← handle() 加 router.handle 分支
-integrations/xiaoai/manifest.json           ← 加 inbound_router capability
+app/routes/integration_routes.py            ← STATE_HANDLERS 加 current_mode，ACTION_HANDLERS 加 set_mode
+integrations/xiaoai/manifest.json           ← 加 inbound_router capability + mode_option ui_contribution
 integrations/xiaoai/plugin.py               ← 加 XiaoAiRouter + 挂到 plugin
-frontend/src/views/ChatView.vue             ← 模式选择器 + 打断按钮 + Finish(false) 处理
+frontend/src/views/ChatView.vue             ← 框架默认 Aether 按钮 + IntegrationSlot(mode_selector) + 打断按钮 + Finish(false) 处理
+frontend/src/components/integration/IntegrationSlot.vue  ← TYPE_COMPONENTS 加 mode_option
 ```
 
 ### 7.3 测试文件
 
 ```
-tests/test_ws_interrupt.py                  ← WS 循环打断行为
-tests/test_dispatcher_cancel.py             ← Dispatcher CancelledError 处理
-tests/test_inbound_router.py                ← route_inbound + InboundRouter ABC
-tests/integrations/test_xiaoai_router.py    ← XiaoAiRouter 直通逻辑（不 spawn）
-tests/test_integration_layer_route.py       ← IntegrationLayer.route_inbound
+tests/test_ws_interrupt.py                  ← WS 循环打断行为（task 式 + interrupt 消息 + 自动打断）
+tests/test_dispatcher_cancel.py             ← Dispatcher CancelledError 处理（emit Finish + interrupt_all）
+tests/test_inbound_router.py                ← InboundRouter ABC + plugin_base router.handle 路由
+tests/test_integration_layer_route.py       ← IntegrationLayer.route_inbound（通用，不硬编码插件）
+tests/integrations/test_xiaoai_router.py    ← XiaoAiRouter 直通逻辑（不 spawn，mock HA caller）
+tests/test_mode_state_routes.py             ← current_mode state + set_mode action 路由
 ```
+
+### 7.4 解耦验证标准
+
+- **删 `integrations/xiaoai/` 目录** → WS route 仍正常（mode != aether 时 route_inbound 返回 no router，前端显示"直通失败"，但主程序不崩）
+- **删 `integrations/xiaoai/` 目录** → ChatView 模式选择器只有框架默认 Aether 按钮（`chat_mode_selector` slot 无贡献）
+- **主程序 grep "小爱"/"xiaoai"** → 只在 manifest_loader 扫描目录和 config 的 disabled_plugins 里出现，业务逻辑零硬编码
 
 ---
 
@@ -359,8 +500,8 @@ tests/test_integration_layer_route.py       ← IntegrationLayer.route_inbound
 
 | 场景 | 行为 |
 |------|------|
-| 直通模式但小爱插件未启用/未加载 | `route_inbound` 返回 `{ok:false, error:"no inbound router"}`，前端显示"小爱未启用" |
-| 直通模式小爱 HA 调用失败 | 插件 `route()` 抛异常 → RPC 返回 error → WS emit `Dialog.Finish(success=false, message="小爱执行失败")` |
+| 直通模式但无 inbound_router 插件（未启用/未加载） | `route_inbound` 返回 `{ok:false, error:"no inbound router available"}`，前端显示"直通失败" |
+| 直通模式插件 HA 调用失败 | 插件 `route()` 抛异常 → RPC 返回 error → WS emit `Dialog.Finish(success=false, message="直通执行失败")` |
 | 打断时无活跃 task | `_cancel_current` 检查 `task.done()`，跳过 cancel，仍调 `interrupt_all`（no-op if 无播报） |
 | 打断时 task 已结束但小爱在念 | 跳过 cancel，调 `interrupt_all` 停小爱 |
 | Dispatch task 内部异常（非 cancel） | `_run_dispatch` 包装吞掉异常，Dispatcher 内部已有 Finish(success=false) emit |
@@ -386,4 +527,4 @@ tests/test_integration_layer_route.py       ← IntegrationLayer.route_inbound
 | 横切关注点 | 打断作为横切能力，同时作用于 AI task + 硬件 sink，非绑定单一组件 |
 | WS 长连接状态管理 | 从阻塞式循环到 task 式，支持并发消息处理 + 即时打断 |
 | 能力契约扩展 | inbound_router 能力从 schema 到 SDK 到插件全链路落地 |
-| 解耦边界 | 直通模式完全绕过 LLM，模式切换是框架能力非插件贡献 |
+| 极致解耦 | 模式选择器走插件 UI 贡献（mode_option），主程序零硬编码，删插件零痕迹 |
