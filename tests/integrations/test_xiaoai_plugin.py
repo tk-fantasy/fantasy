@@ -1,17 +1,21 @@
 """小爱插件单元测试（mock HA caller，不 spawn、不真连 HA）。"""
 
 import asyncio
+import importlib.util
 import json
 import sys
 from pathlib import Path
 from unittest.mock import AsyncMock
 
-# 让 integrations/xiaoai 可被导入
+# 用 importlib 按绝对路径加载，避免 sys.path 污染
+# （echo 和 xiaoai 都有 plugin.py，sys.path 模式会互相覆盖）
 XIAOAI_DIR = Path(__file__).parent.parent.parent / "integrations" / "xiaoai"
-if str(XIAOAI_DIR) not in sys.path:
-    sys.path.insert(0, str(XIAOAI_DIR))
+XIAOAI_PLUGIN_PATH = XIAOAI_DIR / "plugin.py"
 
-from plugin import XiaoAiPlugin  # noqa: E402
+_spec = importlib.util.spec_from_file_location("xiaoai_plugin", XIAOAI_PLUGIN_PATH)
+_module = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_module)
+XiaoAiPlugin = _module.XiaoAiPlugin
 
 
 def _manifest():
@@ -25,8 +29,8 @@ def _make_plugin_with_mock_ha():
     plugin.setup(manifest)
     plugin.ha_caller = AsyncMock()
     plugin.ha_caller.call_service.return_value = {"ok": True}
-    # 重建 sink 用 mock caller
-    from plugin import XiaoAiSink
+    # 重建 sink 用 mock caller（XiaoAiSink 已从 xiaoai_plugin 模块加载）
+    XiaoAiSink = _module.XiaoAiSink
     schema = manifest["capabilities"][0]["config_schema"]
     entity_id = schema["entity_id"]["default"]
     execute_mode = schema["execute_mode"]["default"]

@@ -1,16 +1,18 @@
 """echo 插件 runtime 单元测试（不 spawn 子进程，直接调用 plugin 对象）。"""
 
 import asyncio
+import importlib.util
 import json
-import sys
 from pathlib import Path
 
-# 让 tests/integrations/echo 可被导入
+# 用 importlib 按绝对路径加载，避免 sys.path 污染（echo/xiaoai 都有 plugin.py）
 ECHO_DIR = Path(__file__).parent / "integrations" / "echo"
-if str(ECHO_DIR) not in sys.path:
-    sys.path.insert(0, str(ECHO_DIR))
+ECHO_PLUGIN_PATH = ECHO_DIR / "plugin.py"
 
-from plugin import EchoPlugin  # noqa: E402
+_spec = importlib.util.spec_from_file_location("echo_plugin", ECHO_PLUGIN_PATH)
+_module = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_module)
+EchoPlugin = _module.EchoPlugin
 
 
 def test_echo_plugin_handles_speak():
