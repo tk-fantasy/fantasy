@@ -1,14 +1,25 @@
 """集成插件平台管理路由。"""
 
+import io
 import logging
+import re
+import shutil
+import zipfile
+from pathlib import Path
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, UploadFile, File
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from ..container import get_container
+from ..core.config import get_config
+from ..integration.schema import Manifest
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+# 插件 id 合法字符（防路径穿越：只允许字母数字下划线中划线）
+_PLUGIN_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 
 class BroadcastRequest(BaseModel):
@@ -126,3 +137,150 @@ async def invoke_action(action: str, container=Depends(get_container)):
         return {"success": False, "message": f"未知 action: {action}"}
     result = await handler(layer)
     return {"success": True, "data": result}
+
+
+# ── 插件导出/上传 ──
+
+def _resolve_plugin_dir() -> Path:
+    """从 config 读 plugin_dir，解析为绝对路径（容器内项目根 /aether）。"""
+    from pathlib import Path as _Path
+    dir_cfg = get_config("integration.plugin_dir", "integrations")
+    return _Path("/aether") / dir_cfg
+
+
+@router.get("/integrations/{plugin_id}/export")
+async def export_plugin(plugin_id: str):
+    """打包某插件目录为 zip 下载。
+
+    无需集成平台启用（纯文件操作，disabled 的也能导出）。
+    """
+    if not _PLUGIN_ID_RE.match(plugin_id):
+        return {"success": False, "message": "非法插件 id"}
+    plugin_dir = _resolve_plugin_dir() / plugin_id
+    if not plugin_dir.is_dir():
+        return {"success": False, "message": f"插件 {plugin_id} 不存在"}
+
+    # 内存打包 zip
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for path in sorted(plugin_dir.rglob("*")):
+            if path.is_file():
+                zf.write(path, arcname=path.relative_to(plugin_dir))
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{plugin_id}.zip"'},
+    )
+
+
+@router.post("/integrations/upload")
+async def upload_plugin(file: UploadFile = File(...)):
+    """上传插件 zip 包，校验后解压到 integrations/。
+
+    校验：
+    - zip 内必须有 manifest.json
+    - manifest.id 合法（防路径穿越）
+    - manifest.entry 文件在 zip 内存在
+    - 同名插件已存在 → 拒绝（需先删除）
+    """
+    content = await file.read()
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(content))
+    except zipfile.BadZipFile:
+        return {"success": False, "message": "不是有效的 zip 文件"}
+
+    names = zf.namelist()
+
+    # 找 manifest.json（可能在根目录或单层子目录）
+    manifest_name = None
+    manifest_subdir = ""
+    for n in names:
+        basename = n.split("/")[-1]
+        if basename == "manifest.json" and n.count("/") <= 1:
+            manifest_name = n
+            manifest_subdir = "/".join(n.split("/")[:-1])
+            break
+    if manifest_name is None:
+        return {"success": False, "message": "zip 内未找到 manifest.json"}
+
+    # 解析 manifest
+    try:
+        import json
+        raw = json.loads(zf.read(manifest_name).decode("utf-8"))
+        manifest = Manifest.model_validate(raw)
+    except Exception as exc:
+        return {"success": False, "message": f"manifest 校验失败: {exc}"}
+
+    # id 合法性（防路径穿越）
+    if not _PLUGIN_ID_RE.match(manifest.id):
+        return {"success": False, "message": "manifest.id 含非法字符"}
+
+    # 入口文件存在性
+    entry_path_in_zip = f"{manifest_subdir}/{manifest.entry}".lstrip("/") \
+        if manifest_subdir else manifest.entry
+    if entry_path_in_zip not in names and manifest.entry not in names:
+        return {"success": False, "message": f"入口文件 {manifest.entry} 不在 zip 内"}
+
+    # 冲突检测
+    plugin_root = _resolve_plugin_dir()
+    target_dir = plugin_root / manifest.id
+    if target_dir.exists():
+        return {"success": False,
+                "message": f"插件 {manifest.id} 已存在，需先删除"}
+
+    # 原子解压：先解到临时目录，校验后 rename
+    target_dir.mkdir(parents=True, exist_ok=False)
+    try:
+        for n in names:
+            # 跳过目录条目、__MACOSX 等
+            if n.endswith("/") or "__MACOSX" in n:
+                continue
+            # 去掉 manifest_subdir 前缀（若有），解到 target_dir 根
+            rel = n
+            if manifest_subdir and n.startswith(manifest_subdir + "/"):
+                rel = n[len(manifest_subdir) + 1:]
+            if not rel:
+                continue
+            # 防路径穿越：解析后必须在 target_dir 内
+            out_path = (target_dir / rel).resolve()
+            if not str(out_path).startswith(str(target_dir.resolve())):
+                continue
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_bytes(zf.read(n))
+        logger.info("插件 %s 上传成功，解压到 %s", manifest.id, target_dir)
+        return {"success": True,
+                "data": {"id": manifest.id, "name": manifest.name,
+                         "message": "上传成功，重启 Aether 后生效"}}
+    except Exception as exc:
+        # 失败回滚：删除已解压的目录
+        shutil.rmtree(target_dir, ignore_errors=True)
+        logger.error("插件 %s 上传解压失败: %s", manifest.id, exc)
+        return {"success": False, "message": f"解压失败: {exc}"}
+
+
+@router.delete("/integrations/{plugin_id}")
+async def delete_plugin(plugin_id: str, container=Depends(get_container)):
+    """删除插件（删 integrations/{id}/ 文件夹）。
+
+    若插件正在运行，先停止进程。删内置插件需谨慎（建议先禁用）。
+    """
+    if not _PLUGIN_ID_RE.match(plugin_id):
+        return {"success": False, "message": "非法插件 id"}
+    plugin_dir = _resolve_plugin_dir() / plugin_id
+    if not plugin_dir.is_dir():
+        return {"success": False, "message": f"插件 {plugin_id} 不存在"}
+
+    # 若运行中，先停进程
+    layer = container.integration_layer
+    if layer is not None:
+        proc = layer._supervisor.get_process(plugin_id) if hasattr(layer, "_supervisor") else None
+        if proc and proc.is_alive:
+            try:
+                await proc.stop()
+            except Exception as exc:
+                logger.warning("停止插件 %s 进程失败: %s", plugin_id, exc)
+
+    shutil.rmtree(plugin_dir, ignore_errors=True)
+    logger.info("插件 %s 已删除", plugin_id)
+    return {"success": True, "data": {"id": plugin_id}}
