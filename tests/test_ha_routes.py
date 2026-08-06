@@ -208,15 +208,34 @@ class TestEntityNotesRoute:
         assert "switch.gate" not in result.data["notes"]
 
     @pytest.mark.asyncio
-    async def test_put_invalidates_ha_cache(self, _db):
-        """写入后调 invalidate_states_cache，让后台 _refresh_ha_catalog 下周期重读。"""
+    async def test_put_triggers_catalog_refresh(self, _db):
+        """写入后立即触发 catalog 刷新，让新备注进缓存（不必等后台 60 秒循环）。"""
         from app.routes.ha_routes import set_entity_note
         from app.schema.api_schemas import EntityNoteRequest
 
+        refresh_calls = []
+
+        async def _fake_refresh():
+            refresh_calls.append(1)
+
         mock_ha_service = MagicMock()
-        container = _mock_container(ha_service=mock_ha_service)
+        container = _mock_container(ha_service=mock_ha_service, catalog_refresh_fn=_fake_refresh)
         await set_entity_note(EntityNoteRequest(entity_id="switch.gate", note="x"), container=container)
-        mock_ha_service.invalidate_states_cache.assert_called_once()
+        # create_task 调度，让事件循环跑一下让 task 完成
+        import asyncio
+        await asyncio.sleep(0.01)
+        assert len(refresh_calls) == 1, f"catalog_refresh_fn 应被调一次，实际 {len(refresh_calls)} 次"
+
+    @pytest.mark.asyncio
+    async def test_put_no_refresh_fn_does_not_crash(self, _db):
+        """container 没有 catalog_refresh_fn 时（旧代码/未注入）不崩溃，仅跳过刷新。"""
+        from app.routes.ha_routes import set_entity_note
+        from app.schema.api_schemas import EntityNoteRequest
+
+        container = _mock_container(ha_service=MagicMock())
+        # 不设 catalog_refresh_fn（getattr 默认 None）
+        result = await set_entity_note(EntityNoteRequest(entity_id="switch.gate", note="x"), container=container)
+        assert result.data["note"] == "x"
 
     @pytest.mark.asyncio
     async def test_put_missing_entity_id_rejected(self, _db):

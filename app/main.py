@@ -121,6 +121,10 @@ health_checker = HealthChecker()
 _container = init_container(_services, metrics_service)
 # 补充 main.py 特有的可变引用
 _container.ha_controls_cache_ref = _ha_controls_cache_ref
+# 注入 catalog 刷新回调：set_entity_note 写完备注立即触发，
+# 让新备注进 _ha_controls_cache_ref，不必等后台 60 秒循环。
+# 用 lambda 延迟引用 _refresh_ha_catalog（它在模块后部定义，调用时才解析）。
+_container.catalog_refresh_fn = lambda: _refresh_ha_catalog()
 # RAG 服务（索引在 lifespan 启动阶段后台构建）
 from .services.rag_service import RagService
 rag_service = RagService(base_dir=BASE_DIR, embed_client=embed_client)

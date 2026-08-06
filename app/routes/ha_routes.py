@@ -1,6 +1,7 @@
 """Home Assistant 路由 — 设备控制、配置、测试。"""
 from __future__ import annotations
 
+import asyncio
 import logging
 
 import httpx
@@ -130,8 +131,14 @@ async def set_entity_note(
         await db.emoji_pref_upsert("entity_note", entity_id, note)
     else:
         await db.emoji_pref_delete("entity_note", entity_id)
-    # 清缓存让后台刷新周期重读备注（与 set_entity_alias 同模式）
-    container.ha_service.invalidate_states_cache()
+    # 立即重建 catalog 缓存（含备注），不必等后台 60 秒循环。
+    # 否则用户写完备注立刻聊天，LLM 用的还是旧缓存（不含备注）→ 调错 service。
+    refresh_fn = getattr(container, "catalog_refresh_fn", None)
+    if refresh_fn is not None:
+        try:
+            asyncio.create_task(refresh_fn())
+        except Exception:  # noqa: BLE001
+            logger.warning("catalog refresh after note save failed", exc_info=True)
     return ApiResponse(data={"entity_id": entity_id, "note": note})
 
 

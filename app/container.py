@@ -51,6 +51,10 @@ class AppContainer:
     automation_agent_ref: list  # [AutomationAgent | None]
     ha_catalog_cache_ref: list  # [str] — HA 设备目录缓存
     ha_controls_cache_ref: list  # [str] — HA 控件文本缓存
+    # catalog 刷新回调（main.py 注入 _refresh_ha_catalog）。
+    # set_entity_note 写完备注后立即触发一次，让新备注进缓存，
+    # 不必等后台 60 秒循环（否则用户写完备注立刻聊天，LLM 看到的还是旧缓存）。
+    catalog_refresh_fn: Any = None
 
     # ── 调度器（lifespan 启动阶段赋值，初始化前为 None）──
     # 放在所有无默认值字段之后，因其有默认值。
