@@ -184,3 +184,48 @@ def test_get_state_no_layer_returns_error():
         get_state("broadcast_enabled", container=_mock_container(layer=None))
     )
     assert result["success"] is False
+
+
+# ── 插件启用/禁用测试 ──
+
+def test_toggle_plugin_enabled_flips_state():
+    """toggle-enabled 路由翻转插件 enabled 态并调 set_plugin_enabled。"""
+    mock_layer = MagicMock()
+    mock_layer.list_plugins.return_value = [
+        {"id": "xiaoai", "enabled": True, "alive": True, "name": "小爱"}
+    ]
+    mock_layer.set_plugin_enabled = MagicMock()
+    from app.routes.integration_routes import toggle_plugin_enabled
+    result = asyncio.new_event_loop().run_until_complete(
+        toggle_plugin_enabled("xiaoai", container=_mock_container(layer=mock_layer))
+    )
+    assert result["success"] is True
+    assert result["data"]["enabled"] is False  # True → False
+    mock_layer.set_plugin_enabled.assert_called_once_with("xiaoai", False)
+
+
+def test_toggle_plugin_enabled_unknown_returns_error():
+    """切换未知插件返回失败。"""
+    mock_layer = MagicMock()
+    mock_layer.list_plugins.return_value = []
+    from app.routes.integration_routes import toggle_plugin_enabled
+    result = asyncio.new_event_loop().run_until_complete(
+        toggle_plugin_enabled("nonexistent", container=_mock_container(layer=mock_layer))
+    )
+    assert result["success"] is False
+
+
+def test_list_integrations_includes_enabled_field():
+    """list 返回的 plugins 含 enabled 字段（前端管理页用）。"""
+    mock_layer = MagicMock()
+    mock_layer.list_plugins.return_value = [
+        {"id": "xiaoai", "enabled": True, "alive": True},
+        {"id": "disabled_one", "enabled": False, "alive": False},
+    ]
+    from app.routes.integration_routes import list_integrations
+    result = asyncio.new_event_loop().run_until_complete(
+        list_integrations(container=_mock_container(layer=mock_layer))
+    )
+    plugins = result["data"]["plugins"]
+    assert plugins[0]["enabled"] is True
+    assert plugins[1]["enabled"] is False

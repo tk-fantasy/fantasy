@@ -19,7 +19,7 @@ class BroadcastRequest(BaseModel):
 
 @router.get("/integrations")
 async def list_integrations(container=Depends(get_container)):
-    """列出所有集成插件及其运行状态。"""
+    """列出所有集成插件及其运行状态（含禁用态）。"""
     layer = container.integration_layer
     if layer is None:
         return {"success": True, "data": {"plugins": [], "enabled": False,
@@ -29,6 +29,22 @@ async def list_integrations(container=Depends(get_container)):
         "enabled": True,
         "broadcast_enabled": layer.sink_manager.broadcast_enabled,
     }}
+
+
+@router.post("/integrations/{plugin_id}/toggle-enabled")
+async def toggle_plugin_enabled(plugin_id: str, container=Depends(get_container)):
+    """切换插件启用/禁用（持久化，需重启生效）。"""
+    layer = container.integration_layer
+    if layer is None:
+        return {"success": False, "message": "集成平台未启用"}
+    # 查当前状态
+    plugins = layer.list_plugins()
+    target = next((p for p in plugins if p["id"] == plugin_id), None)
+    if target is None:
+        return {"success": False, "message": f"未知插件: {plugin_id}"}
+    new_enabled = not target["enabled"]
+    layer.set_plugin_enabled(plugin_id, new_enabled)
+    return {"success": True, "data": {"id": plugin_id, "enabled": new_enabled}}
 
 
 @router.post("/integrations/broadcast/toggle")

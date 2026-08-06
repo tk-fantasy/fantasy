@@ -170,3 +170,38 @@ def test_manifest_ui_contributions_default_empty(tmp_path):
 
     manifests = load_manifests(str(tmp_path), api_version="1")
     assert manifests[0].ui_contributions == []
+
+
+def test_load_manifests_skips_disabled(tmp_path):
+    """disabled 列表里的插件应被跳过。"""
+    for pid in ["keep", "skipme"]:
+        d = tmp_path / pid
+        d.mkdir()
+        (d / "manifest.json").write_text(json.dumps({
+            "id": pid, "name": pid, "version": "1.0.0",
+            "aether_api_version": "1", "entry": "plugin.py",
+            "capabilities": [{"type": "output_sink", "id": pid}],
+        }), encoding="utf-8")
+
+    manifests = load_manifests(str(tmp_path), api_version="1", disabled=["skipme"])
+    ids = [m.id for m in manifests]
+    assert "keep" in ids
+    assert "skipme" not in ids
+
+
+def test_load_all_manifests_includes_disabled(tmp_path):
+    """load_all_manifests 返回所有插件（含禁用），供管理页展示。"""
+    from app.integration.manifest_loader import load_all_manifests
+    for pid in ["keep", "skipme"]:
+        d = tmp_path / pid
+        d.mkdir()
+        (d / "manifest.json").write_text(json.dumps({
+            "id": pid, "name": pid, "version": "1.0.0",
+            "aether_api_version": "1", "entry": "plugin.py",
+            "capabilities": [{"type": "output_sink", "id": pid}],
+        }), encoding="utf-8")
+
+    all_m = load_all_manifests(str(tmp_path), api_version="1")
+    ids = [m.id for m in all_m]
+    assert "keep" in ids
+    assert "skipme" in ids
