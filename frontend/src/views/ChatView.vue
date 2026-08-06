@@ -144,6 +144,7 @@ const SLASH_COMMANDS = [
   { cmd: '/doc', desc: '打开RAG文档助手', action: 'nav', url: '/doc' },
   { cmd: '/sg', desc: '构建与管理语义图', action: 'nav', url: '/sg' },
   { cmd: '/monitor', desc: '查看系统监控', action: 'nav', url: '/monitor' },
+  { cmd: '/plugin', desc: '插件管理', action: 'nav', url: '/plugin' },
 ]
 
 const statusText = computed(() => {

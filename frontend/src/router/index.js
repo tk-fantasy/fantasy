@@ -89,6 +89,11 @@ const routes = [
     name: 'Monitor',
     component: () => import('../views/MonitorView.vue'),
   },
+  {
+    path: '/plugin',
+    name: 'Plugin',
+    component: () => import('../views/PluginManageView.vue'),
+  },
 ]
 
 const router = createRouter({
