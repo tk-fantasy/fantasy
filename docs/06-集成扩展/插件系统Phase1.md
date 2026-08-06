@@ -214,7 +214,7 @@ Aether 维护 `STATE_HANDLERS` / `ACTION_HANDLERS` 注册表，**插件只能用
 | 操作 | 说明 |
 |------|------|
 | 查看列表 | 所有插件 + 状态（运行中/未启动/已禁用）+ 能力徽标 |
-| 启用/禁用 | 持久化到 `config.json` 的 `integration.disabled_plugins`，重启不加载禁用的（不删文件） |
+| 启用/禁用 | 热加载：禁用立即停进程，启用立即热启动（不重启 Aether）。状态持久化到 config |
 | 导出 | 打包 `integrations/{id}/` 为 zip 下载（分享给别人用） |
 | 上传 | 拖拽 zip 上传，校验 manifest + entry + id 合法 + 冲突，原子解压到 `integrations/` |
 | 删除 | 删 `integrations/{id}/` 文件夹（运行中的先停进程） |
