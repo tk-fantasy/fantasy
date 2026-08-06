@@ -19,8 +19,12 @@ class SinkManager:
     并发 fan-out，单个 sink 失败仅记录警告、不阻塞其他 sink 也不阻塞主流程。
     """
 
-    def __init__(self, supervisor: PluginSupervisor) -> None:
+    def __init__(self, supervisor: PluginSupervisor,
+                 broadcast_enabled: bool = True) -> None:
         self._supervisor = supervisor
+        # 运行时广播开关：False 时 broadcast/interrupt 直接返回，不触达任何 sink。
+        # 由 IntegrationLayer 从 config 读取初始化，toggle API 运行时切换。
+        self.broadcast_enabled = broadcast_enabled
 
     def _collect_sink_processes(self) -> list[tuple[str, object]]:
         """收集所有声明了 output_sink 能力的运行中进程。"""
@@ -34,6 +38,9 @@ class SinkManager:
 
     async def broadcast(self, text: str, msg_id: str = "") -> None:
         """并发广播文本到所有 sink。单个失败不阻塞其他。"""
+        # 全局广播开关：关闭时静默跳过（interrupt 仍可用于清队列/停止硬件）
+        if not self.broadcast_enabled:
+            return
         sinks = self._collect_sink_processes()
         if not sinks:
             return

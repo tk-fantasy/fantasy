@@ -27,6 +27,7 @@ class IntegrationLayer:
         rpc_timeout: float = 30.0,
         max_restarts: int = 3,
         env_per_plugin: dict[str, dict[str, str]] | None = None,
+        broadcast_enabled: bool = True,
     ) -> None:
         self._plugin_dir = plugin_dir
         self._api_version = api_version
@@ -34,7 +35,8 @@ class IntegrationLayer:
             rpc_timeout=rpc_timeout, max_restarts=max_restarts,
             env_per_plugin=env_per_plugin,
         )
-        self.sink_manager = SinkManager(self._supervisor)
+        self.sink_manager = SinkManager(self._supervisor,
+                                        broadcast_enabled=broadcast_enabled)
         self._started = False
 
     async def start(self) -> None:
@@ -64,3 +66,12 @@ class IntegrationLayer:
                 "alive": proc.is_alive if proc is not None else False,
             })
         return result
+
+    def set_broadcast_enabled(self, enabled: bool) -> None:
+        """运行时切换全局广播开关（同时写 config 持久化）。"""
+        self.sink_manager.broadcast_enabled = bool(enabled)
+        try:
+            from .config_helper import set_broadcast_enabled as persist
+            persist(bool(enabled))
+        except Exception as exc:
+            logger.warning("广播开关持久化失败（内存状态已更新）: %s", exc)

@@ -28,6 +28,7 @@
         }
     ],
     "permissions": [],
+    "secrets": ["ha_url", "ha_token"],
     "resources": {
         "max_memory_mb": 128,
         "restart_on_crash": true,

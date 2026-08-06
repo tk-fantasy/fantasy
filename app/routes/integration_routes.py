@@ -22,8 +22,24 @@ async def list_integrations(container=Depends(get_container)):
     """列出所有集成插件及其运行状态。"""
     layer = container.integration_layer
     if layer is None:
-        return {"success": True, "data": {"plugins": [], "enabled": False}}
-    return {"success": True, "data": {"plugins": layer.list_plugins(), "enabled": True}}
+        return {"success": True, "data": {"plugins": [], "enabled": False,
+                                          "broadcast_enabled": False}}
+    return {"success": True, "data": {
+        "plugins": layer.list_plugins(),
+        "enabled": True,
+        "broadcast_enabled": layer.sink_manager.broadcast_enabled,
+    }}
+
+
+@router.post("/integrations/broadcast/toggle")
+async def toggle_broadcast(container=Depends(get_container)):
+    """切换全局广播开关（开↔关），持久化到 config，立即生效。"""
+    layer = container.integration_layer
+    if layer is None:
+        return {"success": False, "message": "集成平台未启用"}
+    new_state = not layer.sink_manager.broadcast_enabled
+    layer.set_broadcast_enabled(new_state)
+    return {"success": True, "data": {"broadcast_enabled": new_state}}
 
 
 @router.post("/integrations/broadcast")

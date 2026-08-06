@@ -37,6 +37,9 @@ class Manifest(BaseModel):
     capabilities: list[Capability] = Field(default_factory=list)
     permissions: list[str] = Field(default_factory=list)
     resources: dict[str, Any] = Field(default_factory=dict)
+    # 声明需要的凭证类型（宿主统一注入，解耦具体插件名）
+    # 可选值: "ha_url", "ha_token" 等；宿主按声明映射到环境变量
+    secrets: list[str] = Field(default_factory=list)
 
     def has_capability(self, cap_type: CapabilityType) -> bool:
         return any(c.type == cap_type for c in self.capabilities)

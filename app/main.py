@@ -503,21 +503,27 @@ async def lifespan(_: FastAPI):
     if integration_enabled:
         from pathlib import Path as _Path
         from app.integration.integration_layer import IntegrationLayer
+        from app.integration.manifest_loader import load_manifests
+        from app.integration.config_helper import get_broadcast_enabled
         _plugin_dir_cfg = get_config("integration.plugin_dir", "integrations")
         # plugin_dir 相对于项目根解析（容器内工作目录 /aether）
         _plugin_dir = str(_Path("/aether") / _plugin_dir_cfg)
+        # 先加载 manifest，用于按 secrets 声明统一注入凭证（解耦具体插件名）
+        _manifests = load_manifests(_plugin_dir, api_version=get_config("integration.api_version", "1"))
         integration_layer = IntegrationLayer(
             plugin_dir=_plugin_dir,
             api_version=get_config("integration.api_version", "1"),
             rpc_timeout=float(get_config("integration.default_rpc_timeout", 30.0)),
             max_restarts=int(get_config("integration.max_restarts", 3)),
-            env_per_plugin=_build_plugin_env(manifest_ids=["xiaoai"], ha_client=ha_client),
+            env_per_plugin=_build_plugin_env(manifests=_manifests, ha_client=ha_client),
+            broadcast_enabled=get_broadcast_enabled(),
         )
         try:
             await integration_layer.start()
             _container.integration_layer = integration_layer
-            logger.info("集成插件平台已启动: %s",
-                        [p["id"] for p in integration_layer.list_plugins() if p["alive"]])
+            logger.info("集成插件平台已启动: %s (广播=%s)",
+                        [p["id"] for p in integration_layer.list_plugins() if p["alive"]],
+                        integration_layer.sink_manager.broadcast_enabled)
         except Exception as exc:
             logger.error("集成插件平台启动失败（不阻塞主服务）: %s", exc)
             integration_layer = None
@@ -852,24 +858,32 @@ async def global_rate_limit(request: Request, call_next):
 # ============ 系统状态路由 ============
 
 
-def _build_plugin_env(manifest_ids: list[str], ha_client) -> dict[str, dict[str, str]]:
-    """为插件子进程构造环境变量注入表。
+def _build_plugin_env(manifests, ha_client) -> dict[str, dict[str, str]]:
+    """按 manifest 的 secrets 声明，统一为每个插件构造环境变量注入表。
 
-    小爱插件 Phase 1 直连 HA，需 HA url/token。Phase 3 切换反向 RPC 后此函数可移除。
+    解耦：宿主不认识具体插件名（不再硬编码 xiaoai），只按声明的凭证类型映射。
+    声明 "ha_url"/"ha_token" 的插件会拿到 AETHER_HA_URL/AETHER_HA_TOKEN。
+    Phase 3 切换反向 RPC 后，凭证不再进插件进程，此函数可移除。
     """
     env_table: dict[str, dict[str, str]] = {}
-    if ha_client is None:
+    if ha_client is None or not manifests:
         return env_table
     ha_url = getattr(ha_client, "_base_url", "") or ""
     ha_token = getattr(ha_client, "_token", "") or ""
-    if not ha_url or not ha_token:
-        return env_table
-    for plugin_id in manifest_ids:
-        env_table[plugin_id] = {
-            "XIAOAI_HA_URL": ha_url,
-            "XIAOAI_HA_TOKEN": ha_token,
-            "PYTHONPATH": "/aether",
-        }
+    # 凭证类型 → 环境变量名映射（统一的解耦契约）
+    secret_map = {
+        "ha_url": ("AETHER_HA_URL", ha_url),
+        "ha_token": ("AETHER_HA_TOKEN", ha_token),
+    }
+    for manifest in manifests:
+        env: dict[str, str] = {"PYTHONPATH": "/aether"}
+        for secret_kind in getattr(manifest, "secrets", []) or []:
+            if secret_kind in secret_map:
+                env_name, value = secret_map[secret_kind]
+                if value:
+                    env[env_name] = value
+        # 只要有任何凭证注入或插件无凭证需求，都登记（保证 PYTHONPATH）
+        env_table[manifest.id] = env
     return env_table
 
 

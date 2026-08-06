@@ -128,9 +128,9 @@ class XiaoAiPlugin(IntegrationPlugin):
             "default", "media_player.xiaoai_pro")
         execute_mode = schema.get("execute_mode", {}).get("default", "speak")
 
-        # HA 凭证从环境变量（由宿主 spawn 时注入）
-        ha_url = os.environ.get("XIAOAI_HA_URL", "")
-        ha_token = os.environ.get("XIAOAI_HA_TOKEN", "")
+        # HA 凭证从环境变量（由宿主按 manifest secrets 声明统一注入）
+        ha_url = os.environ.get("AETHER_HA_URL", "")
+        ha_token = os.environ.get("AETHER_HA_TOKEN", "")
         if ha_url and ha_token:
             self.ha_caller = HAHttpCaller(ha_url, ha_token)
         else:
