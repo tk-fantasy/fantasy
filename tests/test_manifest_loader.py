@@ -130,3 +130,43 @@ def test_manifest_secrets_defaults_to_empty(tmp_path):
 
     manifests = load_manifests(str(tmp_path), api_version="1")
     assert manifests[0].secrets == []
+
+
+def test_manifest_ui_contributions_parsed(tmp_path):
+    """ui_contributions 字段应被解析（用于前端 UI 贡献）。"""
+    plugin_dir = tmp_path / "ui"
+    plugin_dir.mkdir()
+    (plugin_dir / "manifest.json").write_text(json.dumps({
+        "id": "ui", "name": "U", "version": "1.0.0",
+        "aether_api_version": "1", "entry": "plugin.py",
+        "capabilities": [{"type": "output_sink", "id": "u1"}],
+        "ui_contributions": [{
+            "slot": "chat_input_toolbar",
+            "type": "toggle_button",
+            "props": {"icon_on": "🔊", "icon_off": "🔇"},
+            "state_key": "broadcast_enabled",
+            "action": "toggle_broadcast"
+        }],
+    }), encoding="utf-8")
+
+    manifests = load_manifests(str(tmp_path), api_version="1")
+    assert len(manifests[0].ui_contributions) == 1
+    ui = manifests[0].ui_contributions[0]
+    assert ui.slot == "chat_input_toolbar"
+    assert ui.type == "toggle_button"
+    assert ui.state_key == "broadcast_enabled"
+    assert ui.action == "toggle_broadcast"
+
+
+def test_manifest_ui_contributions_default_empty(tmp_path):
+    """未声明 ui_contributions 时默认空列表（没插件 UI = 前端无该元素）。"""
+    plugin_dir = tmp_path / "noui"
+    plugin_dir.mkdir()
+    (plugin_dir / "manifest.json").write_text(json.dumps({
+        "id": "noui", "name": "NU", "version": "1.0.0",
+        "aether_api_version": "1", "entry": "plugin.py",
+        "capabilities": [{"type": "output_sink", "id": "nu1"}],
+    }), encoding="utf-8")
+
+    manifests = load_manifests(str(tmp_path), api_version="1")
+    assert manifests[0].ui_contributions == []

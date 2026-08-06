@@ -50,3 +50,63 @@ async def manual_broadcast(req: BroadcastRequest, container=Depends(get_containe
         return {"success": False, "message": "集成平台未启用"}
     await layer.sink_manager.broadcast(req.text, req.msg_id)
     return {"success": True}
+
+
+# ── UI 贡献机制：插件声明 UI，Aether 通用路由读状态/触发动作 ──
+
+@router.get("/integrations/ui_contributions")
+async def list_ui_contributions(container=Depends(get_container)):
+    """返回所有插件声明的 UI 贡献（前端通用渲染器据此渲染）。
+
+    没插件 / 插件无 ui_contribution → 空列表 → 前端无该 UI 元素。
+    """
+    layer = container.integration_layer
+    if layer is None:
+        return {"success": True, "data": []}
+    return {"success": True, "data": layer.list_ui_contributions()}
+
+
+# state_key → 读取函数注册表（框架能力，不认得具体插件）
+# 插件只能用已注册的 state_key——这是安全边界
+STATE_HANDLERS = {
+    "broadcast_enabled": lambda layer: layer.sink_manager.broadcast_enabled,
+}
+
+
+# action → 触发函数注册表（框架能力，不认得具体插件）
+# 插件只能用已注册的 action——这是安全边界
+async def _toggle_broadcast(layer):
+    """切换全局广播开关（框架能力，非小爱专属）。"""
+    new_state = not layer.sink_manager.broadcast_enabled
+    layer.set_broadcast_enabled(new_state)
+    return {"broadcast_enabled": new_state}
+
+
+ACTION_HANDLERS = {
+    "toggle_broadcast": _toggle_broadcast,
+}
+
+
+@router.get("/integrations/state/{state_key}")
+async def get_state(state_key: str, container=Depends(get_container)):
+    """通用状态读取路由。按 state_key 路由到框架能力。"""
+    layer = container.integration_layer
+    if layer is None:
+        return {"success": False, "message": "集成平台未启用"}
+    handler = STATE_HANDLERS.get(state_key)
+    if handler is None:
+        return {"success": False, "message": f"未知 state_key: {state_key}"}
+    return {"success": True, "data": {"value": handler(layer)}}
+
+
+@router.post("/integrations/action/{action}")
+async def invoke_action(action: str, container=Depends(get_container)):
+    """通用动作触发路由。按 action 路由到框架能力。"""
+    layer = container.integration_layer
+    if layer is None:
+        return {"success": False, "message": "集成平台未启用"}
+    handler = ACTION_HANDLERS.get(action)
+    if handler is None:
+        return {"success": False, "message": f"未知 action: {action}"}
+    result = await handler(layer)
+    return {"success": True, "data": result}

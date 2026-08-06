@@ -100,3 +100,87 @@ def test_list_integrations_includes_broadcast_enabled_state():
         list_integrations(container=_mock_container(layer=mock_layer))
     )
     assert result["data"]["broadcast_enabled"] is False
+
+
+# ── UI 贡献机制测试 ──
+
+def test_list_ui_contributions_returns_empty_when_no_layer():
+    """无集成平台时返回空列表（前端无 UI 元素）。"""
+    from app.routes.integration_routes import list_ui_contributions
+    result = asyncio.new_event_loop().run_until_complete(
+        list_ui_contributions(container=_mock_container(layer=None))
+    )
+    assert result["success"] is True
+    assert result["data"] == []
+
+
+def test_list_ui_contributions_returns_plugins_contributions():
+    """返回所有插件的 ui_contribution（带 plugin_id）。"""
+    mock_layer = MagicMock()
+    mock_layer.list_ui_contributions.return_value = [
+        {"plugin_id": "xiaoai", "slot": "chat_input_toolbar",
+         "type": "toggle_button", "props": {"icon_on": "🔊"},
+         "state_key": "broadcast_enabled", "action": "toggle_broadcast"}
+    ]
+    from app.routes.integration_routes import list_ui_contributions
+    result = asyncio.new_event_loop().run_until_complete(
+        list_ui_contributions(container=_mock_container(layer=mock_layer))
+    )
+    assert len(result["data"]) == 1
+    assert result["data"][0]["plugin_id"] == "xiaoai"
+    assert result["data"][0]["type"] == "toggle_button"
+
+
+def test_get_state_reads_broadcast_enabled():
+    """GET /state/broadcast_enabled 读 sink_manager.broadcast_enabled。"""
+    mock_layer = MagicMock()
+    mock_layer.sink_manager.broadcast_enabled = True
+    from app.routes.integration_routes import get_state
+    result = asyncio.new_event_loop().run_until_complete(
+        get_state("broadcast_enabled", container=_mock_container(layer=mock_layer))
+    )
+    assert result["success"] is True
+    assert result["data"]["value"] is True
+
+
+def test_get_state_unknown_key_returns_error():
+    """未注册的 state_key 返回失败（安全边界）。"""
+    mock_layer = MagicMock()
+    from app.routes.integration_routes import get_state
+    result = asyncio.new_event_loop().run_until_complete(
+        get_state("nonexistent_key", container=_mock_container(layer=mock_layer))
+    )
+    assert result["success"] is False
+
+
+def test_invoke_action_toggle_broadcast():
+    """POST /action/toggle_broadcast 切换广播开关。"""
+    mock_layer = MagicMock()
+    mock_layer.sink_manager.broadcast_enabled = True
+    mock_layer.set_broadcast_enabled = MagicMock()
+    from app.routes.integration_routes import invoke_action
+    result = asyncio.new_event_loop().run_until_complete(
+        invoke_action("toggle_broadcast", container=_mock_container(layer=mock_layer))
+    )
+    assert result["success"] is True
+    assert result["data"]["broadcast_enabled"] is False  # True → False
+    mock_layer.set_broadcast_enabled.assert_called_once_with(False)
+
+
+def test_invoke_action_unknown_returns_error():
+    """未注册的 action 返回失败（安全边界）。"""
+    mock_layer = MagicMock()
+    from app.routes.integration_routes import invoke_action
+    result = asyncio.new_event_loop().run_until_complete(
+        invoke_action("nonexistent_action", container=_mock_container(layer=mock_layer))
+    )
+    assert result["success"] is False
+
+
+def test_get_state_no_layer_returns_error():
+    """无集成平台时 state 返回失败。"""
+    from app.routes.integration_routes import get_state
+    result = asyncio.new_event_loop().run_until_complete(
+        get_state("broadcast_enabled", container=_mock_container(layer=None))
+    )
+    assert result["success"] is False

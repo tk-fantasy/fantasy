@@ -75,3 +75,22 @@ class IntegrationLayer:
             persist(bool(enabled))
         except Exception as exc:
             logger.warning("广播开关持久化失败（内存状态已更新）: %s", exc)
+
+    def list_ui_contributions(self) -> list[dict]:
+        """扫描所有插件的 ui_contribution，合并返回（带 plugin_id）。
+
+        没插件或插件无 ui_contribution → 空列表 → 前端无 UI 元素。
+        """
+        manifests = load_manifests(self._plugin_dir, api_version=self._api_version)
+        result = []
+        for manifest in manifests:
+            for ui in manifest.ui_contributions:
+                result.append({
+                    "plugin_id": manifest.id,
+                    "slot": ui.slot,
+                    "type": ui.type,
+                    "props": ui.props,
+                    "state_key": ui.state_key,
+                    "action": ui.action,
+                })
+        return result
