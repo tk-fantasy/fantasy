@@ -206,6 +206,40 @@ Aether 维护 `STATE_HANDLERS` / `ACTION_HANDLERS` 注册表，**插件只能用
 - ChatView.vue 无"小爱/音箱/broadcast"字眼 ✅
 - state/action 注册表无 `xiaoai` 字样，全是框架通用能力 ✅
 
+
+## 插件管理页面
+
+在 `/chat` 输入 `/plugin` 跳转到插件管理页面，支持：
+
+| 操作 | 说明 |
+|------|------|
+| 查看列表 | 所有插件 + 状态（运行中/未启动/已禁用）+ 能力徽标 |
+| 启用/禁用 | 持久化到 `config.json` 的 `integration.disabled_plugins`，重启不加载禁用的（不删文件） |
+| 导出 | 打包 `integrations/{id}/` 为 zip 下载（分享给别人用） |
+| 上传 | 拖拽 zip 上传，校验 manifest + entry + id 合法 + 冲突，原子解压到 `integrations/` |
+| 删除 | 删 `integrations/{id}/` 文件夹（运行中的先停进程） |
+
+### 上传安全
+
+子进程插件 = 任意代码执行。安全靠**认证**（谁能上传）而非**内容审计**（上传什么）：
+- 上传需登录（api_token_guard）
+- manifest.id 正则校验（防路径穿越 `../`）
+- entry 文件必须存在于 zip 内
+- 同名插件已存在 → 拒绝
+- 解压失败回滚（删临时目录）
+
+⚠️ 不做代码内容审计——子进程插件本质信任代码，审计 Python 查恶意成本高且不可靠。
+
+### 管理路由
+
+| 路由 | 方法 | 功能 |
+|------|------|------|
+| `/api/integrations` | GET | 列表 + 状态（含 enabled） |
+| `/api/integrations/{id}/toggle-enabled` | POST | 启用↔禁用 |
+| `/api/integrations/{id}/export` | GET | 打包 zip 下载 |
+| `/api/integrations/upload` | POST | 上传 zip 校验+解压 |
+| `/api/integrations/{id}` | DELETE | 删除插件 |
+
 ## 后续 Phase
 
 - **Phase 2**：全局打断（W3）+ 小爱直通模式（W2）+ 插件配置表单 UI
