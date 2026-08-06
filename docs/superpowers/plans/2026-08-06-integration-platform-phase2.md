@@ -467,15 +467,15 @@ git commit -m "feat(schema): Dialog.Finish 加 message 字段（打断/直通回
 
 ---
 
-## Task 5: Dispatcher CancelledError 处理
+## Task 5: Dispatcher CancelledError 处理 + broadcasting status
 
 **Files:**
-- Modify: `app/agents/dispatcher.py:600-661`（_run_turn 三处 run_agent_streaming 调用加 CancelledError 捕获）
+- Modify: `app/agents/dispatcher.py:600-661`（_run_turn 三处 run_agent_streaming 加 CancelledError 捕获）+ `727-731`（broadcast hook 加 broadcasting status emit + 超时清除）
 - Test: `tests/test_dispatcher_cancel.py`
 
 **Interfaces:**
-- Consumes: `self._sink_manager`（已有，dispatcher.py:222），`Dialog.Finish.message`（Task 4）
-- Produces: Dispatcher _run_turn 捕获 CancelledError → emit `Dialog.Finish(success=False)` + `interrupt_all()` + 正常 return（不 re-raise）
+- Consumes: `self._sink_manager`（已有，dispatcher.py:222），`Dialog.Finish.message`（Task 4），`UI.Status`（已有，chat_schema.py:142）
+- Produces: Dispatcher _run_turn 捕获 CancelledError → emit `Dialog.Finish(success=False)` + `interrupt_all()` + 正常 return；broadcast hook 前 emit `UI.Status(phase="broadcasting")` + 超时估算清除
 
 - [ ] **Step 1: Write the failing test**
 
@@ -590,12 +590,54 @@ def test_dispatcher_cancel_no_sink_manager_still_emits_finish():
                    and m.get("header", {}).get("name") == "Finish"]
     assert len(finish_msgs) >= 1
     assert finish_msgs[-1]["payload"]["success"] is False
+
+
+def test_dispatcher_broadcasts_emit_broadcasting_status():
+    """broadcast 前 emit UI.Status(phase=broadcasting)，让发送按钮保持停止态。
+
+    HA 不暴露小爱播报状态，用 broadcasting status 让前端知道"还在念"。
+    """
+    sink_manager = MagicMock()
+    sink_manager.broadcast = AsyncMock()
+    sink_manager.interrupt_all = AsyncMock()
+
+    # 用一个快速完成的 stream（让 turn 走到 broadcast hook）
+    async def _fast_stream(*a, **kw):
+        yield {"event": "on_chat_model_stream",
+               "data": {"chunk": MagicMock(content="测试回复内容")}}
+
+    dispatcher = _make_dispatcher(sink_manager=sink_manager)
+    import app.agents.dispatcher as disp_mod
+    disp_mod.run_agent_streaming = _fast_stream
+
+    sent = []
+    async def ws_send(msg):
+        sent.append(msg)
+
+    event = Event.build_event(Nlp.Request(query="test"), request_id="r3")
+
+    async def go():
+        await dispatcher.dispatch_stream(event, ws_send, user_id="u1")
+
+    asyncio.new_event_loop().run_until_complete(go())
+
+    # 验证 emit 了 UI.Status(phase=broadcasting)
+    status_msgs = [m for m in sent
+                   if m.get("header", {}).get("namespace") == "UI"
+                   and m.get("header", {}).get("name") == "Status"]
+    phases = [m["payload"]["phase"] for m in status_msgs]
+    assert "broadcasting" in phases  # broadcast 前 emit 了 broadcasting
+
+    # 验证调了 broadcast
+    sink_manager.broadcast.assert_called()
 ```
+
+> **注**：`_make_dispatcher` 的 `_endless_stream` 会被 `test_dispatcher_broadcasts_emit_broadcasting_status` 覆盖为 `_fast_stream`（快速完成让 turn 走到 broadcast hook）。需确认 `_fast_stream` 的 chunk mock 能让 `state.final_content` 被设置——可能需要调 handler mock。若 handler 逻辑复杂，简化测试：直接 mock `state.final_content`。实现时按实际 handler 行为调整测试。
 
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `docker exec aether-dev pytest tests/test_dispatcher_cancel.py -v`
-Expected: FAIL（CancelledError 逃逸，没 emit Finish，或没调 interrupt_all）
+Expected: FAIL（CancelledError 逃逸，没 emit Finish，或没调 interrupt_all，或没 emit broadcasting）
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -653,6 +695,53 @@ Expected: FAIL（CancelledError 逃逸，没 emit Finish，或没调 interrupt_a
 
 三处 except 都调 `await self._handle_cancelled(emit, request_id, session_id); return`。
 
+**再修改 broadcast hook（约 727-731 行）**——broadcast 前 emit broadcasting status + 超时清除：
+
+```python
+        # ── 集成广播钩子：把最终回复同步到 output_sink（如小爱）──
+        # 失败不阻塞主流程，仅记录警告（用户已通过 WS 收到文字回复）。
+        if state.final_content and self._sink_manager is not None:
+            try:
+                # emit broadcasting status：让前端发送按钮保持停止态（可打断小爱）
+                # HA 不暴露播报状态，用 broadcasting phase 让用户知道"还在念"
+                await emit(
+                    Instruction.build_instruction(
+                        UI.Status(phase="broadcasting"), request_id, session_id,
+                    )
+                )
+                await self._sink_manager.broadcast(state.final_content, request_id)
+                # 估算超时后清除 broadcasting（中文约 4 字/秒 + 5 秒缓冲）
+                # 超时后发送按钮恢复发送态（无精确检测，估算够用）
+                est_seconds = max(len(state.final_content) / 4, 3) + 5
+                asyncio.create_task(self._clear_broadcasting_after(
+                    emit, request_id, session_id, est_seconds))
+            except Exception as exc:
+                logger.warning("集成广播失败（不影响主流程）: %s", exc)
+```
+
+加辅助方法（Dispatcher 类内，`_handle_cancelled` 之后）：
+
+```python
+    async def _clear_broadcasting_after(self, emit, request_id: str,
+                                        session_id: str, delay: float) -> None:
+        """延迟清除 broadcasting status（估算播报完毕后发送按钮恢复发送态）。
+
+        HA 不暴露小爱播报状态，用超时估算。不精确但够用——
+        用户也可在超时前点 ■ 打断（interrupt 会清前端 statusPhase）。
+        """
+        try:
+            await asyncio.sleep(delay)
+            await emit(
+                Instruction.build_instruction(
+                    UI.Status(phase=""), request_id, session_id,
+                )
+            )
+        except Exception:
+            pass  # 连接已断 / task 被 cancel，忽略
+```
+
+> **import 确认**：`UI` 已在 dispatcher.py 顶部 import（现有代码 emit UI.Status thinking/retrying）。`asyncio` 需确认已 import。
+
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `docker exec aether-dev pytest tests/test_dispatcher_cancel.py -v`
@@ -667,7 +756,7 @@ Expected: 全绿
 
 ```bash
 git add app/agents/dispatcher.py tests/test_dispatcher_cancel.py
-git commit -m "feat(dispatcher): CancelledError 处理——打断时 emit Finish + interrupt_all"
+git commit -m "feat(dispatcher): CancelledError 处理 + broadcasting status（打断 + 播报态）"
 ```
 
 ---
@@ -1671,7 +1760,7 @@ function handleInterrupt() {
 }
 ```
 
-> **注**：用 `statusPhase` 判断是否在生成中（thinking/executing/retrying/finalizing 都算）。`statusPhase` 为空字符串时是空闲态 → 发送按钮。
+> **注**：用 `statusPhase` 判断是否在生成中（thinking/executing/retrying/finalizing/broadcasting 都算）。`statusPhase` 为空字符串时是空闲态 → 发送按钮。broadcasting 阶段（Task 5 emit 的 `UI.Status(phase="broadcasting")`）也会让按钮保持停止态——此时点击打断小爱（无 AI task 可 cancel，WS route 只调 interrupt_all）。
 
 - [ ] **Step 4: Add mode selector (framework Aether button + plugin contributions)**
 

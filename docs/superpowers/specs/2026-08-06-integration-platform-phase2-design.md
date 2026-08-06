@@ -26,8 +26,10 @@ Aether 的对话一直缺失打断能力——AI 思考时 WS 循环阻塞，用
 
 | 验收项 | 归属 | 行为 |
 |--------|------|------|
-| 点打断 | 框架+插件协同 | AI 生成中发送按钮变身停止按钮，点击立即停 AI（框架）+ 停小爱播报（插件 interrupt，Phase 1 已有）+ 前端不卡死 |
+| 点打断（AI 生成中） | 框架+插件协同 | AI 生成中发送按钮变身停止按钮，点击立即停 AI（框架）+ 停小爱播报（插件 interrupt，Phase 1 已有）+ 前端不卡死 |
+| 点打断（AI 结束但小爱在念） | 框架+插件协同 | broadcasting 阶段发送按钮保持停止态，点击停小爱（无 task 可 cancel，只调 interrupt_all）|
 | AI 思考时发新消息 | 框架 | 自动打断旧的 AI + 停小爱，开始新对话 |
+| 小爱念完不点打断 | 框架 | 估算超时后自动清 broadcasting，发送按钮恢复发送态 |
 | 无插件时点打断 | 框架 | 纯 cancel AI，interrupt_all 无 sink 为 no-op，正常工作 |
 | 切小爱模式打字 | 插件(W2) | 小爱原生执行（播放音乐/讲笑话），不进 LLM，不消耗 token |
 | 两用户并发 | 框架 | AI 思考各自独立；小爱共享设备队列排队 |
@@ -46,6 +48,7 @@ Aether 的对话一直缺失打断能力——AI 思考时 WS 循环阻塞，用
 | 直通模式 session | **不进 history** | 完全绕过 LLM，不消耗 token，不污染对话历史 |
 | 模式选择器 | **插件 UI 贡献（mode_option）** | 与 Phase 1 广播开关同机制：manifest 声明 `ui_contribution`，框架通用渲染。没小爱插件 → 只有默认 Aether 按钮，零硬编码 |
 | 打断触发 | **发送按钮变身** | AI 生成时发送按钮变身停止按钮，不额外加按钮。类 ChatGPT 交互，一个位置两种语义 |
+| AI 结束后打断小爱 | **方案 C：broadcasting status** | HA 不暴露播报状态无法精确检测。Dispatcher broadcast 前 emit UI.Status(broadcasting)，发送按钮保持停止态，超时估算清除。复用现有 statusPhase 机制，框架通用不硬编码 |
 | 多用户小爱打断 | **全局（defer Phase 4）** | 共享家庭设备，全局打断符合直觉。与 spec §14 Q3 一致 |
 
 ---
@@ -198,15 +201,15 @@ except asyncio.CancelledError:
 ### 4.4 前端：发送按钮变身打断按钮
 
 - **不额外加按钮**：复用现有发送按钮，AI 生成时**变身**为打断按钮
-- **状态切换**：
-  - AI 空闲 → 发送按钮（▶/纸飞机图标），点击发消息
-  - AI 生成中 → 同一按钮变停止按钮（■ 图标 + 红色），点击发 `{type:"interrupt"}`
-- **实现**：ChatView 用 `isStreaming`（现有状态）判断当前显示哪个图标 + 绑定哪个 handler
+- **状态切换**（两个阶段都让按钮保持停止态）：
+  - AI 空闲 + 无播报 → 发送按钮（▶/纸飞机图标），点击发消息
+  - AI 生成中（`statusPhase` 非空，含 thinking/executing/retrying） → 停止按钮（■ 红色），点击发 `{type:"interrupt"}`
+  - AI 结束但 sink 在播报（`statusPhase="broadcasting"`） → 保持停止按钮，点击发 `{type:"interrupt"}`
+- **实现**：ChatView 用 `statusPhase`（现有状态）判断——非空时就是停止态
   ```javascript
-  // 发送按钮的动态行为
-  const isStreaming = computed(() => /* 现有流式状态 */)
+  // 发送按钮的动态行为：statusPhase 非空 = 有事在进行 = 停止态
   function handleSendButton() {
-    if (isStreaming.value) {
+    if (statusPhase.value) {
       ws.send(JSON.stringify({ type: 'interrupt' }))
       finalizeStreaming()
     } else {
@@ -214,18 +217,65 @@ except asyncio.CancelledError:
     }
   }
   ```
-- **样式**：生成中时按钮变红色 + ■ 图标（视觉提示"点了就停"）
+- **样式**：生成中/broadcasting 时按钮变红色 + ■ 图标
 - **归属**：框架自带 UI（打断是 Aether 对话能力，非插件贡献）
 
-这样比额外加按钮更符合直觉——一个位置，两种语义，状态驱动。
+### 4.4a broadcasting 阶段（解决"AI 结束但小爱还在念"）
+
+**问题**：HA 不暴露小爱 TTS 播报状态（实测空闲/播报 state 均为 `on`），无法精确检测"正在念"。AI 生成结束后 `statusPhase` 清空，发送按钮恢复发送态，但小爱可能还在念——此时用户无入口打断。
+
+**方案 C：框架 broadcasting status**
+
+Dispatcher 在 `broadcast()` **之前** emit `UI.Status(phase="broadcasting")`，让发送按钮保持停止态。播报完毕（估算超时）或被 interrupt 后清除。
+
+**为什么框架做**：`statusPhase` 是框架已有的 UI 状态机制（thinking/executing/retrying/finalizing）。broadcasting 只是加一个新 phase 值，复用同一套机制。框架通用，不硬编码小爱（无 sink 插件时 broadcast 是 no-op，broadcasting 也不会 emit）。
+
+**超时估算**：broadcasting 是异步的（speak 排队串行），无法等待完成。用超时估算清除：
+- emit `UI.Status(phase="broadcasting")` 后，启动一个定时任务
+- 超时时间 = 文本字数 / 4（中文约 4 字/秒）+ 5 秒缓冲
+- 超时后 emit `UI.Status(phase="")`（清空）
+- 若用户点 interrupt，Dispatcher 的 `_handle_cancelled` 调 `interrupt_all`，WS route 的 `_cancel_current` 后续也会清 statusPhase
+
+**代码位置**：Dispatcher `_run_turn`（约 727-731 行 broadcast hook 处）：
+
+```python
+# ── 集成广播钩子 ──
+if state.final_content and self._sink_manager is not None:
+    try:
+        # emit broadcasting status（让发送按钮保持停止态）
+        await emit(Instruction.build_instruction(
+            UI.Status(phase="broadcasting"), request_id, session_id,
+        ))
+        await self._sink_manager.broadcast(state.final_content, request_id)
+        # 估算超时后清除 broadcasting（中文约 4 字/秒 + 5 秒缓冲）
+        est_seconds = max(len(state.final_content) / 4, 3) + 5
+        asyncio.create_task(self._clear_broadcasting_after(
+            emit, request_id, session_id, est_seconds))
+    except Exception as exc:
+        logger.warning("集成广播失败（不影响主流程）: %s", exc)
+```
+
+```python
+async def _clear_broadcasting_after(self, emit, request_id, session_id, delay):
+    """延迟清除 broadcasting status（估算播报完毕）。"""
+    await asyncio.sleep(delay)
+    try:
+        await emit(Instruction.build_instruction(
+            UI.Status(phase=""), request_id, session_id,
+        ))
+    except Exception:
+        pass  # 连接已断等，忽略
+```
+
+> **注**：若 user 在超时前发了新消息，`_cancel_current` 会 cancel 旧 task，超时 task 也会被 cancel（create_task 跟随 task 生命周期）。interrupt 时 `_handle_cancelled` 调 `interrupt_all` 停小爱，但 broadcasting status 的清除由前端的 `finalizeStreaming()` 处理（interrupt 消息处理后前端清 statusPhase）。
 
 ### 4.5 开放问题 2 回答（打断边界）
 
 > "AI 思考已结束但小爱还在念，此时打断算什么？"
 
-**回答**：AI 生成结束后发送按钮恢复成发送态，此时无法通过发送按钮打断小爱。这个场景（AI 念完文字但小爱还在 TTS）发生频率低且短暂（小爱念完就结束），不值得为此破坏"发送按钮变身"的简洁交互。如果后续观察发现是痛点，再加一个独立的小停止按钮——但 Phase 2 先不加，保持简洁。
+**回答**：已覆盖。Dispatcher 在 broadcast 前 emit `UI.Status(phase="broadcasting")`，发送按钮保持停止态。用户点 ■ → 发 interrupt → WS route cancel（无 task 可 cancel，跳过）+ `interrupt_all` 停小爱 + 前端 `finalizeStreaming` 清 statusPhase。一个按钮，覆盖全部场景。
 
-**核心场景已覆盖**：AI 生成中（最需要打断的时刻）→ 发送按钮是停止态 → 点了就停 AI + 停小爱。这是 99% 的打断需求。
+**超时保底**：若用户不点打断，估算超时后自动清 broadcasting（文本字数/4 + 5 秒缓冲），发送按钮恢复发送态。不精确但够用——HA 不暴露播报状态，精确检测无解。
 
 ---
 
