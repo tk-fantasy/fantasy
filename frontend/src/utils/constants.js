@@ -5,7 +5,6 @@ export const REFRESH_COOKIE = 'aether_refresh_token'
 // localStorage keys
 export const LS_LOGGED_IN = 'aether_logged_in'
 export const LS_USER = 'aether_user'
-export const LS_BROADCAST_ENABLED = 'aether_broadcast_enabled'
 
 // sessionStorage keys
 export const SS_CHAT_SESSION = 'aether_chat_session_id'
