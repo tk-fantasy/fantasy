@@ -64,3 +64,39 @@ def test_manual_broadcast_returns_error_when_disabled():
         manual_broadcast(req, container=_mock_container(layer=None))
     )
     assert result["success"] is False
+
+
+def test_toggle_broadcast_flips_state():
+    """toggle 路由应翻转 sink_manager.broadcast_enabled 并调用 set_broadcast_enabled。"""
+    mock_layer = MagicMock()
+    mock_layer.sink_manager.broadcast_enabled = True
+    mock_layer.set_broadcast_enabled = MagicMock()
+    from app.routes.integration_routes import toggle_broadcast
+    result = asyncio.new_event_loop().run_until_complete(
+        toggle_broadcast(container=_mock_container(layer=mock_layer))
+    )
+    # True → False（翻转）
+    assert result["success"] is True
+    assert result["data"]["broadcast_enabled"] is False
+    mock_layer.set_broadcast_enabled.assert_called_once_with(False)
+
+
+def test_toggle_broadcast_when_disabled_returns_error():
+    """集成平台未启用时，toggle 返回失败。"""
+    from app.routes.integration_routes import toggle_broadcast
+    result = asyncio.new_event_loop().run_until_complete(
+        toggle_broadcast(container=_mock_container(layer=None))
+    )
+    assert result["success"] is False
+
+
+def test_list_integrations_includes_broadcast_enabled_state():
+    """list 返回里应含 broadcast_enabled 字段（前端读取用）。"""
+    mock_layer = MagicMock()
+    mock_layer.list_plugins.return_value = []
+    mock_layer.sink_manager.broadcast_enabled = False
+    from app.routes.integration_routes import list_integrations
+    result = asyncio.new_event_loop().run_until_complete(
+        list_integrations(container=_mock_container(layer=mock_layer))
+    )
+    assert result["data"]["broadcast_enabled"] is False

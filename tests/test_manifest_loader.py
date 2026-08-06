@@ -101,3 +101,32 @@ def test_manifest_has_capability_helper(tmp_path):
     from app.integration.schema import CapabilityType
     assert manifests[0].has_capability(CapabilityType.OUTPUT_SINK) is True
     assert manifests[0].has_capability(CapabilityType.INBOUND_ROUTER) is True
+
+
+def test_manifest_secrets_field_parsed(tmp_path):
+    """secrets 声明字段应被解析（用于解耦凭证注入）。"""
+    plugin_dir = tmp_path / "sec"
+    plugin_dir.mkdir()
+    (plugin_dir / "manifest.json").write_text(json.dumps({
+        "id": "sec", "name": "S", "version": "1.0.0",
+        "aether_api_version": "1", "entry": "plugin.py",
+        "capabilities": [{"type": "output_sink", "id": "s1"}],
+        "secrets": ["ha_url", "ha_token"],
+    }), encoding="utf-8")
+
+    manifests = load_manifests(str(tmp_path), api_version="1")
+    assert manifests[0].secrets == ["ha_url", "ha_token"]
+
+
+def test_manifest_secrets_defaults_to_empty(tmp_path):
+    """未声明 secrets 时默认空列表。"""
+    plugin_dir = tmp_path / "nosec"
+    plugin_dir.mkdir()
+    (plugin_dir / "manifest.json").write_text(json.dumps({
+        "id": "nosec", "name": "N", "version": "1.0.0",
+        "aether_api_version": "1", "entry": "plugin.py",
+        "capabilities": [{"type": "output_sink", "id": "n1"}],
+    }), encoding="utf-8")
+
+    manifests = load_manifests(str(tmp_path), api_version="1")
+    assert manifests[0].secrets == []
