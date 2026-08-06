@@ -294,9 +294,6 @@ async def _refresh_ha_catalog() -> None:
         controls_text = "\n\n".join(controls_lines) if controls_lines else ""
         _ha_catalog_cache_ref[0] = catalog
         _ha_controls_cache_ref[0] = controls_text
-        # 临时诊断:确认 controls 生成情况
-        logger.info("catalog refresh done: catalog=%d chars, controls=%d chars, raw_svc=%s, notes=%d",
-                    len(catalog), len(controls_text), bool(raw_svc_defs), len(notes_map))
     except Exception:  # noqa: BLE001
         logger.warning("HA catalog refresh failed", exc_info=True)
 
