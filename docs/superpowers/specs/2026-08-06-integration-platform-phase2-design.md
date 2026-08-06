@@ -26,9 +26,8 @@ Aether 的对话一直缺失打断能力——AI 思考时 WS 循环阻塞，用
 
 | 验收项 | 归属 | 行为 |
 |--------|------|------|
-| 点打断 | 框架+插件协同 | AI 立即停止（框架）+ 小爱立即停止播报（插件 interrupt，Phase 1 已有）+ 前端不卡死 |
+| 点打断 | 框架+插件协同 | AI 生成中发送按钮变身停止按钮，点击立即停 AI（框架）+ 停小爱播报（插件 interrupt，Phase 1 已有）+ 前端不卡死 |
 | AI 思考时发新消息 | 框架 | 自动打断旧的 AI + 停小爱，开始新对话 |
-| AI 结束但小爱还在念 | 框架调插件 | 点打断 → 无 task 可 cancel → 只调 interrupt_all 停小爱 |
 | 无插件时点打断 | 框架 | 纯 cancel AI，interrupt_all 无 sink 为 no-op，正常工作 |
 | 切小爱模式打字 | 插件(W2) | 小爱原生执行（播放音乐/讲笑话），不进 LLM，不消耗 token |
 | 两用户并发 | 框架 | AI 思考各自独立；小爱共享设备队列排队 |
@@ -43,11 +42,10 @@ Aether 的对话一直缺失打断能力——AI 思考时 WS 循环阻塞，用
 | WS 循环改造 | **方案 B：单活跃 task** | 单用户单对话场景，不需要 request_id 精确匹配。`current_task` 局部变量，简单 |
 | 新消息冲突 | **自动打断旧的** | 类 ChatGPT 体验，最自然 |
 | request_id 跟踪 | **不需要** | 一个 WS 连接 = 一个对话，同时只有一个活跃 task。客户端零改动 |
-| 打断按钮可见性 | **始终可见** | 无法精确知道小爱何时念完（HA 不回调），始终可见最可靠。idle 时点击为 no-op |
 | CancelledError 处理 | **吞掉不 re-raise** | emit Finish + interrupt_all 后正常返回，避免 WS handler 崩 |
 | 直通模式 session | **不进 history** | 完全绕过 LLM，不消耗 token，不污染对话历史 |
 | 模式选择器 | **插件 UI 贡献（mode_option）** | 与 Phase 1 广播开关同机制：manifest 声明 `ui_contribution`，框架通用渲染。没小爱插件 → 只有默认 Aether 按钮，零硬编码 |
-| 打断按钮 | **框架自带 UI** | 打断是横切能力（非小爱专属），框架自带按钮合理 |
+| 打断触发 | **发送按钮变身** | AI 生成时发送按钮变身停止按钮，不额外加按钮。类 ChatGPT 交互，一个位置两种语义 |
 | 多用户小爱打断 | **全局（defer Phase 4）** | 共享家庭设备，全局打断符合直觉。与 spec §14 Q3 一致 |
 
 ---
@@ -197,21 +195,37 @@ except asyncio.CancelledError:
 
 已实现（`app/integration/sink_manager.py:56-68`），并发 fan-out `sink.interrupt` RPC 到所有 output_sink 插件。不受 `broadcast_enabled` 限制（打断总是生效）。**框架侧无需改动。** 命中的 `xiaoai/plugin.py:interrupt()`（Phase 1 已实现：清队列 + `media_player.media_stop`）也无需改动——这就是"打断物理小爱算插件"的部分，但插件代码 Phase 1 已交付，本次只是被框架搭便车调用。
 
-### 4.4 前端：打断按钮
+### 4.4 前端：发送按钮变身打断按钮
 
-- **位置**：输入框工具栏，与 IntegrationSlot 同行
+- **不额外加按钮**：复用现有发送按钮，AI 生成时**变身**为打断按钮
+- **状态切换**：
+  - AI 空闲 → 发送按钮（▶/纸飞机图标），点击发消息
+  - AI 生成中 → 同一按钮变停止按钮（■ 图标 + 红色），点击发 `{type:"interrupt"}`
+- **实现**：ChatView 用 `isStreaming`（现有状态）判断当前显示哪个图标 + 绑定哪个 handler
+  ```javascript
+  // 发送按钮的动态行为
+  const isStreaming = computed(() => /* 现有流式状态 */)
+  function handleSendButton() {
+    if (isStreaming.value) {
+      ws.send(JSON.stringify({ type: 'interrupt' }))
+      finalizeStreaming()
+    } else {
+      sendMessage()
+    }
+  }
+  ```
+- **样式**：生成中时按钮变红色 + ■ 图标（视觉提示"点了就停"）
 - **归属**：框架自带 UI（打断是 Aether 对话能力，非插件贡献）
-- **可见性**：始终可见（stop 图标）。理由：无法精确知道小爱何时念完（HA 不回调 TTS 完成事件），始终可见确保用户随时能停。idle 时点击为 no-op（interrupt_all 对无活跃播报是 no-op）
-- **点击行为**：
-  1. 发 WS `{type:"interrupt"}`
-  2. 前端立即 `finalizeStreaming()`（清空流式状态，隐藏 thinking 指示器）
-- **样式**：thinking 期间红色活跃态，idle 时灰色
+
+这样比额外加按钮更符合直觉——一个位置，两种语义，状态驱动。
 
 ### 4.5 开放问题 2 回答（打断边界）
 
 > "AI 思考已结束但小爱还在念，此时打断算什么？"
 
-**回答**：打断按钮始终可见。此时点击 → 没有 task 可 cancel（AI 已结束）→ 只调 `interrupt_all` 停小爱。不需要区分"打断 AI"和"打断小爱"——一个按钮，一个动作，覆盖所有场景。
+**回答**：AI 生成结束后发送按钮恢复成发送态，此时无法通过发送按钮打断小爱。这个场景（AI 念完文字但小爱还在 TTS）发生频率低且短暂（小爱念完就结束），不值得为此破坏"发送按钮变身"的简洁交互。如果后续观察发现是痛点，再加一个独立的小停止按钮——但 Phase 2 先不加，保持简洁。
+
+**核心场景已覆盖**：AI 生成中（最需要打断的时刻）→ 发送按钮是停止态 → 点了就停 AI + 停小爱。这是 99% 的打断需求。
 
 ---
 
@@ -381,11 +395,12 @@ function sendMessage() {
 }
 ```
 
-### 6.2 打断按钮
+### 6.2 发送按钮变身打断按钮
 
-- 输入框工具栏，stop 图标，始终可见
-- 这是框架自带 UI（打断是横切能力，非小爱专属）
-- 点击：`ws.send(JSON.stringify({type:'interrupt'}))` + `finalizeStreaming()`
+- 不额外加按钮，复用现有发送按钮
+- AI 生成中（`isStreaming`）→ 按钮变 ■ 红色，点击发 `{type:'interrupt'}` + `finalizeStreaming()`
+- AI 空闲 → 按钮恢复 ▶，点击发消息
+- 详见 §4.4
 
 ### 6.3 指令处理
 
@@ -473,7 +488,7 @@ onMounted(() => {
 
 | 归属 | 内容 | 文件 |
 |------|------|------|
-| **框架（全局打断，独立需求）** | WS 改 task 式 + AI cancel + CancelledError 处理 + 打断按钮 + interrupt_all 调度 | `ws_routes.py`, `dispatcher.py`, `ChatView.vue`(打断按钮) |
+| **框架（全局打断，独立需求）** | WS 改 task 式 + AI cancel + CancelledError 处理 + 发送按钮变身 + interrupt_all 调度 | `ws_routes.py`, `dispatcher.py`, `ChatView.vue`(发送按钮变身) |
 | **插件 SDK（通用，非小爱）** | InboundRouter ABC + router.handle 路由 + METHOD_ROUTE 常量 + route_inbound + mode_option 渲染 + mode state/action | `sdk/router_base.py`, `sdk/plugin_base.py`, `rpc_protocol.py`, `integration_layer.py`, `integration_routes.py`, `IntegrationSlot.vue`, `ModeOptionContribution.vue` |
 | **小爱插件（本次新增功能）** | XiaoAiRouter 直通 + manifest 加 inbound_router/mode_option | `integrations/xiaoai/plugin.py`, `integrations/xiaoai/manifest.json` |
 
@@ -492,7 +507,7 @@ frontend/src/components/integration/ModeOptionContribution.vue  ← 模式按钮
 # 框架（全局打断）
 app/routes/ws_routes.py                     ← 循环改 task 式 + interrupt + 通用 mode 路由
 app/agents/dispatcher.py                    ← _run_turn 加 CancelledError 处理
-frontend/src/views/ChatView.vue             ← 打断按钮 + 框架默认 Aether 按钮 + IntegrationSlot(mode_selector) + Finish(false) 处理
+frontend/src/views/ChatView.vue             ← 发送按钮变身打断按钮 + 框架默认 Aether 按钮 + IntegrationSlot(mode_selector) + Finish(false) 处理
 
 # 插件 SDK（通用）
 app/integration/rpc_protocol.py             ← 加 METHOD_ROUTE 常量
@@ -511,7 +526,7 @@ integrations/xiaoai/plugin.py               ← 加 XiaoAiRouter + 挂到 plugin
 ### 7.4 测试文件
 
 ```
-tests/test_ws_interrupt.py                  ← WS 循环打断行为（task 式 + interrupt 消息 + 自动打断）
+tests/test_ws_interrupt.py                  ← WS 循环打断行为（task 式 + interrupt 消息 + 自动打断 + 发新消息打断旧的）
 tests/test_dispatcher_cancel.py             ← Dispatcher CancelledError 处理（emit Finish + interrupt_all）
 tests/test_inbound_router.py                ← InboundRouter ABC + plugin_base router.handle 路由
 tests/test_integration_layer_route.py       ← IntegrationLayer.route_inbound（通用，不硬编码插件）
@@ -534,8 +549,7 @@ tests/test_mode_state_routes.py             ← current_mode state + set_mode ac
 | 无任何插件时点打断 | 纯 cancel AI task，`interrupt_all` 无 sink 为 no-op，全局打断照常工作 |
 | 直通模式但无 inbound_router 插件（未启用/未加载） | `route_inbound` 返回 `{ok:false, error:"no inbound router available"}`，前端显示"直通失败" |
 | 直通模式插件 HA 调用失败 | 插件 `route()` 抛异常 → RPC 返回 error → WS emit `Dialog.Finish(success=false, message="直通执行失败")` |
-| 打断时无活跃 task | `_cancel_current` 检查 `task.done()`，跳过 cancel，仍调 `interrupt_all`（no-op if 无播报） |
-| 打断时 task 已结束但小爱在念 | 跳过 cancel，调 `interrupt_all` 停小爱 |
+| 打断时无活跃 task | `_cancel_current` 检查 `task.done()`，跳过 cancel，仍调 `interrupt_all`（no-op if 无播报）。此场景发生在"发新消息触发自动打断"时旧 task 刚结束 |
 | Dispatch task 内部异常（非 cancel） | `_run_dispatch` 包装吞掉异常，Dispatcher 内部已有 Finish(success=false) emit |
 | 两用户同时 broadcast | 小爱插件软件锁串行排队，不冲突 |
 
