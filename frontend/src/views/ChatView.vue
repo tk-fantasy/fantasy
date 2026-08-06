@@ -6,6 +6,7 @@ import { toolIcon, summarizeToolCall, summarizeToolResult, parseToolResult } fro
 import { useVoiceInput } from '../composables/useVoiceInput'
 import { useCamera } from '../composables/useCamera'
 import { apiGet, apiPost } from '../utils/api'
+import IntegrationSlot from '../components/integration/IntegrationSlot.vue'
 
 const router = useRouter()
 
@@ -955,6 +956,7 @@ onUnmounted(() => {
         >
           {{ voice.transcribing.value ? '…' : voice.recording.value ? '■' : '🎤' }}
         </button>
+        <IntegrationSlot slot="chat_input_toolbar" />
         <button @click="sendMessage" class="send-btn">发送</button>
       </div>
       <div class="voice-error" v-if="voiceError">{{ voiceError }}</div>
