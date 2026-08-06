@@ -632,6 +632,9 @@ function openDeviceModal(dev) {
   // 默认展开第一个可控实体；无可控则展开第一个
   const ents = dev.entities || []
   selectedEntity.value = ents.find(e => isControllable(e)) || ents[0] || null
+  // 重置编辑态（与 selectEntity 同因：避免 textarea 内容漂移到新设备）
+  editingName.value = false
+  editingNote.value = false
   showModal.value = true
 }
 
@@ -643,6 +646,11 @@ function closeModal() {
 
 function selectEntity(ent) {
   selectedEntity.value = ent
+  // 切换实体时关闭正在进行的名称/备注编辑，否则 editingNote/editingName 仍为 true，
+  // textarea 会带着旧 noteInput/nameInput 内容漂移到新实体上，
+  // 误以为"备注被所有设备共享"——再点保存还会把旧内容写到新实体。
+  editingName.value = false
+  editingNote.value = false
 }
 
 // Capabilities — 基于 selectedEntity（设备内当前展开的子实体）
