@@ -44,18 +44,27 @@ async def list_integrations(container=Depends(get_container)):
 
 @router.post("/integrations/{plugin_id}/toggle-enabled")
 async def toggle_plugin_enabled(plugin_id: str, container=Depends(get_container)):
-    """切换插件启用/禁用（持久化，需重启生效）。"""
+    """切换插件启用/禁用。
+
+    禁用 → 立即停止该插件进程（不再念/不再响应）。
+    启用 → 持久化状态，下次启动 Aether 时加载（运行时启动子进程较重，留给重启）。
+    """
     layer = container.integration_layer
     if layer is None:
         return {"success": False, "message": "集成平台未启用"}
-    # 查当前状态
     plugins = layer.list_plugins()
     target = next((p for p in plugins if p["id"] == plugin_id), None)
     if target is None:
         return {"success": False, "message": f"未知插件: {plugin_id}"}
     new_enabled = not target["enabled"]
-    layer.set_plugin_enabled(plugin_id, new_enabled)
-    return {"success": True, "data": {"id": plugin_id, "enabled": new_enabled}}
+    if new_enabled:
+        # 启用：只持久化，下次启动生效
+        layer.set_plugin_enabled(plugin_id, True)
+    else:
+        # 禁用：持久化 + 立即停止进程
+        await layer.stop_plugin(plugin_id)
+    return {"success": True, "data": {"id": plugin_id, "enabled": new_enabled,
+                                       "alive": new_enabled and target["alive"]}}
 
 
 @router.post("/integrations/broadcast/toggle")

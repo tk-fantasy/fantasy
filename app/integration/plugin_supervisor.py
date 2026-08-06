@@ -75,6 +75,22 @@ class PluginSupervisor:
             except Exception as exc:
                 logger.warning("停止插件 %s 出错: %s", proc.manifest.id, exc)
 
+    async def stop_one(self, plugin_id: str) -> bool:
+        """停止单个插件进程（用于运行时禁用）。
+
+        返回 True 表示有进程被停止，False 表示该插件未运行。
+        """
+        proc = self._processes.pop(plugin_id, None)
+        self._manifests.pop(plugin_id, None)
+        if proc is None:
+            return False
+        try:
+            await proc.stop()
+            return True
+        except Exception as exc:
+            logger.warning("停止插件 %s 出错: %s", plugin_id, exc)
+            return False
+
     def get_process(self, plugin_id: str) -> PluginProcess | None:
         return self._processes.get(plugin_id)
 

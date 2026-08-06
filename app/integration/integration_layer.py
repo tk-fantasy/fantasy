@@ -110,7 +110,17 @@ class IntegrationLayer:
     def set_plugin_enabled(self, plugin_id: str, enabled: bool) -> None:
         """启用/禁用插件（持久化到 config）。
 
-        禁用 = 下次启动不加载该插件进程。本次运行中已启动的进程不停（需重启生效）。
+        注意：此方法只持久化状态，不立即停止/启动进程。
+        要立即生效用 stop_plugin / 需重启启动。
         """
         from .config_helper import set_plugin_disabled
         set_plugin_disabled(plugin_id, not enabled)
+
+    async def stop_plugin(self, plugin_id: str) -> bool:
+        """运行时停止某插件进程（禁用时调用，立即生效）。
+
+        持久化禁用状态 + 停止运行中的进程。
+        返回是否有进程被停止。
+        """
+        self.set_plugin_enabled(plugin_id, enabled=False)
+        return await self._supervisor.stop_one(plugin_id)
