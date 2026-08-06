@@ -85,6 +85,27 @@ Phase 1 实现了工业级插件系统的骨架：每个集成是**独立子进�
    ```
 4. 重启 Aether，插件自动被发现并启动
 
+### 为新音箱写播报插件
+
+插件系统已解耦——加新音箱**不改 Aether 主代码**，只在 `integrations/` 扔一个文件夹。但每个音箱仍要写各自的插件（调它的 API）。路径取决于音箱怎么被控制：
+
+| 音箱接入方式 | 插件怎么写 | 凭证 |
+|------------|-----------|------|
+| 已接入 HA（media_player 实体，支持 PLAY_MEDIA / TTS） | 插件调 `tts.speak` 或 `media_player.play_media` | manifest 声明 `secrets: ["ha_url","ha_token"]`，宿主自动注入 |
+| 已接入 HA，但只支持 notify 实体念字（如小爱 LX06） | 插件调 `notify.send_message`（小爱即此路） | 同上 |
+| 有局域网 HTTP API（如 Sonos） | 插件进程内直连音箱 API，不经 HA | manifest config_schema 让用户填音箱 IP/端口 |
+| 只有云 API + 账号登录 | 插件持有云凭证，调厂商云接口 | secrets 扩展新类型（如 `sonos_token`），宿主映射注入 |
+
+**解耦的边界**：框架让"加插件不改主代码"，但不免去"为每个音箱写那个插件"的工作——这和 VSCode 插件系统同理（装 Python 插件不改 VSCode，但 Python 插件得有人写）。
+
+### 解耦的验证标准
+
+加第二个音箱时，问自己：**改了 `app/main.py` 吗？改了 `app/integration/` 任何文件吗？**
+- 改了 → 解耦失败，是设计漏洞
+- 没改（只加了 `integrations/xxx/`）→ 解耦成功
+
+凭证注入已通用化（按 manifest `secrets` 声明统一注入，宿主不认识具体插件名），所以"需要 HA 凭证的音箱"加进来零主代码改动。
+
 ## 配置
 
 `config.json` 的 `integration` section：
