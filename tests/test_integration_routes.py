@@ -206,23 +206,23 @@ def test_toggle_plugin_enabled_flips_state():
     mock_layer.stop_plugin.assert_awaited_once_with("xiaoai")
 
 
-def test_toggle_plugin_enabled_to_on_does_not_start_process():
-    """启用时不立即启动进程（留给重启）。"""
+def test_toggle_plugin_enabled_to_on_hot_starts():
+    """启用时热启动进程（调 start_plugin，不留给重启）。"""
     mock_layer = MagicMock()
     mock_layer.list_plugins.return_value = [
         {"id": "xiaoai", "enabled": False, "alive": False, "name": "小爱"}
     ]
     mock_layer.stop_plugin = AsyncMock(return_value=False)
-    mock_layer.set_plugin_enabled = MagicMock()
+    mock_layer.start_plugin = AsyncMock(return_value=True)
     from app.routes.integration_routes import toggle_plugin_enabled
     result = asyncio.new_event_loop().run_until_complete(
         toggle_plugin_enabled("xiaoai", container=_mock_container(layer=mock_layer))
     )
     assert result["success"] is True
-    assert result["data"]["enabled"] is True  # False → True（启用）
-    # 启用不应停进程
+    assert result["data"]["enabled"] is True
+    assert result["data"]["alive"] is True  # 热启动成功
+    mock_layer.start_plugin.assert_awaited_once_with("xiaoai")
     mock_layer.stop_plugin.assert_not_awaited()
-    mock_layer.set_plugin_enabled.assert_called_once_with("xiaoai", True)
 
 
 def test_toggle_plugin_enabled_unknown_returns_error():

@@ -124,3 +124,19 @@ class IntegrationLayer:
         """
         self.set_plugin_enabled(plugin_id, enabled=False)
         return await self._supervisor.stop_one(plugin_id)
+
+    async def start_plugin(self, plugin_id: str) -> bool:
+        """运行时启动某插件进程（热启动：启用已禁用的插件）。
+
+        持久化启用状态 + 热启动进程。
+        子进程天然隔离，无需 OpenClaw 那样的原子注册表交换。
+        返回是否启动成功。
+        """
+        # 找 manifest（从全部已安装的里找，含禁用的）
+        from .manifest_loader import load_all_manifests
+        manifests = load_all_manifests(self._plugin_dir, api_version=self._api_version)
+        target = next((m for m in manifests if m.id == plugin_id), None)
+        if target is None:
+            return False
+        self.set_plugin_enabled(plugin_id, enabled=True)
+        return await self._supervisor.start_one(target, self._plugin_dir)

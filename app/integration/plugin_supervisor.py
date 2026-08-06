@@ -91,6 +91,21 @@ class PluginSupervisor:
             logger.warning("停止插件 %s 出错: %s", plugin_id, exc)
             return False
 
+    async def start_one(self, manifest: Manifest, plugin_dir: str) -> bool:
+        """运行时启动单个插件进程（用于热启动：启用已禁用的插件）。
+
+        与 _start_with_retries 同样的退避重试逻辑，但只针对一个插件。
+        返回 True 成功，False 失败（重试耗尽）。
+        借鉴 OpenClaw：启用=热加载，子进程天然隔离，无需原子交换注册表。
+        """
+        try:
+            await self._start_with_retries(manifest, plugin_dir)
+            return True
+        except Exception as exc:
+            logger.error("插件 %s 热启动失败（已重试 %d 次）: %s",
+                         manifest.id, self._max_restarts, exc)
+            return False
+
     def get_process(self, plugin_id: str) -> PluginProcess | None:
         return self._processes.get(plugin_id)
 

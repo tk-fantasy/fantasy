@@ -44,10 +44,10 @@ async def list_integrations(container=Depends(get_container)):
 
 @router.post("/integrations/{plugin_id}/toggle-enabled")
 async def toggle_plugin_enabled(plugin_id: str, container=Depends(get_container)):
-    """切换插件启用/禁用。
+    """切换插件启用/禁用（热加载，不重启 Aether）。
 
-    禁用 → 立即停止该插件进程（不再念/不再响应）。
-    启用 → 持久化状态，下次启动 Aether 时加载（运行时启动子进程较重，留给重启）。
+    禁用 → 立即停止该插件进程。
+    启用 → 热启动该插件进程（借鉴 OpenClaw：启用=热加载；子进程天然隔离无需原子交换）。
     """
     layer = container.integration_layer
     if layer is None:
@@ -58,13 +58,15 @@ async def toggle_plugin_enabled(plugin_id: str, container=Depends(get_container)
         return {"success": False, "message": f"未知插件: {plugin_id}"}
     new_enabled = not target["enabled"]
     if new_enabled:
-        # 启用：只持久化，下次启动生效
-        layer.set_plugin_enabled(plugin_id, True)
+        # 启用：热启动进程
+        started = await layer.start_plugin(plugin_id)
+        return {"success": True, "data": {"id": plugin_id, "enabled": True,
+                                          "alive": started}}
     else:
-        # 禁用：持久化 + 立即停止进程
+        # 禁用：立即停进程
         await layer.stop_plugin(plugin_id)
-    return {"success": True, "data": {"id": plugin_id, "enabled": new_enabled,
-                                       "alive": new_enabled and target["alive"]}}
+        return {"success": True, "data": {"id": plugin_id, "enabled": False,
+                                          "alive": False}}
 
 
 @router.post("/integrations/broadcast/toggle")
