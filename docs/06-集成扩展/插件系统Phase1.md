@@ -21,7 +21,7 @@ Phase 1 实现了工业级插件系统的骨架：每个集成是**独立子进�
 │                          ┌──────────┴───────────┐        │
 │                          ▼                      ▼        │
 │                    PluginProcess          PluginProcess  │
-│                    (stdio JSON-RPC)        (崩溃退避重启) │
+│                    (stdio JSON-RPC)        (启动失败退避重试) │
 └──────────────────────────┬───────────────────────────────┘
                            │ stdin/stdout (JSON-RPC 2.0)
                            ▼
@@ -112,7 +112,7 @@ Phase 1 实现了工业级插件系统的骨架：每个集成是**独立子进�
 
 | 键 | 默认值 | 说明 |
 |----|--------|------|
-| `enabled` | `true` | 是否启用插件平台 |
+| `enabled` | `false` | 是否启用插件平台（代码兜底默认关；`config.example.json` 里显式写了 `true`） |
 | `plugin_dir` | `integrations` | 插件目录（相对项目根） |
 | `api_version` | `1` | 契约版本（不匹配的插件被跳过） |
 | `default_rpc_timeout` | `30` | RPC 调用超时（秒） |
@@ -143,9 +143,10 @@ Aether 自己的多次 speak 通过 `asyncio.Lock` + `asyncio.Queue` 排队，�
 
 | 机制 | 说明 |
 |------|------|
-| 指数退避重启 | 插件崩溃后 1s→2s→4s 退避重启，避免重启风暴（借鉴 K8s CrashLoopBackOff） |
-| 熔断 | 超过 `max_restarts` 后停止重试，插件标记 disabled |
+| 指数退避重试 | 插件**启动失败**时 1s→2s→4s…（封顶 30s）退避重试（借鉴 K8s CrashLoopBackOff）。注意：进程启动**成功之后**崩溃没有检测/重启机制，靠外部手动重启 |
+| 启动熔断 | 超过 `max_restarts` 次启动尝试失败后放弃启动该插件（日志记「已熔断」；无 disabled 标记，插件列表里仍显示 `alive=false`） |
 | 单点失败隔离 | 单个插件启动失败不阻塞其他插件 |
+| 优雅关闭 | 停止时三级流程：发 `shutdown` RPC 通知（3s 超时）→ `terminate()` → 2s 仍不退再 `kill()` |
 | 广播容错 | 单个 sink 广播失败仅记日志，不阻塞主聊天流程 |
 
 ## API
@@ -157,12 +158,57 @@ Aether 自己的多次 speak 通过 `asyncio.Lock` + `asyncio.Queue` 排队，�
 
 - 仅支持方向 1（Aether → 插件）单向 RPC；Phase 3 补方向 2（插件反向调 Aether）
 - 无心跳熔断（进程卡死但未退出的检测）；Phase 5 补
-- 无优雅关闭三级流程（RPC→TERM→KILL）的完整实现；Phase 5 补
-- 配置 UI 未做；Phase 2 补前端
+- 插件级配置表单未做（manifest `config_schema` 的动态表单 UI）；小爱广播的开关按钮已通过 UI 贡献机制实现（见下节）
+
+
+## 前端 UI 贡献机制
+
+插件不仅贡献后端能力，还能贡献前端 UI——**且 UI 不硬编码在主代码里，由 manifest 声明、Aether 通用渲染器渲染**。没装插件 → 前端无该 UI → 主代码八竿子打不着。
+
+### 声明方式
+
+manifest.json 加 `ui_contributions`：
+
+```json
+"ui_contributions": [{
+  "slot": "chat_input_toolbar",
+  "type": "toggle_button",
+  "props": {"icon_on": "🔊", "icon_off": "🔇", "title_on": "...", "title_off": "..."},
+  "state_key": "broadcast_enabled",
+  "action": "toggle_broadcast"
+}]
+```
+
+| 字段 | 说明 |
+|------|------|
+| `slot` | UI 槽位（如 `chat_input_toolbar`），前端在对应位置放 `<IntegrationSlot>` 占位 |
+| `type` | 预定义类型：`toggle_button` / `icon_button` / `status_badge`（不写 Vue 代码） |
+| `props` | UI 展示参数（icon/title 等） |
+| `state_key` | 状态读取 key（`GET /api/integrations/state/{key}`） |
+| `action` | 点击触发动作（`POST /api/integrations/action/{name}`） |
+
+### 关键设计：state/action 归属框架，不属插件
+
+广播开关（`broadcast_enabled`）是 `SinkManager` 的通用状态——**这是插件系统框架的能力，不属于小爱插件**。小爱插件只声明"我要在 UI 放个按钮控制这个通用开关"，连开关逻辑都不持有。
+
+Aether 维护 `STATE_HANDLERS` / `ACTION_HANDLERS` 注册表，**插件只能用已注册的 state_key/action**——安全边界（插件不能任意触发未注册动作）。
+
+### 通用组件
+
+- `IntegrationSlot.vue`：读 `/api/integrations/ui_contributions`，按 `slot` 过滤，按 `type` 渲染对应通用组件。无贡献时渲染空。
+- `ToggleButtonContribution.vue`：读 `state_key` 显示开/关态，点击 POST `action`，切换状态。用 Aether 现有 CSS 变量，不认得小爱。
+- `ChatView.vue` input-row 只放 `<IntegrationSlot slot="chat_input_toolbar" />` 占位——**无小爱/音箱/broadcast 字眼**。
+
+### 解耦验证
+
+删 `integrations/xiaoai/` 后：
+- `list_ui_contributions()` 返回空 → 前端 `<IntegrationSlot>` 渲染空 → `/chat` 无喇叭按钮 ✅
+- ChatView.vue 无"小爱/音箱/broadcast"字眼 ✅
+- state/action 注册表无 `xiaoai` 字样，全是框架通用能力 ✅
 
 ## 后续 Phase
 
-- **Phase 2**：全局打断（W3）+ 小爱直通模式（W2）+ ChatView UI
+- **Phase 2**：全局打断（W3）+ 小爱直通模式（W2）+ 插件配置表单 UI
 - **Phase 3**：双向 RPC（反向调用 + 权限白名单）
 - **Phase 4**：飞书机器人（W4）
-- **Phase 5**：心跳熔断 + 优雅关闭 + 依赖图拓扑启动
+- **Phase 5**：心跳熔断（进程卡死检测）+ 崩溃自动重启 + 依赖图拓扑启动
