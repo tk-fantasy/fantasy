@@ -66,6 +66,7 @@ class TestDisplaySingleton:
     async def test_enable_display_switches_single_active(self):
         mgr = CameraManager.__new__(CameraManager)
         mgr._auto_sem = asyncio.Semaphore(5)
+        mgr._db = None
         mgr._streams = {"cam_a": _make_stream("cam_a"), "cam_b": _make_stream("cam_b")}
         mgr._active_display_id = None
 
@@ -82,6 +83,7 @@ class TestDisplaySingleton:
         """重复 enable 同一路不重复 start_display。"""
         mgr = CameraManager.__new__(CameraManager)
         mgr._auto_sem = asyncio.Semaphore(5)
+        mgr._db = None
         mgr._streams = {"cam_a": _make_stream("cam_a")}
         mgr._active_display_id = None
 
@@ -93,6 +95,7 @@ class TestDisplaySingleton:
     async def test_disable_display_clears_active(self):
         mgr = CameraManager.__new__(CameraManager)
         mgr._auto_sem = asyncio.Semaphore(5)
+        mgr._db = None
         mgr._streams = {"cam_a": _make_stream("cam_a")}
         mgr._active_display_id = "cam_a"
 

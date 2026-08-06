@@ -270,6 +270,22 @@ class CameraManager:
             })
         return out
 
+    async def cameras_all(self) -> list[dict]:
+        """查 cameras 表完整行 + 合并运行时 online(供前端管理页)。
+
+        与 list_cameras()(4 字段轻量版,给 MCP 工具)的区别:返回完整行
+        (含 display_enabled/enabled/source_type/rtsp_url 等),前端卡片与编辑
+        弹窗需要。online 从 get_state 的 camera_opened 推断(CameraState 无
+        online 字段,原 list_cameras 用 st.get("online") 永远 False 是 bug)。
+        """
+        if self._db is None:
+            return []
+        rows = await self._db.cameras_all()
+        for row in rows:
+            st = self.get_state(row["id"])
+            row["online"] = bool(st.get("camera_opened", False)) if st else False
+        return rows
+
     def primary_camera_id(self) -> str | None:
         """无参 /video_feed 取主路:当前预览路优先,否则第一个 enabled 路。
 

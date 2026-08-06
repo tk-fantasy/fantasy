@@ -22,6 +22,10 @@ def _mock_container():
     c.camera_manager.list_cameras = MagicMock(return_value=[
         {"id": "cam_a", "name": "客厅", "area": "客厅", "online": True}
     ])
+    c.camera_manager.cameras_all = AsyncMock(return_value=[
+        {"id": "cam_a", "name": "客厅", "area": "客厅", "online": True,
+         "enabled": 1, "display_enabled": 0, "source_type": "rtsp"}
+    ])
     c.camera_manager.get_state = MagicMock(return_value={"camera_id": "cam_a", "online": True})
     c.camera_manager.enable_display = AsyncMock(return_value=None)
     c.camera_manager.disable_display = AsyncMock(return_value=None)

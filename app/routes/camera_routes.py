@@ -9,6 +9,7 @@ from fastapi.responses import StreamingResponse
 
 from app.container import get_container
 from app.core.api_models import ApiResponse
+from app.core.config import get_config
 from app.core.database import Database
 
 router = APIRouter()
@@ -17,22 +18,15 @@ router = APIRouter()
 # —— CRUD ——
 @router.get("/cameras")
 async def list_cameras():
-    """摄像头列表(完整行)。前端管理页 + 工具注入共用。
+    """摄像头列表(完整行)。前端管理页用。
 
-    查 cameras 表完整行(含 display_enabled/enabled/source_type/rtsp_url 等
-    前端卡片与编辑弹窗所需字段),合并运行时 online 状态(从 get_state 推断)。
-    CameraManager.list_cameras() 只返 4 字段(id/name/area/online,给 MCP 工具
-    轻量注入用),不能直接给前端——refetch 后 display_enabled 等字段丢失会导致
-    开关乐观更新被覆盖回退。
+    返回 cameras 表完整行(含 display_enabled/enabled/source_type/rtsp_url 等
+    前端卡片与编辑弹窗所需字段)+ 运行时 online。CameraManager.list_cameras()
+    只返 4 字段(id/name/area/online,给 MCP 工具轻量注入用),refetch 后
+    display_enabled 等字段丢失会导致开关乐观更新被覆盖回退,故路由用完整版。
     """
     c = get_container()
-    rows = await Database.get().cameras_all()
-    cm = c.camera_manager
-    for row in rows:
-        st = cm.get_state(row["id"]) if cm else None
-        # CameraState 无 online 字段,用 camera_opened 推断(已打开=在线)
-        row["online"] = bool(st.get("camera_opened", False)) if st else False
-    return ApiResponse(data=rows)
+    return ApiResponse(data=await c.camera_manager.cameras_all())
 
 
 @router.post("/cameras")
@@ -79,21 +73,64 @@ async def video_feed(camera_id: str):
 # —— 试连(前端保存前验证 RTSP 可达)——
 @router.post("/cameras/{camera_id}/test-stream")
 async def test_stream(camera_id: str, body: dict):
-    """用 body 里的临时配置试打开 RTSP,不落库。返回 ok/error。"""
-    url = str(body.get("rtsp_url", "")).strip()
-    if not url:
-        return ApiResponse(data={"ok": False, "error": "rtsp_url 为空"})
+    """用 body 里的临时配置试打开 RTSP,不落库。返回 ok/error。
+
+    复用 CameraStream._open_network_stream 的打开参数(rtsp_transport=tcp +
+    低延迟 + 凭证注入),否则在需要 TCP/鉴权的环境下试连必失败但 worker 能连
+    (worker 走 _resolve_rtsp_url 注入凭证 + 设了 OPENCV_FFMPEG_CAPTURE_OPTIONS)。
+    """
+    import os, time
     import cv2
+    base = str(body.get("rtsp_url", "")).strip()
+    if not base:
+        return ApiResponse(data={"ok": False, "error": "rtsp_url 为空"})
+    # 复用 worker 在线状态:该路已在线 + body url 与当前 DB 配置一致 → 直接成功。
+    # worker 持着该路 RTSP 连接,试连开第二个会被服务器并发拒绝(表现为 isOpened
+    # False 但 worker 能抓帧);worker 在线 = 可达,无需重复开连接。
+    c = get_container()
+    cm = c.camera_manager
+    if cm is not None:
+        try:
+            row = await Database.get().cameras_get(camera_id)
+        except Exception:
+            row = None
+        if row is not None:
+            st = cm.get_state(camera_id)
+            if st.get("camera_opened") and str(row.get("rtsp_url", "") or "").strip() == base:
+                return ApiResponse(data={"ok": True, "error": ""})
+    # 凭证注入:rtsp://host → rtsp://user:pwd@host(与 _resolve_rtsp_url 一致)
+    user = str(body.get("rtsp_username", "") or "").strip()
+    pwd = str(body.get("rtsp_password", "") or "").strip()
+    url = base
+    if user and pwd and "://" in base:
+        scheme, rest = base.split("://", 1)
+        url = f"{scheme}://{user}:{pwd}@{rest}"
+    # RTSP over TCP + 低延迟(与 _open_network_stream 一致;默认 UDP 在 NAT/桥接
+    # 网络下信令通但拿不到帧)
+    transport = str(get_config("vision.rtsp_transport", "tcp")).strip().lower() or "tcp"
+    os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
+        f"rtsp_transport;{transport}"
+        f"|buffer_size;256k"
+        f"|max_delay;100000"
+        f"|fflags;nobuffer+discardcorrupt"
+        f"|flags;low_delay"
+    )
     cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
-    ok = cap.isOpened()
+    if not cap.isOpened():
+        cap.release()
+        return ApiResponse(data={"ok": False, "error": "打不开(检查 url/凭证/网络/transport)"})
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    # 预热读:首帧可能慢(握手+I 帧),多试几次
+    ok = False
     err = ""
-    if ok:
-        ret, _ = cap.read()
-        ok = ret
-        if not ret:
-            err = "打开但读不到帧"
-    else:
-        err = "打不开(检查 url/凭证/网络)"
+    for _ in range(10):
+        ret, frame = cap.read()
+        if ret and frame is not None:
+            ok = True
+            break
+        time.sleep(0.1)
+    if not ok:
+        err = "打开但读不到帧"
     cap.release()
     return ApiResponse(data={"ok": ok, "error": err})
 
