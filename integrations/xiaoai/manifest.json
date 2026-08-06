@@ -29,6 +29,20 @@
     ],
     "permissions": [],
     "secrets": ["ha_url", "ha_token"],
+    "ui_contributions": [
+        {
+            "slot": "chat_input_toolbar",
+            "type": "toggle_button",
+            "props": {
+                "icon_on": "🔊",
+                "icon_off": "🔇",
+                "title_on": "小爱广播已开启（点击关闭）",
+                "title_off": "小爱广播已关闭（点击开启）"
+            },
+            "state_key": "broadcast_enabled",
+            "action": "toggle_broadcast"
+        }
+    ],
     "resources": {
         "max_memory_mb": 128,
         "restart_on_crash": true,
