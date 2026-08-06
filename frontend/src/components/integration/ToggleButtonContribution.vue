@@ -12,7 +12,7 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
-import { apiGet, apiPost } from '@/utils/api'
+import { apiGet, apiPost } from '../../utils/api'
 
 const props = defineProps({
   contribution: { type: Object, required: true },

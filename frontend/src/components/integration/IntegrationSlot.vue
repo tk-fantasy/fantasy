@@ -11,7 +11,7 @@
 
 <script setup>
 import { ref, onMounted, shallowRef } from 'vue'
-import { apiGet } from '@/utils/api'
+import { apiGet } from '../../utils/api'
 import ToggleButtonContribution from './ToggleButtonContribution.vue'
 
 const props = defineProps({
