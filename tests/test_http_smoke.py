@@ -43,7 +43,7 @@ class TestMiddlewareAuthGuard:
     def test_authenticated_health_passes_guard(self, client: TestClient):
         """带合法 JWT → 穿过 guard 到达路由（health 路由不依赖 lifespan）。"""
         resp = client.get("/api/health", headers=_auth_header())
-        # health 路由在 lifespan 未启动时仍可访问（camera_stream 对象存在）
+        # health 路由在 lifespan 未启动时仍可访问(不依赖摄像头)
         assert resp.status_code == 200
         body = resp.json()
         assert body["code"] == "ok"

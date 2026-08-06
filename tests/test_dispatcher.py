@@ -20,6 +20,7 @@ def _make_dispatcher() -> tuple[Dispatcher, MagicMock, MagicMock]:
     # Mock camera
     camera = MagicMock()
     camera.get_state.return_value = {"action": "idle"}
+    camera.list_cameras.return_value = []
 
     # Mock HA catalog provider
     ha_catalog = MagicMock(return_value="")
@@ -27,7 +28,7 @@ def _make_dispatcher() -> tuple[Dispatcher, MagicMock, MagicMock]:
     dispatcher = Dispatcher(
         session_store=store,
         agent=agent,
-        camera_stream=camera,
+        camera_manager=camera,
         ha_catalog_provider=ha_catalog,
     )
     return dispatcher, agent, store

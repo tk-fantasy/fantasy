@@ -1,47 +1,36 @@
-"""Automation Agent - dhash 事件触发 + 定时器兜底的规则评估。
+"""Automation Agent - 定时器兜底的规则评估。
 
-两条入口：
-- dhash 运动触发：camera_stream 检测到运动调 trigger_evaluate()（自带 ≥3s 节流，
-  防 0-result 规则被连续运动 300/min 轰炸；冷却只在 result==1 后武装，挡不住一直
-  返回 0 的规则）。
-- 定时器兜底：_silent_tick_loop 按 silent_eval_interval 周期评估；dhash 阈值拉满
-  （distance > 256 永不成立）时降级为纯定时器，等价旧轮询策略。
+多路模式下 dhash 运动事件由 CameraManager._on_automation_trigger 自闭环驱动评估
+(per-camera 节流 + _auto_sem 并发闸,见 camera_manager.py),不经本 agent。
+本 agent 只剩定时器兜底:_silent_tick_loop 按 silent_eval_interval 周期遍历各路
+evaluate;dhash 阈值拉满(distance > 256 永不成立)时降级为纯定时器,等价旧轮询策略。
 """
 from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
 
 class AutomationAgent:
-    """dhash 事件触发 + 定时器兜底的自动化规则评估。
+    """定时器兜底的自动化规则评估。
 
-    用 asyncio 后台任务替代 Actor 框架。摄像头线程通过 loop.call_soon_threadsafe
-    跨线程触发评估。
+    用 asyncio 后台任务替代 Actor 框架。dhash 运动事件由 CameraManager 自闭环
+    驱动,本 agent 只负责定时器兜底(_silent_tick_loop 周期遍历各路 evaluate)。
     """
 
     def __init__(
         self,
         automation_service: Any = None,
-        camera_stream: Any = None,
-        min_trigger_interval: float = 3.0,
         silent_eval_enabled: bool = True,
         silent_eval_interval: float = 60.0,
         camera_manager: Any = None,
     ) -> None:
         self._automation_service = automation_service
-        self._camera_stream = camera_stream
-        # Task 9:多路 CameraManager。非空时 _run_evaluation_cycle 遍历各路
-        # (各自 evaluate(camera_id=cid));为空回退单摄 _camera_stream。
+        # 多路 CameraManager:_run_evaluation_cycle 遍历各路(各自 evaluate(camera_id=cid))。
         self._camera_manager = camera_manager
-        # dhash 触发节流闸：≥ min_trigger_interval 才放行一次 trigger。
-        # 复用 vision.min_infer_interval_seconds（默认 3s）。
-        self._min_trigger_interval = max(0.5, float(min_trigger_interval))
-        self._last_trigger_at: float = 0.0
 
         # 定时器兜底（静默推理）：dhash 拉满即降级为纯定时器驱动
         self._silent_enabled = bool(silent_eval_enabled)
@@ -63,8 +52,8 @@ class AutomationAgent:
         if self._silent_enabled:
             self._start_silent_tick()
         logger.info(
-            "AutomationAgent started (min_trigger=%.1fs, silent=%s/%.1fs)",
-            self._min_trigger_interval, self._silent_enabled, self._silent_interval,
+            "AutomationAgent started (silent=%s/%.1fs)",
+            self._silent_enabled, self._silent_interval,
         )
 
     async def stop(self) -> None:
@@ -78,25 +67,6 @@ class AutomationAgent:
                     pass
         self._silent_task = self._debounce_task = None
         logger.info("AutomationAgent stopped")
-
-    # ---------- dhash 事件入口 ----------
-
-    def trigger_evaluate(self) -> None:
-        """摄像头线程调用的 dhash 运动触发入口。
-
-        自带 ≥ min_trigger_interval 节流：节流窗口内的重复 trigger 直接丢弃。
-        这是防 0-result 规则被连续运动 300/min 轰炸的关键——冷却只在 result==1
-        后武装（update_trigger_time），挡不住一直返回 0 的规则。
-        """
-        if self._loop is None or not self._running:
-            return
-        now = time.time()
-        if now - self._last_trigger_at < self._min_trigger_interval:
-            return  # 节流窗口内，丢弃
-        self._last_trigger_at = now
-        self._loop.call_soon_threadsafe(
-            lambda: asyncio.ensure_future(self._run_evaluation_cycle())
-        )
 
     # ---------- 定时器兜底（静默推理） ----------
 
@@ -190,21 +160,17 @@ class AutomationAgent:
             self._eval_count += 1
             if self._automation_service is None:
                 return
-            # Task 9:多路 —— 遍历 manager 各路,各自取帧 + evaluate(camera_id=cid)。
-            # camera_manager 为空时回退单摄 _camera_stream(向后兼容)。
-            if self._camera_manager is not None:
-                for cam in self._camera_manager.list_cameras():
-                    cid = cam["id"]
-                    frames = await asyncio.to_thread(
-                        self._camera_manager.get_recent_frames, cid, 3
-                    )
-                    if frames:
-                        await self._automation_service.evaluate(frames=frames, camera_id=cid)
-            else:
+            # 多路:遍历 manager 各路,各自取帧 + evaluate(camera_id=cid)。
+            # camera_manager 是唯一摄像头来源;无 manager / 无路时不评估。
+            if self._camera_manager is None:
+                return
+            for cam in self._camera_manager.list_cameras():
+                cid = cam["id"]
                 frames = await asyncio.to_thread(
-                    self._camera_stream.get_recent_frames
-                ) if self._camera_stream else []
-                await self._automation_service.evaluate(frames=frames)
+                    self._camera_manager.get_recent_frames, cid, 3
+                )
+                if frames:
+                    await self._automation_service.evaluate(frames=frames, camera_id=cid)
         except Exception:
             logger.exception("AutomationAgent evaluation cycle error")
         finally:

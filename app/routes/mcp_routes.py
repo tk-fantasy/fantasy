@@ -111,7 +111,7 @@ async def agents_status(container: AppContainer = Depends(get_container)) -> Api
         data={
             "automation": {
                 "running": agent._running,
-                "min_trigger_interval": agent._min_trigger_interval,
+                "min_trigger_interval": float(get_config("vision.min_infer_interval_seconds", 3.0)),
                 "silent_enabled": agent._silent_enabled,
                 "silent_interval": agent._silent_interval,
                 "eval_count": agent._eval_count,
@@ -132,8 +132,12 @@ async def video_feed(request: Request, container: AppContainer = Depends(get_con
     else:
         raise AppException("未提供认证信息", code="missing_auth", http_status=401)
 
+    camera_manager = container.camera_manager
+    cid = camera_manager.primary_camera_id() if camera_manager else None
+    if cid is None:
+        raise AppException("无可用摄像头", code="no_camera", http_status=503)
     return StreamingResponse(
-        container.camera_stream.mjpeg_generator(),
+        camera_manager.mjpeg_generator(cid),
         media_type="multipart/x-mixed-replace; boundary=frame",
         headers={
             # 禁止任何中间层（Nginx/uvicorn/浏览器代理）缓冲这个流：

@@ -91,7 +91,6 @@ _services = initialize_services()
 # 从 services dict 提取全局引用（容器已持有全部服务，此处仅留 main.py 内部直接使用的引用）
 vision_client = _services["vision_client"]
 vision_service = _services["vision_service"]
-camera_stream = _services["camera_stream"]
 llm_chat_client = _services["llm_chat_client"]
 embed_client = _services["embed_client"]
 emoji_service = _services["emoji_service"]
@@ -295,8 +294,11 @@ async def _refresh_ha_catalog() -> None:
         controls_text = "\n\n".join(controls_lines) if controls_lines else ""
         _ha_catalog_cache_ref[0] = catalog
         _ha_controls_cache_ref[0] = controls_text
+        # 临时诊断:确认 controls 生成情况
+        logger.info("catalog refresh done: catalog=%d chars, controls=%d chars, raw_svc=%s, notes=%d",
+                    len(catalog), len(controls_text), bool(raw_svc_defs), len(notes_map))
     except Exception:  # noqa: BLE001
-        logger.warning("HA catalog refresh failed")
+        logger.warning("HA catalog refresh failed", exc_info=True)
 
 
 async def _ha_catalog_refresh_loop() -> None:
@@ -483,11 +485,10 @@ async def lifespan(_: FastAPI):
     # 注册所有 MCP 工具（集中在 tools.py 管理）
     tool_deps = ToolDeps(
         mcp_client_manager=mcp_client_manager,
-        camera_stream=camera_stream,
         vision_client=vision_client,
         ha_service=ha_service,
         ha_client_ref=_ha_client_ref,
-        camera_manager=_services.get("camera_manager"),   # Task 8:多路 fallback
+        camera_manager=_services.get("camera_manager"),   # 唯一摄像头来源(多路)
     )
     register_all_tools(tool_deps)
 
@@ -537,7 +538,6 @@ async def lifespan(_: FastAPI):
     dispatcher = Dispatcher(
         session_store=session_store,
         agent=langgraph_agent,
-        camera_stream=camera_stream,
         ha_catalog_provider=_get_ha_device_catalog,
         ha_controls_provider=_get_ha_device_controls,
         vision_service=vision_service,
@@ -552,21 +552,18 @@ async def lifespan(_: FastAPI):
     _container.dispatcher = dispatcher
 
     # 启动自动化评估（dhash 事件触发 + 定时器兜底，替代旧 10s 轮询 + 推理完成双触发）
-    min_trigger_interval = max(0.5, float(get_config("vision.min_infer_interval_seconds", 3.0)))
     silent_eval_enabled = bool(get_config("automation.silent_eval_enabled", True))
     silent_eval_interval = max(5.0, float(get_config("automation.silent_eval_interval_seconds", 300.0)))
     _automation_agent_ref[0] = AutomationAgent(
         automation_service=automation_service,
-        camera_stream=camera_stream,
-        min_trigger_interval=min_trigger_interval,
         silent_eval_enabled=silent_eval_enabled,
         silent_eval_interval=silent_eval_interval,
-        camera_manager=_services.get("camera_manager"),   # Task 9:多路遍历
+        camera_manager=_services.get("camera_manager"),
     )
     await _automation_agent_ref[0].start()
     logger.info(
-        "AutomationAgent started (min_trigger=%.1fs, silent=%s/%.1fs)",
-        min_trigger_interval, silent_eval_enabled, silent_eval_interval,
+        "AutomationAgent started (silent=%s/%.1fs)",
+        silent_eval_enabled, silent_eval_interval,
     )
 
     # 启动定时任务调度器（与 AutomationAgent 互补：精确时刻触发，零 LLM 开销）
@@ -584,18 +581,9 @@ async def lifespan(_: FastAPI):
     tool_deps.scheduler_service_ref[0] = scheduler_service
 
     _startup_progress.set("正在连接摄像头与智能家居...")
-    # dhash 运动触发自动化评估（事件驱动 + 定时器兜底两条入口）。
-    # 旧的 on_inference_done（推理完成即触发评估）已移除：会造成与 dhash 重复评估。
-    camera_stream.set_on_automation_trigger(_automation_agent_ref[0].trigger_evaluate)
-    # 注入主事件循环：运动推理通过 run_coroutine_threadsafe 投到主循环跑，
-    # httpx 网络等待时释放 GIL，不再像线程池那样抢 GIL 饿死采集线程（修复运动推理时 FPS 崩到 ~1）
-    camera_stream.set_event_loop(asyncio.get_running_loop())
-    # 注入 ONVIF 发现服务：worker 掉线连续开流失败时触发发现找回 IP
-    # （discovery_service 未注入则掉线走纯指数退避，向后兼容）
-    camera_stream.set_discovery_service(discovery_service)
-    # 注入视觉展示开关初始状态（用户在 /camera 关过则重启后仍保持关闭）
-    camera_stream.set_camera_vl_display_enabled(bool(get_config("automation.camera_vl_display_enabled", True)))
-    camera_stream.start()
+    # 多路 CameraManager 是唯一摄像头来源:各路 worker 自带 dhash 运动检测 +
+    # _on_automation_trigger 事件驱动评估(自闭环,不经 AutomationAgent.trigger_evaluate)。
+    # AutomationAgent 只剩定时器兜底(_silent_tick_loop 遍历各路 evaluate)。
 
     # Task 7:多路 CameraManager 接线(db/ha/automation 后注入,顺序兜底)。
     # CameraManager.initialize 从 cameras 表加载所有 enabled 路,各路 worker
@@ -609,9 +597,12 @@ async def lifespan(_: FastAPI):
         discovery_service.set_db(Database.get())
         try:
             await camera_manager.initialize()
+            # 应用全局预览开关初始状态(用户在 /camera 关过则重启后仍保持关闭)
+            if not bool(get_config("automation.camera_vl_display_enabled", True)):
+                camera_manager.set_camera_vl_display_enabled(False)
             logger.info("CameraManager initialized (%d stream(s))", len(camera_manager.list_cameras()))
         except Exception:
-            logger.exception("CameraManager initialize failed (non-fatal, single-camera mode continues)")
+            logger.exception("CameraManager initialize failed (non-fatal)")
 
     # 后台捕获摄像头 MAC（首次配对，不阻塞启动）
     # Task 7:单摄旧路径 + 多路遍历 discovery_enabled 且 device_mac 为空的路
@@ -677,8 +668,7 @@ async def lifespan(_: FastAPI):
             logger.exception("IntegrationLayer stop failed (non-fatal)")
     await mcp_client_manager.disconnect_all_external()
     await session_store.shutdown()
-    camera_stream.stop()
-    # Task 7:多路停止
+    # 多路停止
     cm = _services.get("camera_manager")
     if cm is not None:
         try:
@@ -892,21 +882,24 @@ def _build_plugin_env(manifests, ha_client) -> dict[str, dict[str, str]]:
 
 
 def _primary_camera_state() -> dict:
-    """Task 10:取主摄像头状态(第一个 enabled)。camera_manager 为空回退 camera_stream。
+    """取主摄像头状态(第一个 enabled)。多路 CameraManager 是唯一摄像头来源。
 
     全局 health/state 端点用此保持兼容 —— 返回主摄像头状态,/camera 弹窗外
-    的前端引用不崩。manager 未 initialize 时返回空 CameraState。
+    的前端引用不崩。manager 未 initialize 或无路时返回空 CameraState。
     """
     cm = _services.get("camera_manager")
-    if cm is not None:
-        cams = cm.list_cameras()
-        if cams:
-            return cm.get_state(cams[0]["id"])
+    if cm is None:
         return {"camera_id": "", "camera_opened": False, "backend_name": "unknown",
                 "frame_width": 0, "frame_height": 0, "fps": 0.0, "last_frame_at": 0.0,
                 "last_error": None, "action": "idle", "feedback": "", "details": None,
                 "confirmed": False}
-    return camera_stream.get_state()
+    cams = cm.list_cameras()
+    if cams:
+        return cm.get_state(cams[0]["id"])
+    return {"camera_id": "", "camera_opened": False, "backend_name": "unknown",
+            "frame_width": 0, "frame_height": 0, "fps": 0.0, "last_frame_at": 0.0,
+            "last_error": None, "action": "idle", "feedback": "", "details": None,
+            "confirmed": False}
 
 
 @app.get("/api/health")

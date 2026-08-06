@@ -169,6 +169,8 @@ class TestOnAutomationTriggerBridge:
         mgr._loop = asyncio.get_event_loop()
         mgr._streams = {"cam_a": _make_stream("cam_a")}
         mgr._auto_sem = asyncio.Semaphore(5)
+        mgr._last_trigger_at = {}
+        mgr._min_trigger_interval = 3.0
         called = []
 
         async def fake_req(cid, frames):
@@ -181,3 +183,46 @@ class TestOnAutomationTriggerBridge:
         await asyncio.sleep(0.05)
         assert len(called) == 1
         assert called[0][0] == "cam_a"
+
+    @pytest.mark.asyncio
+    async def test_on_automation_trigger_throttles_within_window(self):
+        """per-camera 节流:窗口内重复触发直接丢弃,与单摄 trigger_evaluate 一致。"""
+        mgr = CameraManager.__new__(CameraManager)
+        mgr._loop = asyncio.get_event_loop()
+        mgr._streams = {"cam_a": _make_stream("cam_a")}
+        mgr._auto_sem = asyncio.Semaphore(5)
+        mgr._last_trigger_at = {}
+        mgr._min_trigger_interval = 3.0
+        called = []
+
+        async def fake_req(cid, frames):
+            called.append(cid)
+        mgr.request_automation_eval = fake_req
+
+        # 连续触发(同一秒内),只有首次放行
+        mgr._on_automation_trigger("cam_a")
+        mgr._on_automation_trigger("cam_a")
+        mgr._on_automation_trigger("cam_a")
+        await asyncio.sleep(0.05)
+        assert len(called) == 1
+
+    @pytest.mark.asyncio
+    async def test_on_automation_trigger_independent_per_camera(self):
+        """per-camera 独立计时:一路触发不饿死另一路。"""
+        mgr = CameraManager.__new__(CameraManager)
+        mgr._loop = asyncio.get_event_loop()
+        mgr._streams = {"cam_a": _make_stream("cam_a"), "cam_b": _make_stream("cam_b")}
+        mgr._auto_sem = asyncio.Semaphore(5)
+        mgr._last_trigger_at = {}
+        mgr._min_trigger_interval = 3.0
+        called = []
+
+        async def fake_req(cid, frames):
+            called.append(cid)
+        mgr.request_automation_eval = fake_req
+
+        # 两个不同路各自首次都应放行(不是全局一个时间戳)
+        mgr._on_automation_trigger("cam_a")
+        mgr._on_automation_trigger("cam_b")
+        await asyncio.sleep(0.05)
+        assert called == ["cam_a", "cam_b"]

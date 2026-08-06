@@ -22,8 +22,7 @@ def _mock_container(**overrides):
     c.mcp_client_manager.list_external_servers.return_value = []
     c.scheduler_service = None
     c.automation_agent_ref = [None]
-    c.camera_stream = MagicMock()
-    c.camera_manager = MagicMock()   # Task 7:多路
+    c.camera_manager = MagicMock()   # 唯一摄像头来源(多路)
     for k, v in overrides.items():
         setattr(c, k, v)
     return c
@@ -417,9 +416,9 @@ class TestSchedulerCreateTask:
 # ============================================================================
 
 def test_container_has_camera_manager_field():
-    """Task 7:AppContainer 有 camera_manager 字段(多路),保留 camera_stream(过渡)。"""
+    """AppContainer 有 camera_manager 字段(多路,唯一摄像头来源)。"""
     import dataclasses
     from app.container import AppContainer
     fields = {f.name for f in dataclasses.fields(AppContainer)}
     assert "camera_manager" in fields
-    assert "camera_stream" in fields   # 过渡保留
+    assert "camera_stream" not in fields   # 已删,单摄实例移除

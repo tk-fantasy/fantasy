@@ -17,8 +17,22 @@ router = APIRouter()
 # —— CRUD ——
 @router.get("/cameras")
 async def list_cameras():
+    """摄像头列表(完整行)。前端管理页 + 工具注入共用。
+
+    查 cameras 表完整行(含 display_enabled/enabled/source_type/rtsp_url 等
+    前端卡片与编辑弹窗所需字段),合并运行时 online 状态(从 get_state 推断)。
+    CameraManager.list_cameras() 只返 4 字段(id/name/area/online,给 MCP 工具
+    轻量注入用),不能直接给前端——refetch 后 display_enabled 等字段丢失会导致
+    开关乐观更新被覆盖回退。
+    """
     c = get_container()
-    return ApiResponse(data=c.camera_manager.list_cameras())
+    rows = await Database.get().cameras_all()
+    cm = c.camera_manager
+    for row in rows:
+        st = cm.get_state(row["id"]) if cm else None
+        # CameraState 无 online 字段,用 camera_opened 推断(已打开=在线)
+        row["online"] = bool(st.get("camera_opened", False)) if st else False
+    return ApiResponse(data=rows)
 
 
 @router.post("/cameras")

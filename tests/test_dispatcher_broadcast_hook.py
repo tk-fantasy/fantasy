@@ -18,9 +18,10 @@ def _make_dispatcher(sink_manager=None) -> Dispatcher:
     agent = MagicMock()
     camera = MagicMock()
     camera.get_state.return_value = {"action": "idle"}
+    camera.list_cameras.return_value = []
     ha_catalog = MagicMock(return_value="")
     return Dispatcher(
-        session_store=store, agent=agent, camera_stream=camera,
+        session_store=store, agent=agent, camera_manager=camera,
         ha_catalog_provider=ha_catalog, sink_manager=sink_manager,
     )
 

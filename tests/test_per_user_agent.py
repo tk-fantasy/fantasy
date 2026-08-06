@@ -11,13 +11,14 @@ def _make_dispatcher():
     from app.agents.dispatcher import Dispatcher
 
     session_store = MagicMock()
-    camera_stream = MagicMock()
-    camera_stream.get_state = MagicMock(return_value={})
+    camera_manager = MagicMock()
+    camera_manager.get_state = MagicMock(return_value={})
+    camera_manager.list_cameras = MagicMock(return_value=[])
     global_agent = MagicMock()
     dispatcher = Dispatcher(
         session_store=session_store,
         agent=global_agent,
-        camera_stream=camera_stream,
+        camera_manager=camera_manager,
     )
     return dispatcher, global_agent
 
@@ -145,7 +146,7 @@ class TestAgentClientsLifecycle:
         dispatcher = Dispatcher(
             session_store=MagicMock(),
             agent=global_agent,
-            camera_stream=MagicMock(),
+            camera_manager=MagicMock(),
             clients=(global_sync, global_async),
         )
         return dispatcher, global_agent, global_sync, global_async

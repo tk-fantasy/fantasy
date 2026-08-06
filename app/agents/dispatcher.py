@@ -195,7 +195,6 @@ class Dispatcher:
         self,
         session_store: SessionStore,
         agent: Any,  # LangGraph CompiledStateGraph
-        camera_stream: Any,
         ha_catalog_provider: Any = None,
         ha_controls_provider: Any = None,
         clients: tuple[Any, Any] | None = None,  # 全局 agent 的 (sync, async) httpx 客户端
@@ -211,8 +210,7 @@ class Dispatcher:
         self._tools: list = []           # 工具列表（构建 per-user agent 用）
         self._user_agents: dict[str, Any] = {}  # user_id → agent 缓存
         self._user_agent_lock = asyncio.Lock()
-        self._camera_stream = camera_stream
-        # Task 9:多路。取 focus/state 时按主摄像头(第一个 enabled);为空回退单摄。
+        # 多路。取 focus/state 时按主摄像头(第一个 enabled)。
         self._camera_manager = camera_manager
         self._ha_catalog_provider = ha_catalog_provider
         self._ha_controls_provider = ha_controls_provider
@@ -240,13 +238,19 @@ class Dispatcher:
         return cams[0]["id"] if cams else ""
 
     def _get_camera_state(self) -> dict:
-        """Task 9:取摄像头状态。camera_manager 优先(主摄像头),否则回退 camera_stream。"""
-        if self._camera_manager is not None:
-            cid = self._primary_camera_id()
-            if cid:
-                return self._camera_manager.get_state(cid)
-            return {}
-        return self._camera_stream.get_state()
+        """取主摄像头状态。camera_manager 为空或无路时返回完整空状态字典。"""
+        if self._camera_manager is None:
+            return {"camera_id": "", "camera_opened": False, "backend_name": "unknown",
+                    "frame_width": 0, "frame_height": 0, "fps": 0.0, "last_frame_at": 0.0,
+                    "last_error": None, "action": "idle", "feedback": "", "details": None,
+                    "confirmed": False}
+        cid = self._primary_camera_id()
+        if cid:
+            return self._camera_manager.get_state(cid)
+        return {"camera_id": "", "camera_opened": False, "backend_name": "unknown",
+                "frame_width": 0, "frame_height": 0, "fps": 0.0, "last_frame_at": 0.0,
+                "last_error": None, "action": "idle", "feedback": "", "details": None,
+                "confirmed": False}
 
     @staticmethod
     def _build_failure_retry_message(failed_tools: list[dict]) -> HumanMessage:

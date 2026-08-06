@@ -40,7 +40,7 @@ async def test_get_device_manual_single():
     await Database.get().emoji_pref_upsert("entity_note", "switch.gate", "ON=关门, OFF=开门")
 
     deps = ToolDeps(
-        mcp_client_manager=mgr, camera_stream=MagicMock(), vision_client=MagicMock(),
+        mcp_client_manager=mgr, vision_client=MagicMock(),
         ha_service=mock_ha_service, ha_client_ref=[mock_ha_client],
     )
     register_all_tools(deps)
@@ -72,7 +72,7 @@ async def test_get_device_manual_batch():
         "light": {"turn_on": {"fields": ["entity_id"]}},
     })
     deps = ToolDeps(
-        mcp_client_manager=mgr, camera_stream=MagicMock(), vision_client=MagicMock(),
+        mcp_client_manager=mgr, vision_client=MagicMock(),
         ha_service=mock_ha_service, ha_client_ref=[MagicMock()],
     )
     register_all_tools(deps)
@@ -98,7 +98,7 @@ async def test_get_device_manual_missing_reported():
     ])
     mock_ha_service.get_service_defs = AsyncMock(return_value={"switch": {"turn_on": {"fields": ["entity_id"]}}})
     deps = ToolDeps(
-        mcp_client_manager=mgr, camera_stream=MagicMock(), vision_client=MagicMock(),
+        mcp_client_manager=mgr, vision_client=MagicMock(),
         ha_service=mock_ha_service, ha_client_ref=[MagicMock()],
     )
     register_all_tools(deps)
@@ -134,7 +134,7 @@ async def test_get_entities_includes_note_field():
     await Database.get().emoji_pref_upsert("entity_note", "switch.gate", "ON=关门")
 
     deps = ToolDeps(
-        mcp_client_manager=mgr, camera_stream=MagicMock(), vision_client=MagicMock(),
+        mcp_client_manager=mgr, vision_client=MagicMock(),
         ha_service=mock_ha_service, ha_client_ref=[MagicMock()],
     )
     register_all_tools(deps)

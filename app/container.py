@@ -44,7 +44,7 @@ class AppContainer:
     tool_executor: Any  # ToolExecutor
 
     # ── 摄像头 ──
-    camera_stream: Any  # CameraStream(过渡保留,Task 9-10 切到 camera_manager 后删)
+    # 全局单摄实例已删,摄像头来源统一走 camera_manager(多路)。
 
     # ── 可变引用（支持热替换）──
     ha_client_ref: list  # [HomeAssistantClient] — set_ha_config 时替换
@@ -134,8 +134,7 @@ def init_container(services: dict[str, Any], metrics_service: Any) -> AppContain
         mcp_client_manager=services["mcp_client_manager"],
         tool_executor=services["tool_executor"],
         # 摄像头
-        camera_stream=services["camera_stream"],
-        camera_manager=services.get("camera_manager"),   # Task 7:可能未注入(过渡)
+        camera_manager=services.get("camera_manager"),   # 唯一摄像头来源(多路)
         discovery_service=services.get("discovery_service"),  # Task 6:ONVIF 发现
         ptz_registry=services.get("ptz_registry"),  # Task 5:PtzRegistry
         # 语义图

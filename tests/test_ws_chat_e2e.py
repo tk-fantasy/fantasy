@@ -27,10 +27,11 @@ def _make_dispatcher(stream_tokens: bool = True, validator_retry: bool = False):
     agent = MagicMock()
     camera = MagicMock()
     camera.get_state.return_value = {"action": "idle"}
+    camera.list_cameras.return_value = []
     dispatcher = Dispatcher(
         session_store=store,
         agent=agent,
-        camera_stream=camera,
+        camera_manager=camera,
         ha_catalog_provider=MagicMock(return_value=""),
         validator=MagicMock(),
         summarization_service=None,

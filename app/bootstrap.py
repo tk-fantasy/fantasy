@@ -4,7 +4,6 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from .camera_stream import CameraStream
 from .services.camera_manager import CameraManager
 from .clients.ha_client import HomeAssistantClient
 from .clients.llm_chat_client import LlmChatClient
@@ -42,11 +41,8 @@ def initialize_services() -> dict[str, Any]:
     services["vision_key_pool"] = vision_key_pool
     services["vision_service"] = vision_service
 
-    # 摄像头流（camera_index 由 CameraStream 从 vision.camera_index 读取，默认 0）
-    camera_stream = CameraStream(vision_service=vision_service)
-    services["camera_stream"] = camera_stream
-
-    # Task 7:多路 CameraManager。db/ha/automation 后注入(bootstrap 顺序兜底)。
+    # 摄像头来源统一为多路 CameraManager(cameras 表)。单路 = cameras 表 1 行;
+    # 空表时 CameraManager.initialize 自动插一行默认 USB(即插即用)。
     camera_manager = CameraManager(
         vision_service=vision_service,
         discovery_service=discovery_service,

@@ -330,9 +330,14 @@ class Database:
         return dict(row) if row else None
 
     async def cameras_insert(self, data: dict) -> str:
-        """插入一路摄像头。data 必须含 id。"""
-        cols = self._CAMERA_COLS
-        values = [data.get(c) for c in cols]
+        """插入一路摄像头。data 必须含 id;只插 data 内的列,其余靠 DB DEFAULT。
+
+        CameraManager 空表播种与 /api/cameras POST 都受益——只传必要字段,
+        motion/vision 等列靠 schema DEFAULT(15 / 3.0 / ...),避免显式插 None
+        覆盖 DEFAULT 导致 CameraStream 构造时 int(None) 崩。
+        """
+        cols = [c for c in self._CAMERA_COLS if c in data]
+        values = [data[c] for c in cols]
         placeholders = ",".join(["?"] * len(cols))
         col_list = ",".join(cols)
         async with self._write_lock:

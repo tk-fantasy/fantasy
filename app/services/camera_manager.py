@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 from ..camera_stream import CameraStream
@@ -47,6 +48,11 @@ class CameraManager:
         # 全局同一时刻只 1 路预览推理)。
         self._active_display_id: str | None = None
         self._auto_sem = asyncio.Semaphore(auto_concurrency)
+        # 多路 dhash 触发节流闸:per-camera 独立计时,与单摄 AutomationAgent.trigger_evaluate
+        # 行为一致(复用 vision.min_infer_interval_seconds,默认 3s)。_auto_sem 只限同时运行数,
+        # 不限触发频率;无此闸连续运动时 0-result 规则会被高频评估轰炸 + 协程堆积。
+        self._last_trigger_at: dict[str, float] = {}
+        self._min_trigger_interval = max(0.5, float(get_config("vision.min_infer_interval_seconds", 3.0)))
         self._loop: asyncio.AbstractEventLoop | None = None
         if discovery_service is not None:
             discovery_service.set_on_ip_changed(self._on_camera_ip_changed)
@@ -67,6 +73,19 @@ class CameraManager:
         AI 预览只激活 display_enabled=1 的第一路,其余待激活(前端切过去才起)。
         """
         rows = await self._db.cameras_all()
+        # 全新安装(cameras 表空)且 legacy 迁移未兜底时,插一行默认 USB 保留
+        # 即插即用体验。幂等:插了就不空。老用户已迁移(rows 非空)不触发。
+        if self._db is not None and not rows:
+            import secrets
+            await self._db.cameras_insert({
+                "id": f"cam_{secrets.token_hex(3)}",
+                "name": "默认摄像头",
+                "enabled": 1,
+                "source_type": "usb",
+                "usb_index": 0,
+                "display_enabled": 1,
+            })
+            rows = await self._db.cameras_all()
         display_activated = False
         for row in rows:
             if not row.get("enabled", 1):
@@ -147,16 +166,26 @@ class CameraManager:
         """切换 AI 预览到指定路:旧路 stop_display,新路 start_display。
 
         全局同一时刻只 1 路预览推理 → 封号兜底成立。
+        落库 display_enabled:新路=1,旧路=0(D4 全局只 1 路)。前端 refetch 后
+        拿到正确值,乐观更新不被覆盖回退。
         """
         if self._active_display_id == camera_id:
             return
-        old = self._streams.get(self._active_display_id) if self._active_display_id else None
+        old_id = self._active_display_id
+        old = self._streams.get(old_id) if old_id else None
         if old is not None:
             old.stop_display()
         new = self._streams.get(camera_id)
         if new is not None:
             new.start_display()
         self._active_display_id = camera_id
+        if self._db is not None:
+            try:
+                await self._db.cameras_update(camera_id, {"display_enabled": 1})
+                if old_id and old_id != camera_id:
+                    await self._db.cameras_update(old_id, {"display_enabled": 0})
+            except Exception:  # noqa: BLE001
+                logger.exception("persist display_enabled failed (enable %s)", camera_id)
 
     async def disable_display(self, camera_id: str) -> None:
         if self._active_display_id == camera_id:
@@ -164,6 +193,47 @@ class CameraManager:
             if s is not None:
                 s.stop_display()
             self._active_display_id = None
+            if self._db is not None:
+                try:
+                    await self._db.cameras_update(camera_id, {"display_enabled": 0})
+                except Exception:  # noqa: BLE001
+                    logger.exception("persist display_enabled failed (disable %s)", camera_id)
+
+    def set_motion_threshold(self, threshold: int) -> None:
+        """全局 dhash 阈值热更新:广播所有路(滑块无 camera_id,作用于全部)。
+
+        与各路 cameras 表 motion_threshold 列不冲突——表列是初始值,本方法是
+        运行时滑块热更新,复用 vision.motion_threshold 落盘语义。
+        """
+        for s in self._streams.values():
+            try:
+                s.set_motion_threshold(threshold)
+            except Exception:  # noqa: BLE001
+                logger.exception("set_motion_threshold failed for %s", getattr(s, "camera_id", "?"))
+
+    def set_camera_vl_display_enabled(self, enabled: bool) -> None:
+        """全局 AI 预览开关(automation.camera_vl_display_enabled 配置项)。
+
+        enabled=True:无预览路时激活第一个 display_enabled=1 路;
+        enabled=False:停当前预览路(保留 _active_display_id 不清,on/off 来回切
+        都作用于同一路,符合 D4「全局同一时刻只 1 路预览」)。
+        与按路 enable_display/disable_display(切预览到指定路)语义不同——
+        本方法是全局总开关,作用于 _active_display_id 那一路。
+        """
+        if enabled:
+            if self._active_display_id is None:
+                for cid, s in self._streams.items():
+                    cfg = getattr(s, "_config", {}) or {}
+                    if cfg.get("display_enabled", 1):
+                        s.start_display()
+                        self._active_display_id = cid
+                        break
+        else:
+            if self._active_display_id is not None:
+                s = self._streams.get(self._active_display_id)
+                if s is not None:
+                    s.stop_display()
+                # 不清 _active_display_id:on 回来恢复同一路
 
     # —— 帧访问 ——
     def get_frame(self, camera_id: str) -> Any:
@@ -200,14 +270,33 @@ class CameraManager:
             })
         return out
 
+    def primary_camera_id(self) -> str | None:
+        """无参 /video_feed 取主路:当前预览路优先,否则第一个 enabled 路。
+
+        供 mcp_routes.py 旧 /video_feed(无 camera_id)端点用——多路化后该端点
+        需选定主路。有预览路用预览路,否则取 list_cameras()[0]。
+        """
+        if self._active_display_id:
+            return self._active_display_id
+        cams = self.list_cameras()
+        return cams[0]["id"] if cams else None
+
     # —— 自动化/工具通道 ——
     def _on_automation_trigger(self, camera_id: str) -> None:
         """worker 线程回调:投递自动化评估到主循环。
+
+        per-camera 节流:同一路距上次触发不足 _min_trigger_interval 直接丢弃,
+        与单摄 AutomationAgent.trigger_evaluate 一致(防 0-result 规则被连续运动轰炸)。
+        跨线程漏桶节流,read-modify-write 不加锁——偶尔多放一个无碍,与单摄路径同等语义。
 
         worker 检测到运动时同步调此方法(跨线程);run_coroutine_threadsafe
         把 request_automation_eval 投到主循环跑(与 camera_stream.py 推理投递
         同机制)。manager 须已注入 loop。
         """
+        now = time.time()
+        if now - self._last_trigger_at.get(camera_id, 0.0) < self._min_trigger_interval:
+            return  # 节流窗口内,丢弃(与单摄 trigger_evaluate 一致)
+        self._last_trigger_at[camera_id] = now
         if self._loop is None or self._loop.is_closed():
             return
         frames = self.get_recent_frames(camera_id, 3)

@@ -34,7 +34,7 @@ async def automation_status(container: AppContainer = Depends(get_container)) ->
         "motion_threshold": int(get_config("vision.motion_threshold", 15)),
         "motion_hash_size": motion_hash_size,
         "motion_threshold_max": motion_hash_size * motion_hash_size,
-        "min_trigger_interval": float(agent._min_trigger_interval) if agent else 3.0,
+        "min_trigger_interval": float(get_config("vision.min_infer_interval_seconds", 3.0)),
         "camera_vl_display_enabled": bool(get_config("automation.camera_vl_display_enabled", True)),
         "running": bool(agent._running) if agent else False,
         "eval_count": int(agent._eval_count) if agent else 0,
@@ -80,11 +80,11 @@ async def set_vision_recognizer(
     关掉只停 /camera 预览，dhash 运动检测与自动化触发不受影响。配置落盘，
     重启后保持。
     """
-    camera_stream = container.camera_stream
-    if camera_stream is None:
+    camera_manager = container.camera_manager
+    if camera_manager is None:
         return ApiResponse(code="not_started", message="摄像头未启动", data={"saved": False})
     enabled = bool(payload.enabled)
-    camera_stream.set_camera_vl_display_enabled(enabled)
+    camera_manager.set_camera_vl_display_enabled(enabled)
     update_config_section("automation", {"camera_vl_display_enabled": enabled})
     logger.info("Camera VL display %s", "enabled" if enabled else "disabled")
     return ApiResponse(data={"saved": True, "camera_vl_display_enabled": enabled})
@@ -115,11 +115,11 @@ async def set_dhash_threshold(
     dhash 不触发，自动化降级为纯定时器兜底。热更新运行中的 MotionDetector + 落盘
     config（重启后保持）。
     """
-    camera_stream = container.camera_stream
+    camera_manager = container.camera_manager
     max_threshold = int(get_config("vision.motion_hash_size", 16)) ** 2
     threshold = max(1, min(max_threshold, int(payload.threshold)))
-    if camera_stream is not None:
-        camera_stream.set_motion_threshold(threshold)
+    if camera_manager is not None:
+        camera_manager.set_motion_threshold(threshold)
     update_config_section("vision", {"motion_threshold": threshold})
     logger.info("dhash motion threshold updated: %d (max=%d)", threshold, max_threshold)
     return ApiResponse(data={"saved": True, "motion_threshold": threshold, "motion_threshold_max": max_threshold})
