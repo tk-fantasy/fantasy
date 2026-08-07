@@ -140,3 +140,29 @@ class IntegrationLayer:
             return False
         self.set_plugin_enabled(plugin_id, enabled=True)
         return await self._supervisor.start_one(target, self._plugin_dir)
+
+    async def route_inbound(self, text: str, mode: str) -> dict:
+        """将入站文字路由到声明 inbound_router 的插件（通用，不硬编码插件名）。
+
+        找第一个声明了 inbound_router 且存活的插件，RPC 调 router.handle。
+        无插件 / 全禁用 → 返回 {ok: False, error: ...}。
+        V1 只有一个 inbound_router（小爱），直接调第一个匹配。
+        """
+        from .config_helper import get_disabled_plugins
+        from .manifest_loader import load_manifests
+        from .rpc_protocol import METHOD_ROUTE
+        from .schema import CapabilityType
+
+        disabled = get_disabled_plugins()
+        manifests = load_manifests(self._plugin_dir, api_version=self._api_version,
+                                   disabled=disabled)
+        for manifest in manifests:
+            if manifest.has_capability(CapabilityType.INBOUND_ROUTER):
+                proc = self._supervisor.get_process(manifest.id)
+                if proc and proc.is_alive:
+                    try:
+                        return await proc.call(METHOD_ROUTE, {"text": text, "mode": mode})
+                    except Exception as exc:
+                        logger.warning("路由到插件 %s 失败: %s", manifest.id, exc)
+                        return {"ok": False, "error": f"插件 {manifest.id} 路由失败"}
+        return {"ok": False, "error": "no inbound router available"}
