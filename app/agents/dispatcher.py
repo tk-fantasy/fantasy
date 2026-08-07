@@ -374,6 +374,41 @@ class Dispatcher:
         except Exception:
             logger.exception("_run_turn: failed to send error [%s]", path)
 
+    async def _handle_cancelled(self, emit, request_id: str, session_id: str) -> None:
+        """处理被打断：emit Finish(success=False) + 停所有 sink。吞掉 CancelledError。
+
+        task.cancel() 触发的 CancelledError 是 BaseException，不会被 except Exception
+        捕获，会逃逸出 _run_turn 导致客户端收不到 Finish 永久挂起。此处统一兜底。
+        """
+        await emit(
+            Instruction.build_instruction(
+                Dialog.Finish(success=False), request_id, session_id,
+            )
+        )
+        if self._sink_manager is not None:
+            try:
+                await self._sink_manager.interrupt_all()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("打断时停 sink 失败（不影响）: %s", exc)
+        logger.info("Turn %s 被用户打断", request_id)
+
+    async def _clear_broadcasting_after(self, emit, request_id: str,
+                                        session_id: str, delay: float) -> None:
+        """延迟清除 broadcasting status（估算播报完毕后发送按钮恢复发送态）。
+
+        HA 不暴露小爱播报状态，用超时估算。不精确但够用——用户也可在超时前点 ■
+        打断（interrupt 会清前端 statusPhase）。被 cancel / 连接断开时静默退出。
+        """
+        try:
+            await asyncio.sleep(delay)
+            await emit(
+                Instruction.build_instruction(
+                    UI.Status(phase=""), request_id, session_id,
+                )
+            )
+        except Exception:  # noqa: BLE001
+            pass  # 连接已断 / task 被 cancel，忽略
+
     async def _prepare_context(self, session, query: str, user_id: str = "") -> dict[str, Any]:
         """共享的准备逻辑：构建 agent 运行所需的全部上下文。
 
@@ -602,6 +637,9 @@ class Dispatcher:
             try:
                 async for stream_event in run_agent_streaming(agent, lc_messages, session):
                     await handler(stream_event)
+            except asyncio.CancelledError:
+                await self._handle_cancelled(emit, request_id, session_id)
+                return
             except Exception as e:
                 # WS：emit 可能因连接断开抛错，兜底设 has_error 并尝试发 Dialog.Exception。
                 # REST：emit=append 不会抛，run_agent_streaming 内部已吞异常 yield error，
@@ -631,6 +669,9 @@ class Dispatcher:
                     succeeded_tool_calls=state.succeeded_tool_calls,
                 ):
                     await handler(stream_event)
+            except asyncio.CancelledError:
+                await self._handle_cancelled(emit, request_id, session_id)
+                return
             except Exception as e:
                 # 重试轮异常兜底：置 has_error 让 while 退出，收尾发 Finish(success=False)，
                 # 避免异常逃出 _run_turn 导致客户端收不到 Finish。
@@ -656,6 +697,9 @@ class Dispatcher:
             try:
                 async for stream_event in run_agent_streaming(agent, lc_messages, session):
                     await handler(stream_event)
+            except asyncio.CancelledError:
+                await self._handle_cancelled(emit, request_id, session_id)
+                return
             except Exception as e:
                 # Validator 重试轮异常兜底：同上，置 has_error 退出 while，收尾发 Finish(success=False)
                 await self._emit_turn_error(e, state, emit, request_id, session_id, path)
@@ -726,7 +770,17 @@ class Dispatcher:
         # 失败不阻塞主流程，仅记录警告（用户已通过 WS 收到文字回复）。
         if state.final_content and self._sink_manager is not None:
             try:
+                # emit broadcasting status：让前端发送按钮保持停止态（可打断小爱播报）
+                await emit(
+                    Instruction.build_instruction(
+                        UI.Status(phase="broadcasting"), request_id, session_id,
+                    )
+                )
                 await self._sink_manager.broadcast(state.final_content, request_id)
+                # 估算超时后清除 broadcasting（中文约 4 字/秒 + 5 秒缓冲）
+                est_seconds = max(len(state.final_content) / 4, 3) + 5
+                asyncio.create_task(self._clear_broadcasting_after(
+                    emit, request_id, session_id, est_seconds))
             except Exception as exc:
                 logger.warning("集成广播失败（不影响主流程）: %s", exc)
 
