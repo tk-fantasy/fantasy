@@ -28,3 +28,13 @@ def set_plugin_disabled(plugin_id: str, disabled: bool) -> list[str]:
         current = [p for p in current if p != plugin_id]
     update_config_section("integration", {"disabled_plugins": current})
     return current
+
+
+def get_current_mode() -> str:
+    """读取当前聊天模式（默认 "aether"）。"""
+    return str(get_config("integration.current_mode", "aether"))
+
+
+def set_current_mode(mode: str) -> None:
+    """持久化当前聊天模式到 config.json。"""
+    update_config_section("integration", {"current_mode": str(mode)})

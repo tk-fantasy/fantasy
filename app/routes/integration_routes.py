@@ -7,7 +7,7 @@ import shutil
 import zipfile
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, UploadFile, File
+from fastapi import APIRouter, Body, Depends, UploadFile, File
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -106,8 +106,18 @@ async def list_ui_contributions(container=Depends(get_container)):
 
 # state_key → 读取函数注册表（框架能力，不认得具体插件）
 # 插件只能用已注册的 state_key——这是安全边界
+def _get_current_mode_safe() -> str:
+    """安全读取 current_mode（集成平台未启用时也能读）。"""
+    try:
+        from ..integration.config_helper import get_current_mode
+        return get_current_mode()
+    except Exception:
+        return "aether"
+
+
 STATE_HANDLERS = {
     "broadcast_enabled": lambda layer: layer.sink_manager.broadcast_enabled,
+    "current_mode": lambda layer: _get_current_mode_safe(),
 }
 
 
@@ -120,8 +130,16 @@ async def _toggle_broadcast(layer):
     return {"broadcast_enabled": new_state}
 
 
+async def _set_mode(layer, mode: str = "aether"):
+    """设置当前聊天模式（框架能力，非小爱专属）。"""
+    from ..integration.config_helper import set_current_mode
+    set_current_mode(mode)
+    return {"current_mode": mode}
+
+
 ACTION_HANDLERS = {
     "toggle_broadcast": _toggle_broadcast,
+    "set_mode": _set_mode,
 }
 
 
@@ -138,15 +156,25 @@ async def get_state(state_key: str, container=Depends(get_container)):
 
 
 @router.post("/integrations/action/{action}")
-async def invoke_action(action: str, container=Depends(get_container)):
-    """通用动作触发路由。按 action 路由到框架能力。"""
+async def invoke_action(action: str, body: dict = Body(default={}),
+                        container=Depends(get_container)):
+    """通用动作触发路由。按 action 路由到框架能力。
+
+    set_mode 等 action 可从 body 传参数（如 {"mode": "xiaoai_direct"}）。
+    """
     layer = container.integration_layer
     if layer is None:
         return {"success": False, "message": "集成平台未启用"}
     handler = ACTION_HANDLERS.get(action)
     if handler is None:
         return {"success": False, "message": f"未知 action: {action}"}
-    result = await handler(layer)
+    # set_mode 需要额外参数；直接调用时 body 可能是 FieldInfo，统一取 dict
+    if action == "set_mode":
+        b = body if isinstance(body, dict) else {}
+        mode = b.get("mode", "aether")
+        result = await handler(layer, mode)
+    else:
+        result = await handler(layer)
     return {"success": True, "data": result}
 
 
