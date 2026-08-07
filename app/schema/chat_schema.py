@@ -128,6 +128,7 @@ class Dialog:
         NAMESPACE: ClassVar[str] = "Dialog"
         NAME: ClassVar[str] = "Finish"
         success: bool
+        message: str = ""
 
 
 class Internal:
