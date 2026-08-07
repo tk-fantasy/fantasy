@@ -13,6 +13,7 @@
 import { ref, onMounted, shallowRef } from 'vue'
 import { apiGet } from '../../utils/api'
 import ToggleButtonContribution from './ToggleButtonContribution.vue'
+import ModeOptionContribution from './ModeOptionContribution.vue'
 
 const props = defineProps({
   slot: { type: String, required: true },
@@ -23,8 +24,7 @@ const contributions = ref([])
 // type → 通用组件映射（预定义类型，插件不能贡献任意组件）
 const TYPE_COMPONENTS = {
   toggle_button: ToggleButtonContribution,
-  // icon_button: IconButtonContribution,  // V1 只做 toggle_button，其余按需加
-  // status_badge: StatusBadgeContribution,
+  mode_option: ModeOptionContribution,
 }
 
 function componentFor(type) {
