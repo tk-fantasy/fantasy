@@ -115,6 +115,7 @@ const sessionId = ref(null)
 const wsConnected = ref(false)
 const statusPhase = ref('')
 const statusDetail = ref('')
+const chatMode = ref('aether')  // 'aether' 或插件声明的 mode 值
 const pendingToolCalls = ref([])
 let currentStreamingMsg = null
 let ws = null
@@ -273,6 +274,11 @@ function handleInstruction(inst) {
 
     case 'Dialog.Finish':
       statusPhase.value = ''
+      // 直通模式回传文案（如"已转交处理"）显示为助手消息
+      if (payload.message) {
+        messages.value.push({ role: 'assistant', content: payload.message })
+        scrollToBottom()
+      }
       finalizeStreaming()
       break
   }
@@ -406,6 +412,22 @@ function scrollToBottom() {
 }
 
 // ============ Send Message ============
+function onModeChanged(e) {
+  chatMode.value = e.detail.mode
+}
+
+function selectAetherMode() {
+  chatMode.value = 'aether'
+  apiPost('/api/integrations/action/set_mode', { mode: 'aether' }).catch(() => {})
+}
+
+function handleInterrupt() {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'interrupt' }))
+  }
+  finalizeStreaming()
+}
+
 function sendMessage() {
   const text = inputText.value.trim()
   if (!text) return
@@ -432,6 +454,7 @@ function sendMessage() {
       type: 'chat',
       query: text,
       session_id: sessionId.value,
+      mode: chatMode.value,
     }))
   } else {
     messages.value.push({
@@ -781,6 +804,15 @@ async function showGreetingMessage() {
 onMounted(async () => {
   connectWS()
 
+  // 读取当前聊天模式（插件声明的 mode，默认 aether）
+  try {
+    const resp = await apiGet('/api/integrations/state/current_mode')
+    if (resp?.value) chatMode.value = resp.value
+  } catch { /* 集成平台未启用，默认 aether */ }
+
+  // 监听插件贡献的模式按钮切换（ModeOptionContribution 派发 mode-changed 事件）
+  window.addEventListener('mode-changed', onModeChanged)
+
   // 静态读取 chat 模型名（不耗 API，仅显示配置）
   try {
     const settingsData = await apiGet('/api/llm/settings')
@@ -842,6 +874,7 @@ onUnmounted(() => {
   if (greetingTimer) clearTimeout(greetingTimer)
   if (feedRetryTimer) clearTimeout(feedRetryTimer)
   if (ptzCooldownTimer) clearTimeout(ptzCooldownTimer)
+  window.removeEventListener('mode-changed', onModeChanged)
   stopCameraPolling()
   // 保持 sessionId 在 sessionStorage 中，下次进入可恢复
 })
@@ -958,7 +991,20 @@ onUnmounted(() => {
           {{ voice.transcribing.value ? '…' : voice.recording.value ? '■' : '🎤' }}
         </button>
         <IntegrationSlot slot="chat_input_toolbar" />
-        <button @click="sendMessage" class="send-btn">发送</button>
+        <div class="mode-selector">
+          <button
+            class="mode-option-btn"
+            :class="{ active: chatMode === 'aether' }"
+            @click="selectAetherMode"
+          >Aether</button>
+          <IntegrationSlot slot="chat_mode_selector" />
+        </div>
+        <button
+          @click="statusPhase ? handleInterrupt() : sendMessage()"
+          :class="['send-btn', { 'stop-btn': statusPhase }]"
+        >
+          {{ statusPhase ? '■' : '发送' }}
+        </button>
       </div>
       <div class="voice-error" v-if="voiceError">{{ voiceError }}</div>
       <div
@@ -1507,6 +1553,44 @@ onUnmounted(() => {
 .send-btn:hover {
   transform: translateY(-1px);
   box-shadow: 0 4px 12px rgba(74, 124, 112, 0.3);
+}
+
+/* 发送按钮变身为停止按钮（AI 生成中 / broadcasting） */
+.send-btn.stop-btn {
+  background: rgba(231, 76, 60, 0.15);
+  border: 1px solid rgba(231, 76, 60, 0.4);
+  color: #e74c3c;
+}
+.send-btn.stop-btn:hover {
+  box-shadow: 0 4px 12px rgba(231, 76, 60, 0.3);
+}
+
+/* 模式选择器 */
+.mode-selector {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.mode-selector .mode-option-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  font-size: var(--text-sm);
+  transition: all var(--duration-normal);
+}
+.mode-selector .mode-option-btn:hover {
+  background: var(--color-surface);
+}
+.mode-selector .mode-option-btn.active {
+  background: rgba(88, 166, 255, 0.15);
+  border-color: rgba(88, 166, 255, 0.4);
+  color: #58a6ff;
 }
 
 .mic-btn {
