@@ -10,6 +10,7 @@ import json
 METHOD_HANDSHAKE = "handshake"
 METHOD_SPEAK = "sink.speak"
 METHOD_INTERRUPT = "sink.interrupt"
+METHOD_ROUTE = "router.handle"
 METHOD_HEALTH = "health.check"
 METHOD_SHUTDOWN = "shutdown"
 
