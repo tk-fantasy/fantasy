@@ -25,6 +25,12 @@
                     "label": "默认模式"
                 }
             }
+        },
+        {
+            "type": "inbound_router",
+            "id": "xiaoai_direct",
+            "priority": 50,
+            "config_schema": {}
         }
     ],
     "permissions": [],
@@ -41,6 +47,17 @@
             },
             "state_key": "broadcast_enabled",
             "action": "toggle_broadcast"
+        },
+        {
+            "slot": "chat_mode_selector",
+            "type": "mode_option",
+            "props": {
+                "label": "小爱",
+                "icon": "🎵",
+                "mode": "xiaoai_direct"
+            },
+            "state_key": "current_mode",
+            "action": "set_mode"
         }
     ],
     "resources": {

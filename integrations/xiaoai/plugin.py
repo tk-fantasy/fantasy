@@ -18,6 +18,7 @@ from typing import Any
 
 # 插件进程能 import app.* 依赖 PYTHONPATH 包含项目根（容器内 /aether）
 from app.integration.sdk.plugin_base import IntegrationPlugin
+from app.integration.sdk.router_base import InboundRouter
 from app.integration.sdk.sink_base import OutputSink
 
 
@@ -115,6 +116,38 @@ class XiaoAiSink(OutputSink):
         return {"interrupted": True}
 
 
+class XiaoAiRouter(InboundRouter):
+    """小爱直通路由：文字原样转小爱原生执行（execute=true 语义）。
+
+    调 notify.send_message 到 execute_text_directive notify 实体，
+    小爱原生执行（播放音乐/讲笑话等），不进 LLM。
+    """
+
+    EXECUTE_DIRECTIVE_SUFFIX = "execute_text_directive_a_5_5"
+
+    def __init__(self, ha_caller, media_player_entity: str) -> None:
+        self._ha = ha_caller
+        self._media_player = media_player_entity
+
+    def _execute_entity(self) -> str:
+        """从 media_player entity_id 推导 execute_text_directive notify 实体 id。
+
+        media_player.xiaomi_cn_2166464483_lx06
+        → notify.xiaomi_cn_2166464483_lx06_execute_text_directive_a_5_5
+        """
+        dev = self._media_player.split(".", 1)[-1]
+        return f"notify.{dev}_{self.EXECUTE_DIRECTIVE_SUFFIX}"
+
+    async def route(self, text: str) -> dict:
+        entity = self._execute_entity()
+        await self._ha.call_service(
+            domain="notify",
+            service="send_message",
+            data={"entity_id": entity, "message": text},
+        )
+        return {"ok": True, "executed": text}
+
+
 class XiaoAiPlugin(IntegrationPlugin):
     """小爱插件。setup 时读 manifest config_schema 默认值 + 环境变量凭证。"""
 
@@ -137,6 +170,7 @@ class XiaoAiPlugin(IntegrationPlugin):
             self.ha_caller = None  # 无凭证时 sink 调用会失败，但不崩 setup
 
         self.sinks = [XiaoAiSink(self.ha_caller, entity_id, execute_mode)]
+        self.routers = [XiaoAiRouter(self.ha_caller, entity_id)]
 
 
 if __name__ == "__main__":
