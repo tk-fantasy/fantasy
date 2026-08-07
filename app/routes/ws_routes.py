@@ -16,6 +16,110 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+async def _cancel_current(task: asyncio.Task | None, container) -> None:
+    """取消当前活跃 task + 中断所有 sink 播报。"""
+    if task is not None and not task.done():
+        task.cancel()
+        try:
+            await task  # 等 CancelledError 传播完毕（Dispatcher 内部已处理）
+        except (asyncio.CancelledError, Exception):
+            pass  # task 内部异常已自己处理
+    # 停所有 sink（即使 task 已结束，小爱可能还在念）
+    layer = getattr(container, "integration_layer", None)
+    if layer is not None and layer.sink_manager is not None:
+        await layer.sink_manager.interrupt_all()
+
+
+async def _run_dispatch(container, event, ws_send, user_id: str) -> None:
+    """包装 dispatch_stream，确保异常不逃逸到 WS 循环。"""
+    try:
+        await container.dispatcher.dispatch_stream(event, ws_send, user_id=user_id)
+    except asyncio.CancelledError:
+        pass  # Dispatcher 内部已 emit Finish + interrupt
+    except Exception:
+        pass  # Dispatcher 内部已有异常处理
+
+
+async def _handle_direct(websocket, container, payload, rid: str, user_id: str) -> None:
+    """直通模式：文字路由到 inbound_router 插件（通用，不硬编码任何插件）。"""
+    from ..schema.chat_schema import Dialog, Instruction
+
+    set_request_id(rid)
+    session_id = payload.get("session_id", "")
+    try:
+        text = payload.get("query", "")
+        mode = payload.get("mode", "")
+        layer = getattr(container, "integration_layer", None)
+        if layer is None:
+            await websocket.send_json(
+                Instruction.build_instruction(
+                    Dialog.Finish(success=False, message="直通失败"),
+                    rid, session_id,
+                ).model_dump()
+            )
+            return
+        result = await layer.route_inbound(text, mode)
+        msg = "已转交处理" if result.get("ok") else result.get("error", "直通失败")
+        await websocket.send_json(
+            Instruction.build_instruction(
+                Dialog.Finish(success=result.get("ok", False), message=msg),
+                rid, session_id,
+            ).model_dump()
+        )
+    except Exception:
+        await websocket.send_json(
+            Instruction.build_instruction(
+                Dialog.Finish(success=False, message="直通执行失败"),
+                rid, session_id,
+            ).model_dump()
+        )
+    finally:
+        set_request_id("-")
+
+
+async def _chat_loop(websocket, container, user_id: str) -> None:
+    """聊天 WS 主循环（task 式，支持打断 + mode 路由）。
+
+    current_task 是局部变量：一个连接同时只有一个活跃 task。
+    收 interrupt / 新消息时 cancel 旧的 + interrupt_all。
+    """
+    current_task: asyncio.Task | None = None
+    while True:
+        payload = await websocket.receive_json()
+
+        if payload.get("type") == "pong":
+            continue
+
+        if payload.get("type") == "interrupt":
+            await _cancel_current(current_task, container)
+            current_task = None
+            continue
+
+        if payload.get("type") == "chat":
+            # 自动打断旧的（类 ChatGPT 体验）
+            await _cancel_current(current_task, container)
+
+            mode = payload.get("mode", "aether")
+            rid = payload.get("request_id") or new_request_id()
+
+            if mode == "aether":
+                set_request_id(rid)
+                event = Event.build_event(
+                    Nlp.Request(query=payload.get("query", "")),
+                    request_id=rid,
+                    session_id=payload.get("session_id"),
+                )
+                current_task = asyncio.create_task(
+                    _run_dispatch(container, event, websocket.send_json, user_id)
+                )
+                set_request_id("-")
+            else:
+                # 任意非默认模式：通用路由到 inbound_router（不硬编码模式名）
+                current_task = asyncio.create_task(
+                    _handle_direct(websocket, container, payload, rid, user_id)
+                )
+
+
 @router.websocket("/ws/chat")
 async def chat_ws(websocket: WebSocket):
     """WebSocket 聊天端点。"""
@@ -28,25 +132,7 @@ async def chat_ws(websocket: WebSocket):
 
     heartbeat_task = asyncio.create_task(_ws_heartbeat(websocket))
     try:
-        while True:
-            payload = await websocket.receive_json()
-            if payload.get("type") == "pong":
-                continue
-            # 每条消息独立 request_id
-            rid = payload.get("request_id") or new_request_id()
-            set_request_id(rid)
-            logger.info(
-                "Received websocket chat event",
-                extra={"session_id": payload.get("session_id"), "query": payload.get("query", "")[:120]},
-            )
-            event = Event.build_event(
-                Nlp.Request(query=payload.get("query", "")),
-                request_id=rid,
-                session_id=payload.get("session_id"),
-            )
-            # 使用流式推送，传递 user_id
-            await container.dispatcher.dispatch_stream(event, websocket.send_json, user_id=user_id)
-            set_request_id("-")
+        await _chat_loop(websocket, container, user_id)
     except WebSocketDisconnect:
         logger.info("Chat websocket disconnected")
     finally:
