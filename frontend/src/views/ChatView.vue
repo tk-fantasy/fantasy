@@ -6,7 +6,7 @@ import { toolIcon, summarizeToolCall, summarizeToolResult, parseToolResult } fro
 import { useVoiceInput } from '../composables/useVoiceInput'
 import { useCamera } from '../composables/useCamera'
 import { apiGet, apiPost } from '../utils/api'
-import IntegrationSlot from '../components/integration/IntegrationSlot.vue'
+import IntegrationDropdown from '../components/integration/IntegrationDropdown.vue'
 
 const router = useRouter()
 
@@ -884,6 +884,7 @@ onUnmounted(() => {
   <div class="chat-view">
     <!-- Top Left Controls -->
     <div class="top-left-controls">
+      <IntegrationDropdown />
     </div>
 
     <!-- Status Bar -->
@@ -990,15 +991,6 @@ onUnmounted(() => {
         >
           {{ voice.transcribing.value ? '…' : voice.recording.value ? '■' : '🎤' }}
         </button>
-        <IntegrationSlot slot="chat_input_toolbar" />
-        <div class="mode-selector">
-          <button
-            class="mode-option-btn"
-            :class="{ active: chatMode === 'aether' }"
-            @click="selectAetherMode"
-          >Aether</button>
-          <IntegrationSlot slot="chat_mode_selector" />
-        </div>
         <button
           @click="statusPhase ? handleInterrupt() : sendMessage()"
           :class="['send-btn', { 'stop-btn': statusPhase }]"
@@ -1563,34 +1555,6 @@ onUnmounted(() => {
 }
 .send-btn.stop-btn:hover {
   box-shadow: 0 4px 12px rgba(231, 76, 60, 0.3);
-}
-
-/* 模式选择器 */
-.mode-selector {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-.mode-selector .mode-option-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 10px;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  background: transparent;
-  color: var(--color-text-muted);
-  cursor: pointer;
-  font-size: var(--text-sm);
-  transition: all var(--duration-normal);
-}
-.mode-selector .mode-option-btn:hover {
-  background: var(--color-surface);
-}
-.mode-selector .mode-option-btn.active {
-  background: rgba(88, 166, 255, 0.15);
-  border-color: rgba(88, 166, 255, 0.4);
-  color: #58a6ff;
 }
 
 .mic-btn {
