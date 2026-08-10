@@ -38,6 +38,9 @@ class IntegrationLayer:
         self.sink_manager = SinkManager(self._supervisor,
                                         broadcast_enabled=broadcast_enabled)
         self._started = False
+        # 宿主侧集成注册表（非子进程插件，如飞书 WebSocket 长连接）
+        # key=集成名, value={"name","description","alive"}
+        self.host_integrations: dict[str, dict] = {}
 
     async def start(self) -> None:
         """加载清单 + 启动所有插件进程（跳过禁用的）。"""
@@ -57,12 +60,13 @@ class IntegrationLayer:
         await self._supervisor.stop_all()
 
     def list_plugins(self) -> list[dict]:
-        """返回插件状态摘要（供 API 查询，含禁用态）。"""
+        """返回插件状态摘要（供 API 查询，含禁用态 + 宿主侧集成）。"""
         from .manifest_loader import load_all_manifests
         from .config_helper import get_disabled_plugins
         manifests = load_all_manifests(self._plugin_dir, api_version=self._api_version)
         disabled = set(get_disabled_plugins())
         result = []
+        # 子进程插件
         for m in manifests:
             proc = self._supervisor.get_process(m.id)
             result.append({
@@ -74,7 +78,27 @@ class IntegrationLayer:
                 "alive": proc.is_alive if proc is not None else False,
                 "enabled": m.id not in disabled,  # 禁用态
             })
+        # 宿主侧集成（非子进程，如飞书长连接）
+        for integ_id, info in self.host_integrations.items():
+            result.append({
+                "id": integ_id,
+                "name": info.get("name", integ_id),
+                "version": info.get("version", ""),
+                "description": info.get("description", ""),
+                "capabilities": info.get("capabilities", []),
+                "alive": info.get("alive", False),
+                "enabled": True,  # 宿主侧集成的启停通过凭证控制
+            })
         return result
+
+    def register_host_integration(self, integ_id: str, info: dict) -> None:
+        """注册一个宿主侧集成（供 list_plugins 显示）。
+
+        Args:
+            integ_id: 集成名（如 "feishu"）
+            info: {"name","description","alive","capabilities",...}
+        """
+        self.host_integrations[integ_id] = info
 
     def set_broadcast_enabled(self, enabled: bool) -> None:
         """运行时切换全局广播开关（同时写 config 持久化）。"""

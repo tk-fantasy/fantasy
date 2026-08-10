@@ -922,6 +922,7 @@ def _start_host_integrations(container, loop):
     不硬编码任何插件名。每个宿主侧集成在 integrations/<name>/main.py 定义
     start(dispatch_fn, loop) -> instance | None 和 stop()。
     删目录 → 找不到 → 跳过 → 零影响。
+    成功启动的集成都注册到 IntegrationLayer，供插件管理页显示。
     """
     import importlib.util
 
@@ -933,6 +934,7 @@ def _start_host_integrations(container, loop):
     dispatch_fn = _build_dispatch_fn(container.dispatcher)
     started = []
 
+    # 每个集成可以有一个 meta.py 声明显示信息（name/description/capabilities）
     for name in sorted(os.listdir(integrations_dir)):
         main_path = os.path.join(integrations_dir, name, "main.py")
         if not os.path.isfile(main_path):
@@ -947,10 +949,42 @@ def _start_host_integrations(container, loop):
                 if instance:
                     started.append((name, mod, instance))
                     logger.info("宿主侧集成 %s 已启动", name)
+                    # 注册到 IntegrationLayer 供插件管理页显示
+                    meta = _load_host_integration_meta(name, integrations_dir)
+                    if container.integration_layer:
+                        container.integration_layer.register_host_integration(name, meta)
         except Exception:
             logger.exception("宿主侧集成 %s 加载失败（non-fatal）", name)
 
     return started
+
+
+def _load_host_integration_meta(name: str, integrations_dir: str) -> dict:
+    """加载宿主侧集成的显示元信息（从 meta.py 或目录名推断）。"""
+    meta_path = os.path.join(integrations_dir, name, "meta.py")
+    default_meta = {
+        "name": name,
+        "version": "",
+        "description": f"宿主侧集成",
+        "capabilities": [],
+        "alive": True,
+    }
+    if not os.path.isfile(meta_path):
+        return default_meta
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(f"integrations.{name}.meta", meta_path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return {
+            "name": getattr(mod, "NAME", name),
+            "version": getattr(mod, "VERSION", ""),
+            "description": getattr(mod, "DESCRIPTION", f"宿主侧集成"),
+            "capabilities": getattr(mod, "CAPABILITIES", []),
+            "alive": True,
+        }
+    except Exception:
+        return default_meta
 
 
 def _stop_host_integrations(started_list):
