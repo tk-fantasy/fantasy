@@ -1,0 +1,25 @@
+{
+    "id": "feishu",
+    "name": "飞书机器人",
+    "version": "1.0.0",
+    "aether_api_version": "1",
+    "author": "Aether",
+    "description": "飞书聊天机器人（文字双向）",
+    "entry": "plugin.py",
+    "capabilities": [
+        {
+            "type": "output_sink",
+            "id": "feishu_sink",
+            "priority": 90,
+            "config_schema": {}
+        }
+    ],
+    "permissions": [],
+    "secrets": ["feishu_app_id", "feishu_app_secret"],
+    "ui_contributions": [],
+    "resources": {
+        "max_memory_mb": 128,
+        "restart_on_crash": true,
+        "max_restarts": 3
+    }
+}
