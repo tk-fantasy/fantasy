@@ -105,6 +105,7 @@ langgraph_agent = _services["langgraph_agent"]
 ha_client = _services["ha_client"]
 ha_service = _services["ha_service"]
 _automation_agent_ref = _services["automation_agent_ref"]
+_host_integrations_ref: list = []  # 宿主侧集成实例列表（通用加载，不含具体插件名）
 _ha_catalog_cache_ref = _services["ha_catalog_cache_ref"]
 _ha_client_ref = _services["ha_client_ref"]
 discovery_service = _services["discovery_service"]
@@ -646,12 +647,18 @@ async def lifespan(_: FastAPI):
     # 绑定语义图服务的事件循环（供 pipeline 线程内回调投递回主循环）
     _container.sg_service.bind_loop(asyncio.get_running_loop())
 
+    # ── 宿主侧集成（通用扫描 integrations/*/main.py，不硬编码插件名）──
+    _host_integrations_ref[:] = _start_host_integrations(_container, asyncio.get_running_loop())
+
     _startup_progress.mark_ready()
     yield
 
     # 关闭
     _startup_progress.stop()
     catalog_task.cancel()
+    # 宿主侧集成停止（通用，不硬编码插件名）
+    if _host_integrations_ref:
+        _stop_host_integrations(_host_integrations_ref)
     if _automation_agent_ref[0]:
         await _automation_agent_ref[0].stop()
     if _container.scheduler_service is not None:
@@ -708,7 +715,6 @@ from .routes.setup_routes import router as setup_router
 from .routes.doc_routes import router as doc_router
 from .routes.sg_routes import router as sg_router
 from .routes.integration_routes import router as integration_router
-from .routes.feishu_routes import router as feishu_router
 from .routes.ws_routes import router as ws_router
 from .routes.automation_routes import router as automation_router
 app.include_router(settings_router, prefix="/api")
@@ -732,7 +738,6 @@ app.include_router(setup_router)  # 无 prefix，包含 / 和 /favicon.ico
 app.include_router(doc_router)  # 路径已包含 /api 前缀或无
 app.include_router(sg_router, prefix="/api")  # 语义图：/api/sg/*
 app.include_router(integration_router, prefix="/api")  # 集成插件平台：/api/integrations/*
-app.include_router(feishu_router)  # 飞书 webhook：/webhook/feishu（不走 /api 前缀，自动绕过鉴权）
 app.include_router(ws_router)  # WebSocket 路由，无 prefix
 
 # CORS
@@ -867,8 +872,6 @@ def _build_plugin_env(manifests, ha_client) -> dict[str, dict[str, str]]:
     secret_map = {
         "ha_url": ("AETHER_HA_URL", ha_url),
         "ha_token": ("AETHER_HA_TOKEN", ha_token),
-        "feishu_app_id": ("AETHER_FEISHU_APP_ID", os.environ.get("FEISHU_APP_ID", "")),
-        "feishu_app_secret": ("AETHER_FEISHU_APP_SECRET", os.environ.get("FEISHU_APP_SECRET", "")),
     }
     for manifest in manifests:
         env: dict[str, str] = {"PYTHONPATH": "/aether"}
@@ -880,6 +883,85 @@ def _build_plugin_env(manifests, ha_client) -> dict[str, dict[str, str]]:
         # 只要有任何凭证注入或插件无凭证需求，都登记（保证 PYTHONPATH）
         env_table[manifest.id] = env
     return env_table
+
+
+def _build_dispatch_fn(dispatcher):
+    """构造宿主通用的 dispatch 适配函数（供宿主侧集成插件调 LLM）。"""
+    from .schema.chat_schema import Event, Nlp
+    from .core.tracing import new_request_id
+    import logging
+    logger = logging.getLogger(__name__)
+
+    async def _dispatch(query: str, session_id: str, user_id: str) -> str:
+        rid = new_request_id()
+        event = Event.build_event(
+            Nlp.Request(query=query),
+            request_id=rid,
+            session_id=session_id,
+        )
+        try:
+            instructions = await dispatcher.dispatch(event, user_id=user_id)
+            for inst in instructions:
+                header = getattr(inst, "header", None)
+                payload = getattr(inst, "payload", None)
+                ns = getattr(header, "namespace", "") if header else ""
+                name = getattr(header, "name", "") if header else ""
+                if ns == "Template" and name == "ToastStream":
+                    return getattr(payload, "stream", "") or ""
+            return ""
+        except Exception as exc:
+            logger.warning("集成 dispatch 失败: %s", exc)
+            return "抱歉，处理消息时出错了。"
+
+    return _dispatch
+
+
+def _start_host_integrations(container, loop):
+    """通用宿主侧集成加载：扫描 integrations/*/main.py，调 start(dispatch_fn, loop)。
+
+    不硬编码任何插件名。每个宿主侧集成在 integrations/<name>/main.py 定义
+    start(dispatch_fn, loop) -> instance | None 和 stop()。
+    删目录 → 找不到 → 跳过 → 零影响。
+    """
+    import importlib.util
+
+    integrations_dir = os.path.join(
+        os.path.dirname(os.path.dirname(__file__)), "integrations")
+    if not os.path.isdir(integrations_dir):
+        return []
+
+    dispatch_fn = _build_dispatch_fn(container.dispatcher)
+    started = []
+
+    for name in sorted(os.listdir(integrations_dir)):
+        main_path = os.path.join(integrations_dir, name, "main.py")
+        if not os.path.isfile(main_path):
+            continue
+        try:
+            mod_name = f"integrations.{name}.main"
+            spec = importlib.util.spec_from_file_location(mod_name, main_path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            if hasattr(mod, "start"):
+                instance = mod.start(dispatch_fn, loop)
+                if instance:
+                    started.append((name, mod, instance))
+                    logger.info("宿主侧集成 %s 已启动", name)
+        except Exception:
+            logger.exception("宿主侧集成 %s 加载失败（non-fatal）", name)
+
+    return started
+
+
+def _stop_host_integrations(started_list):
+    """停止所有宿主侧集成。"""
+    for name, mod, instance in started_list:
+        try:
+            if hasattr(mod, "stop"):
+                mod.stop()
+                logger.info("宿主侧集成 %s 已停止", name)
+        except Exception:
+            logger.exception("宿主侧集成 %s 停止失败（non-fatal）", name)
 
 
 def _primary_camera_state() -> dict:
