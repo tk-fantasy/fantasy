@@ -32,6 +32,11 @@ ha_config/home-assistant_v2.db-wal
 ha_config/.ha_run.lock
 ha_config/.simulator.lock
 ha_config/secrets.yaml
+# HA 运行时状态：IP 探测缓存
+ha_config/.ha_ip_state
+
+# HA 运行时安装的自定义组件（HACS 下载，如 xiaomi_home / xiaomi_gateway3 / hacs），勿进版本库
+ha_config/custom_components/
 
 # HA .storage — 只保留可复用的配置模板，运行时状态全部忽略。
 # 跟踪：core.config（地理位置/时区/语言，合理默认值）
