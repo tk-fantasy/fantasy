@@ -530,7 +530,7 @@ onMounted(() => {
 
       <!-- 确认弹窗 -->
       <div v-if="pendingUnlock" class="confirm-overlay" @click.self="cancelUnlock">
-        <div class="confirm-card">
+        <div class="confirm-card aurora-before">
           <div class="confirm-icon">&#9888;</div>
           <div class="confirm-title">修改{{ roleLabels[pendingUnlock] }}模型？</div>
           <div class="confirm-desc">{{ unlockDesc(pendingUnlock) }}</div>
@@ -872,6 +872,7 @@ select.setting-input option {
 .confirm-card {
   position: relative;
   isolation: isolate;
+  overflow: hidden;
   width: 380px;
   max-width: calc(100vw - 32px);
   background: var(--dialog-bg-glass);
@@ -884,33 +885,6 @@ select.setting-input option {
   text-align: center;
 }
 
-.confirm-card::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-  border-radius: inherit;
-  background:
-    radial-gradient(ellipse 60% 50% at 25% 30%, var(--g1) 0%, transparent 50%),
-    radial-gradient(ellipse 50% 45% at 70% 25%, var(--g2) 0%, transparent 45%),
-    radial-gradient(ellipse 55% 50% at 45% 70%, var(--g3) 0%, transparent 45%),
-    radial-gradient(ellipse 50% 45% at 60% 50%, var(--g4) 0%, transparent 45%),
-    radial-gradient(ellipse 45% 40% at 35% 55%, var(--g5) 0%, transparent 40%);
-  background-size: 300% 300%, 300% 300%, 300% 300%, 300% 300%, 300% 300%;
-  animation: auroraFlow 12s cubic-bezier(0.45, 0, 0.55, 1) infinite;
-  opacity: 0.9;
-  will-change: background-position;
-}
-
-.confirm-card > * {
-  position: relative;
-  z-index: 1;
-}
-
-.light-mode .confirm-card::before {
-  opacity: 0.4;
-}
 .confirm-icon {
   font-size: 32px;
   margin-bottom: var(--space-6);

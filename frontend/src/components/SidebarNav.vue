@@ -214,7 +214,7 @@ watch(user, () => {
         </button>
 
         <!-- 登录下拉菜单 -->
-        <div v-if="showUserMenu" class="user-dropdown">
+        <div v-if="showUserMenu" class="user-dropdown aurora-before">
           <div class="user-dropdown-header">选择账号</div>
 
           <div class="user-list">
@@ -261,7 +261,7 @@ watch(user, () => {
         </div>
 
         <!-- 用户菜单下拉框 — 可切换到其他用户（需密码确认）或登出 -->
-        <div v-if="showUserMenu" class="user-dropdown">
+        <div v-if="showUserMenu" class="user-dropdown aurora-before">
           <div class="user-dropdown-header">{{ user?.username }}</div>
 
           <div class="user-list">
@@ -720,38 +720,10 @@ watch(user, () => {
   animation: dropdownFadeIn 0.15s ease-out;
 }
 
-/* 极光流光层: 复用全局 auroraFlow + --g1..--g5(style.css) */
-.user-dropdown::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  z-index: 0;
-  background:
-    radial-gradient(ellipse 60% 50% at 25% 30%, var(--g1) 0%, transparent 50%),
-    radial-gradient(ellipse 50% 45% at 70% 25%, var(--g2) 0%, transparent 45%),
-    radial-gradient(ellipse 55% 50% at 45% 70%, var(--g3) 0%, transparent 45%),
-    radial-gradient(ellipse 50% 45% at 60% 50%, var(--g4) 0%, transparent 45%),
-    radial-gradient(ellipse 45% 40% at 35% 55%, var(--g5) 0%, transparent 40%);
-  background-size: 300% 300%, 300% 300%, 300% 300%, 300% 300%, 300% 300%;
-  animation: auroraFlow 12s cubic-bezier(0.45, 0, 0.55, 1) infinite;
-  opacity: 0.9;
-  will-change: background-position;
-}
-
 .light-mode .user-dropdown {
   background: #ffffff;
   border-color: rgba(0, 0, 0, 0.1);
   box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.12);
-}
-
-.light-mode .user-dropdown::before {
-  opacity: 0.4;
-}
-
-.user-dropdown > * {
-  position: relative;
-  z-index: 1;
 }
 
 @keyframes dropdownFadeIn {
