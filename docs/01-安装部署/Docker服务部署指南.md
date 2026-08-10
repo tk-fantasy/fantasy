@@ -9,7 +9,7 @@ Aether 编排四个容器，都定义在 `docker-compose.yml` 里：
 1. **aether**——后端主服务（API + WebSocket + 前端页面），Dockerfile 构建
 2. **Home Assistant（智能家居大脑）**——管理所有智能设备，Aether 通过它的 API 控制全屋
 3. **Mosquitto MQTT（消息中转）**——一个"消息邮局"，虚拟设备把状态发到这里，HA 从这里接收
-4. **aether-simulator（虚拟设备模拟器）**——通过 MQTT 往 HA 上报 11 个演示设备（灯/空调/窗帘等），接真实设备后可注释掉
+4. **aether-simulator（虚拟设备模拟器）**——通过 MQTT 往 HA 上报 10 个演示设备（灯/空调/窗帘等），接真实设备后可注释掉
 
 > 老版本里还有第五个 SearXNG 搜索引擎，现在已经换成云端的 **Exa MCP** 搜索（不占本地端口、不用本地容器），所以 Docker 只剩四个容器了。
 
