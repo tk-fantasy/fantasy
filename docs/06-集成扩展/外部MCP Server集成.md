@@ -13,7 +13,7 @@ Aether 的 MCP 分两类：
 
 ## 二、管家自带的能力（不用配）
 
-Aether 内置 12 个工具，开箱即用：
+Aether 内置 13 个工具，开箱即用：
 
 | 工具 | 作用 |
 |------|------|
@@ -23,6 +23,7 @@ Aether 内置 12 个工具，开箱即用：
 | `web_search` | 上网搜索（走 Exa） |
 | `vision_chat` | 看摄像头画面回答问题 |
 | `get_entities` | 读取家里所有智能设备 |
+| `get_device_manual` | 查设备的自定义备注（使用方法/别名），辅助控制设备 |
 | `call_service` | 控制设备（开关灯、调空调等） |
 | `verify_condition` | 验证时间/天气/画面/设备条件是否成立 |
 | `verify_action` | 验证设备是否真的执行了指令 |

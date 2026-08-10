@@ -108,7 +108,14 @@ class FeishuBot:
         logger.info("飞书长连接已停止")
 
     def _on_message_receive(self, data: P2ImMessageReceiveV1) -> None:
-        """收到飞书消息事件（在 ws 线程中执行）。"""
+        """收到飞书消息事件（在 ws 线程中执行）。
+
+        关键：不在 ws 线程里等待 LLM 结果！
+        之前用 future.result(timeout=120) 阻塞 ws 线程，导致心跳停跳，
+        飞书判定掉线→断连→重连→重推未确认消息→重复回复。
+        现在改为 fire-and-forget：ws 线程只投递任务到主 loop，立即返回，
+        让 ws 心跳正常维持。LLM 结果在主 loop 的 task 里拿，拿到后发飞书。
+        """
         chat_id = None
         try:
             msg = data.event.message
@@ -130,17 +137,12 @@ class FeishuBot:
 
             logger.info("飞书收到消息: chat_id=%s, query=%s", chat_id, query[:100])
 
-            # 通过 run_coroutine_threadsafe 调宿主的 async dispatch
+            # fire-and-forget：投递到主 loop，不等结果，ws 线程立即返回保心跳
             session_id = f"feishu_{chat_id}"
-            future = asyncio.run_coroutine_threadsafe(
-                self._dispatch_fn(query, session_id, f"feishu_{user_id}"),
+            asyncio.run_coroutine_threadsafe(
+                self._handle_and_reply(query, session_id, f"feishu_{user_id}", chat_id),
                 self._loop,
             )
-            # 等待结果（超时 120 秒，LLM 可能慢）
-            reply = future.result(timeout=120)
-
-            if reply:
-                self._send_message(chat_id, reply)
 
         except Exception as e:
             logger.warning("飞书消息处理失败: %s", e)
@@ -150,6 +152,51 @@ class FeishuBot:
                     self._send_message(chat_id, "抱歉，处理消息时出错了。")
                 except Exception:
                     pass
+
+    async def _handle_and_reply(self, query: str, session_id: str,
+                                user_id: str, chat_id: str) -> None:
+        """在主 loop 中处理消息并回复（由 _on_message_receive 投递）。
+
+        放到主 loop 跑：不阻塞 ws 线程，心跳正常，不会重连重推。
+        支持斜杠命令：
+          /clear  清空当前飞书会话上下文
+          /help   显示可用命令
+        """
+        # 斜杠命令优先处理（不经过 LLM）
+        cmd = query.strip().lower()
+        if cmd == "/clear":
+            await self._clear_session(session_id)
+            self._send_message(chat_id, "✅ 会话上下文已清空，重新开始对话。")
+            return
+        if cmd == "/help":
+            self._send_message(chat_id, (
+                "🔧 可用命令：\n"
+                "/clear - 清空对话上下文\n"
+                "/help  - 显示此帮助\n\n"
+                "直接发消息即可与 Aether 对话、控制智能家居。"
+            ))
+            return
+
+        try:
+            reply = await self._dispatch_fn(query, session_id, user_id)
+            if reply:
+                self._send_message(chat_id, reply)
+        except Exception as e:
+            logger.warning("飞书消息处理失败: %s", e)
+            try:
+                self._send_message(chat_id, "抱歉，处理消息时出错了。")
+            except Exception:
+                pass
+
+    async def _clear_session(self, session_id: str) -> None:
+        """清空指定 session 的历史（调宿主 session_store）。"""
+        try:
+            from app.container import get_container
+            container = get_container()
+            await container.session_store.clear_messages(session_id)
+            logger.info("飞书 session %s 已清空", session_id)
+        except Exception as e:
+            logger.warning("清空 session 失败: %s", e)
 
     def _send_message(self, chat_id: str, text: str) -> None:
         """用 lark client 发消息到指定 chat_id。"""

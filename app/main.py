@@ -903,11 +903,11 @@ def _build_dispatch_fn(dispatcher):
             instructions = await dispatcher.dispatch(event, user_id=user_id)
             for inst in instructions:
                 header = getattr(inst, "header", None)
-                payload = getattr(inst, "payload", None)
+                payload = getattr(inst, "payload", None) or {}
                 ns = getattr(header, "namespace", "") if header else ""
                 name = getattr(header, "name", "") if header else ""
                 if ns == "Template" and name == "ToastStream":
-                    return getattr(payload, "stream", "") or ""
+                    return payload.get("stream", "") or ""
             return ""
         except Exception as exc:
             logger.warning("集成 dispatch 失败: %s", exc)

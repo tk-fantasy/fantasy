@@ -40,7 +40,7 @@ class MCPTool:
 | client_id | 用途 |
 |-----------|------|
 | `local` | 内置本地工具（describe_state / fetch_webpage / http_request / web_search / vision_chat / verify_condition / verify_action / scheduled_task_*） |
-| `ha_devices` | Home Assistant 设备工具（get_entities / call_service） |
+| `ha_devices` | Home Assistant 设备工具（get_entities / get_device_manual / call_service） |
 | 自定义 | 外部 MCP server 的 `name` |
 
 ### ToolExecutor (`app/mcp/tool_executor.py`)
@@ -50,7 +50,7 @@ class MCPTool:
 
 ---
 
-## 2. 内置工具清单（12 个）
+## 2. 内置工具清单（13 个）
 
 ### 基础本地工具（4 个，`register_local_tools` 注册）
 
@@ -63,18 +63,19 @@ class MCPTool:
 
 > `web_search` 不再走 SearXNG。Exa Key 在 `config.json` 的 `web_search.exa.api_key`，留空匿名调用（限速）。详见配置参考。
 
-### 依赖注入工具（8 个，`register_all_tools(deps)` 在 `app/tools.py` 注册）
+### 依赖注入工具（9 个，`register_all_tools(deps)` 在 `app/tools.py` 注册）
 
 | # | 工具 | client_id | 参数 | 作用 |
 |---|------|-----------|------|------|
-| 5 | `vision_chat` | `local` | `question` | 拍当前帧，用 VL 模型回答问题。返回 `{answer, question, has_frame, model}` |
-| 6 | `get_entities` | `ha_devices` | 无 | 拉所有 HA 设备 + 状态 + `_controls`（动态控件）。返回 `{entities, count, services}` |
-| 7 | `call_service` | `ha_devices` | `domain`(必填), `service`(必填), `entity_id`(必填), `data` | 调 HA 服务控制设备。校验 `entity_id` 真实存在（防 LLM 编造），返回 `{success, result, new_state}` |
-| 8 | `verify_condition` | `local` | `condition`(必填), `condition_type`(auto/time/weather/vision/device) | 验证条件是否成立。`auto` 按关键词路由。返回 `condition_met:null` + 数据，由 LLM 判断 |
-| 9 | `verify_action` | `local` | `entity_id`(必填), `service`, `data`, `expected_state`, `action_description` | 只读验证设备状态是否真的变了，不执行控制 |
-| 10 | `scheduled_task_create` | `local` | `name`(必填), `schedule{kind,at/every_seconds/expr}`, `payload{kind,tool_name+tool_input / message}` | 创建定时任务，返回 `{success, task, summary}` |
-| 11 | `scheduled_task_list` | `local` | 无 | 列出所有定时任务 |
-| 12 | `scheduled_task_delete` | `local` | `task_id`(必填) | 删除定时任务 |
+| 5 | `vision_chat` | `local` | `question`, `camera_id`(可选) | 拍指定摄像头当前帧，用 VL 模型回答问题。返回 `{answer, question, has_frame, model}`。camera_id 不传取当前 AI 预览路 |
+| 6 | `get_entities` | `ha_devices` | 无 | 拉所有 HA 设备。返回 `{devices, entities, count, services}`：`devices` 按物理设备聚合（name/area/entity_ids，供介绍设备）；`entities` 为扁平实体列表（含 `_controls` 动态控件、`note` 用户备注，供 call_service） |
+| 7 | `get_device_manual` | `ha_devices` | `entity_ids`(必填，逗号分隔) | 按需拉单台/多台设备的详细操作手册（domain/service/param 明细 + 用户自定义备注）。控制不熟悉或有怪癖的设备前主动调用 |
+| 8 | `call_service` | `ha_devices` | `domain`(必填), `service`(必填), `entity_id`(必填), `data` | 调 HA 服务控制设备。校验 `entity_id` 真实存在（防 LLM 编造）+ query 语义匹配校验，返回 `{success, result, new_state}` |
+| 9 | `verify_condition` | `local` | `condition`(必填), `condition_type`(auto/time/weather/vision/device) | 验证条件是否成立。`auto` 按关键词路由。返回 `condition_met:null` + 数据，由 LLM 判断 |
+| 10 | `verify_action` | `local` | `entity_id`(必填), `service`, `data`, `expected_state`, `action_description` | 只读验证设备状态是否真的变了，不执行控制 |
+| 11 | `scheduled_task_create` | `local` | `name`(必填), `schedule{kind,at/every_seconds/expr}`, `payload{kind,tool_name+tool_input / message / reminder}` | 创建定时任务，返回 `{success, task_id, summary}` |
+| 12 | `scheduled_task_list` | `local` | 无 | 列出所有定时任务 |
+| 13 | `scheduled_task_delete` | `local` | `task_id`(必填) | 删除定时任务 |
 
 ### verify_condition 路由（`condition_type=auto`）
 
@@ -91,9 +92,22 @@ class MCPTool:
 ### call_service 容错
 
 - `data` 是 JSON 字符串时自动解析
-- `entity_id` 不含 `domain.` 前缀时自动补全
+- `entity_id` 不含 `domain.` 前缀时自动补全；支持逗号分隔的批量 entity_id
+- 入参 trim 空格（兼容本地模型在参数首尾带空格）
+- **entity_id 真实性校验**：不在 HA 实体列表里直接拒绝（防 LLM 编造）；HA 对不存在的 entity_id 静默返回 200，不校验会被当成「成功」谎报
+- **query 语义校验**：命中用户指令的设备但目标 entity_id 不在命中范围 → 拒绝（防语义近邻顶替，如「打开加湿器」却操作带除湿模式的空调）
+- **控件范围探测保底**（`control_probe.py`）：带单个数值参数的滑块调用收到 400（越界）时，自动按候选刻度（0-1 → 0-100 → 0-255）探测真实范围，命中后缓存并按正确范围归一化用户原值重发。规范表 `entity_controls._DOMAIN_SPEC_RANGES` 已覆盖 HA 规范固定范围的属性（如 media_player.volume_level 恒 0-1），探测仅作保底
 - 执行后自动查设备最新状态填 `new_state`
-- `entity_id` 不在 HA 实体列表里直接拒绝（防 LLM 编造 ID）
+
+### 设备备注注入
+
+用户在 `/halist` 写的**实体备注**（scope `entity_note`，如「继电器 ON=关门」）经三处同时注入 AI 认知：
+
+1. 后台目录缓存 `_refresh_ha_catalog`（每 60 秒刷新周期重读，改动最多 60 秒生效）
+2. 规则生成 `rule_service`（构建自动化时作为最高优先级提示）
+3. `get_entities` 返回的 `entities[].note` 字段 + `get_device_manual` 的 `manuals` 文本
+
+备注为空时不输出任何内容（零回归）。详见《03-设备控制/设备面板操作指南》备注一节。
 
 ---
 
@@ -152,12 +166,12 @@ Aether Backend ──stdin/stdout──→ External MCP Process (npx / uvx / pyt
 ## 5. 工具注册时序
 
 ```
-register_all_tools(deps)  (app/tools.py:43, lifespan 里调)
+register_all_tools(deps)  (app/tools.py, lifespan 里调)
   ├─ register_local_tools(manager)          ← 4 个基础工具
   │    describe_state / fetch_webpage / http_request / web_search
   │
-  └─ 8 个依赖注入工具（工厂创建 handler）：
-       vision_chat / get_entities / call_service
+  └─ 9 个依赖注入工具（工厂创建 handler）：
+       vision_chat / get_entities / get_device_manual / call_service
        verify_condition / verify_action
        scheduled_task_create / scheduled_task_list / scheduled_task_delete
 

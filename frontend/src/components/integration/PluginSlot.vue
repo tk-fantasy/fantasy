@@ -17,9 +17,10 @@ const props = defineProps({
 })
 
 // 构建时扫描所有插件前端组件（import.meta.glob）
-// 路径：integrations/<plugin_id>/frontend/*.vue
-// key 格式：../../../integrations/xiaoai/frontend/XiaoAiPanel.vue
-const pluginComponents = import.meta.glob('../../../integrations/*/frontend/*.vue')
+// PluginSlot.vue 在 frontend/src/components/integration/ 下，
+// 需要 4 级 ../ 才能到项目根的 integrations/
+// key 格式：../../../../integrations/xiaoai/frontend/XiaoAiPanel.vue
+const pluginComponents = import.meta.glob('../../../../integrations/*/frontend/*.vue')
 
 // 运行时从 API 知道哪些插件贡献了 custom_component 到本 slot
 const contributions = ref([])

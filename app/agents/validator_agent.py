@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
@@ -10,6 +11,15 @@ from ..core.config import get_config
 from ..core.key_resolver import resolve_key_for_role
 
 logger = logging.getLogger(__name__)
+
+# 匹配声称已完成设备操作的措辞（"已打开""已关闭""已调节""搞定了"等）
+# 当 LLM 说了这类话但 tool_call_count=0 时，说明它在撒谎，需要强制重试
+_ACTION_DONE_RE = re.compile(
+    r"已(经)?(打开|关闭|开启|关掉|调节|调整|设置|切换|执行|完成|搞[定好])|"
+    r"帮\s*你.*(打开|关闭|开启|关掉|调[节整])|"
+    r"(搞定|完成|done|ok了|好了)",
+    re.IGNORECASE,
+)
 
 _VALIDATOR_SYSTEM_PROMPT = (
     "你是一个校验助手。你的唯一任务是判断一段对话回复是否只表达了要做某事的意图，"
@@ -124,11 +134,17 @@ class ValidatorAgent:
         )
 
     async def should_retry(self, final_content: str, tool_call_count: int, user_id: str = "") -> bool:
-        """用 LLM 语义判断模型是否只表达了执行意图但没有确认动作已完成。
+        """判断模型是否需要重试。
+
+        硬性规则优先：如果回复声称完成了设备操作（"已打开""已关闭"等），
+        但 tool_call_count == 0，说明模型在撒谎（嘴上说了但没真调工具），
+        直接返回 True 强制重试，不浪费一次 LLM 语义判断调用。
+
+        硬性规则不命中时，回退到 LLM 语义判断。
 
         Args:
             final_content: 模型最终输出的文本内容
-            tool_call_count: 工具调用次数（保留参数但不参与判断）
+            tool_call_count: 工具调用次数
             user_id: 当前用户 ID，用于解析 per-user chat key。为空或用户无 per-user 配置时走全局。
 
         Returns:
@@ -137,6 +153,12 @@ class ValidatorAgent:
         if not final_content.strip():
             logger.debug("Validator: empty content, skip retry")
             return False
+
+        # 硬性规则：声称完成操作但没调任何工具 → 撒谎，强制重试
+        if tool_call_count == 0 and _ACTION_DONE_RE.search(final_content):
+            logger.info("Validator: 检测到声称完成操作但 tool_calls=0，强制重试: %r",
+                        final_content[:80])
+            return True
 
         # per-user 优先：解析用户 chat key 构建专用 LLM（缓存），失败/无配置回退全局
         if user_id:

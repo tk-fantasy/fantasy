@@ -1,4 +1,4 @@
-# LLM 模型角色配置
+﻿# LLM 模型角色配置
 
 Aether 不只用一个模型，而是按**角色**分配不同模型——聊天用一个、视觉用一个、摘要用一个、嵌入用一个、语音转写用一个。这样你可以让贵的模型干精细活，便宜的模型干粗活，省钱又好用。这篇告诉你每个角色干啥、怎么配。
 
@@ -20,7 +20,7 @@ Aether 不只用一个模型，而是按**角色**分配不同模型——聊天
 
 ## 2. 先去配密钥
 
-模型配置的前提是**已经有对应类型的密钥**。密钥在 `/keys` 页管理（看[LLM API 密钥配置指南](../01-安装部署/LLM-API密钥配置指南.md)）。
+模型配置的前提是**已经有对应类型的密钥**。密钥在 `/models` 页管理（看[LLM API 密钥配置指南](../01-安装部署/LLM-API密钥配置指南.md)）。
 
 每个密钥有 5 种类型之一：`chat` / `vision` / `summary` / `embed` / `stt`。比如你加了两个 `chat` 类型的密钥（一个 GLM、一个 DeepSeek），那 `chat` 角色就能在这两个里挑。
 
@@ -28,9 +28,9 @@ Aether 不只用一个模型，而是按**角色**分配不同模型——聊天
 
 ## 3. 配模型角色
 
-1. 在聊天框打 `/models`，或侧边栏进「模型配置」页。
-2. 看到 5 行设置，每行一个角色：对话 / 视觉 / 摘要 / 嵌入 / 语音。
-3. 每行右边是个下拉框，列出**该角色类型下的所有密钥**，格式是 `模型名 (base_url)`。
+1. 在聊天框打 `/models`（侧边栏没有入口，只能靠命令进）。
+2. 页面分两组：**个人模型**（对话 / 摘要 / 语音，可绑定你自己的密钥）和**系统模型**（视觉 / 嵌入，全局共享，默认锁定，点锁图标确认后解锁才能改）。
+3. 每行右边是个下拉框，列出**该角色类型下的所有密钥**，格式是 `模型名 (base_url)`。个人模型三行还各带「私有 key / 全局 key」开关（`use_global`）。
 4. 选一个，**自动保存**——不用点保存按钮，选完就生效。
 
 ```
@@ -63,7 +63,7 @@ Aether 不只用一个模型，而是按**角色**分配不同模型——聊天
 - 每个用户在 `user_settings` 里有自己的 `llm_keys`（密钥列表）和 `providers`（角色→key 映射）。
 - A 用户配的模型，B 用户看不到、也用不了。
 - 注册新用户时，自动初始化空的 `llm_keys` 和 `providers`。
-- 管理员在 `/keys` 页加的密钥会同步进当前用户的存储。
+- 管理员在 `/models` 页加的密钥会同步进当前用户的存储。
 
 所以一家人共用一个 Aether 实例，每个人可以配自己的模型和密钥，互不干扰。
 
@@ -71,7 +71,7 @@ Aether 不只用一个模型，而是按**角色**分配不同模型——聊天
 
 `chat` / `summary` / `stt` 三个角色在**运行时**也按 `user_id` 解析（不只是存储隔离）——主对话 agent、Validator（重试校验）、定时任务 reminder、自动化规则的 `build_rule` 与 context-only 评估，都调 `resolve_key_for_role_user("chat", user_id)` 拿当前用户的 chat key 构建专用客户端（缓存在 `Dispatcher._user_agents` / `ValidatorAgent._user_llms`）。`vision` / `embed` 角色仍全局共享。
 
-`chat` 角色还可在 `/model` 页切到**全局兜底**（`use_global` 开关）——切到全局后该角色不查 per-user key，直接回退到全局 `config.json` 的 `llm_keys`（全局配置用二级密码保护，详见《LLM API 密钥配置指南》）。
+`chat` / `summary` / `stt` 三个角色还可在 `/models` 页切到**全局兜底**（`use_global` 开关）——切到全局后该角色不查 per-user key，直接回退到全局 `config.json` 的 `llm_keys`（全局配置用二级密码保护，详见《LLM API 密钥配置指南》）。
 
 ---
 
@@ -115,7 +115,7 @@ Aether 不只用一个模型，而是按**角色**分配不同模型——聊天
 
 - **chat 没配**：聊天页发消息没反应，setup 向导也会提示你先配 LLM。
 - **vision 没配**：`vision_chat` 工具调不动，问摄像头相关问题会失败。
-- **summary 没配**：`/compress` 报错，自动压缩也不工作。
+- **summary 没配**：`/compress` 回退全局 `summary` 客户端；LLM 摘要也失败时兜底成**截断式摘要**（不报错，只是质量差些）。
 - **embed 没配**：文档助手（`/doc`）建不了索引，语义图（`/sg`）也构建不了。
 - **stt 没配**：🎤 语音输入转写失败。
 
@@ -125,7 +125,7 @@ Aether 不只用一个模型，而是按**角色**分配不同模型——聊天
 
 ## 8. 切换模型要重启吗
 
-不用。`/models` 页选完即生效，下一次请求就用新模型了。`chat`/`summary`/`stt` 角色按 `user_id` 解析，客户端实例缓存在 `Dispatcher._user_agents`（主对话）和 `ValidatorAgent._user_llms`（重试校验）——主对话重试时用**同用户**的 chat key 校验，避免全局/用户模型不一致误判。改 per-user key 后调 `invalidate_user_agent(user_id)` 让缓存失效，下次重建。vision/summary/embed 客户端在启动时建好，密钥池会随 `/keys` 改动 reload。
+不用。`/models` 页选完即生效，下一次请求就用新模型了。`chat`/`summary`/`stt` 角色按 `user_id` 解析，客户端实例缓存在 `Dispatcher._user_agents`（主对话）和 `ValidatorAgent._user_llms`（重试校验）——主对话重试时用**同用户**的 chat key 校验，避免全局/用户模型不一致误判。改 per-user key 后调 `invalidate_user_agent(user_id)` 让缓存失效，下次重建。vision/summary/embed 客户端在启动时建好，密钥池会随 `/models` 改动 reload。
 
 > 唯一例外：如果你换了 `vision` 模型，正在跑的摄像头推理可能要等下一帧才用上新模型——不影响聊天。
 >

@@ -43,7 +43,11 @@ function close() { emit('close') }
 }
 
 .modal-container {
-  background: var(--color-bg-app);
+  position: relative;
+  isolation: isolate;
+  background: var(--dialog-bg-glass);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-3xl);
   width: 100%;
@@ -53,6 +57,33 @@ function close() { emit('close') }
   display: flex;
   flex-direction: column;
   box-shadow: var(--shadow-xl);
+}
+
+.modal-container::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse 60% 50% at 25% 30%, var(--g1) 0%, transparent 50%),
+    radial-gradient(ellipse 50% 45% at 70% 25%, var(--g2) 0%, transparent 45%),
+    radial-gradient(ellipse 55% 50% at 45% 70%, var(--g3) 0%, transparent 45%),
+    radial-gradient(ellipse 50% 45% at 60% 50%, var(--g4) 0%, transparent 45%),
+    radial-gradient(ellipse 45% 40% at 35% 55%, var(--g5) 0%, transparent 40%);
+  background-size: 300% 300%, 300% 300%, 300% 300%, 300% 300%, 300% 300%;
+  animation: auroraFlow 12s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+  opacity: 0.9;
+  will-change: background-position;
+}
+
+.modal-container > * {
+  position: relative;
+  z-index: 1;
+}
+
+.light-mode .modal-container::before {
+  opacity: 0.4;
 }
 
 .modal-header {

@@ -1,15 +1,17 @@
-# Docker 服务部署指南
+﻿# Docker 服务部署指南
 
-这篇讲怎么用 Docker 把 Aether 需要的两个后台服务跑起来。
+这篇讲怎么用 Docker 把 Aether 跑起来。
 
-## 三个服务？现在是两个
+## 四个服务
 
-Aether 依赖两个 Docker 服务，都定义在 `docker-compose.yml` 里：
+Aether 编排四个容器，都定义在 `docker-compose.yml` 里：
 
-1. **Home Assistant（智能家居大脑）**——管理所有智能设备，Aether 通过它的 API 控制全屋
-2. **Mosquitto MQTT（消息中转）**——一个"消息邮局"，虚拟设备把状态发到这里，HA 从这里接收
+1. **aether**——后端主服务（API + WebSocket + 前端页面），Dockerfile 构建
+2. **Home Assistant（智能家居大脑）**——管理所有智能设备，Aether 通过它的 API 控制全屋
+3. **Mosquitto MQTT（消息中转）**——一个"消息邮局"，虚拟设备把状态发到这里，HA 从这里接收
+4. **aether-simulator（虚拟设备模拟器）**——通过 MQTT 往 HA 上报 11 个演示设备（灯/空调/窗帘等），接真实设备后可注释掉
 
-> 老版本里还有第三个 SearXNG 搜索引擎，现在已经换成云端的 **Exa MCP** 搜索（不占本地端口、不用本地容器），所以 Docker 只剩两个服务了。
+> 老版本里还有第五个 SearXNG 搜索引擎，现在已经换成云端的 **Exa MCP** 搜索（不占本地端口、不用本地容器），所以 Docker 只剩四个容器了。
 
 ## 开始之前
 
@@ -21,7 +23,7 @@ Aether 依赖两个 Docker 服务，都定义在 `docker-compose.yml` 里：
 
 ## 关于 HA 镜像
 
-Aether 用官方镜像 `ghcr.io/home-assistant/home-assistant:stable`，配置通过 `./ha_config` 挂载进去。只用了 `default_config` + 内置 MQTT 集成，没有自定义组件，`docker compose up -d` 自动拉取，无需手动构建。
+Aether 用官方镜像 `homeassistant/home-assistant:stable`，配置通过 `./ha_config` 挂载进去。只用了 `default_config` + 内置 MQTT 集成，没有自定义组件，`docker compose up -d` 自动拉取，无需手动构建。
 
 ## 启动服务
 
@@ -39,15 +41,16 @@ docker compose up -d --build
 docker compose ps
 ```
 
-三个容器状态都是 `Up` 就搞定了：
+四个容器状态都是 `Up` 就搞定了：
 
 | 容器名 | 镜像 | 端口 |
 |--------|------|------|
 | `aether` | 本地构建 | 8010→8010, 8011→8011 |
-| `aether-ha` | `ghcr.io/home-assistant/home-assistant:stable` | 8123→8123 |
+| `aether-ha` | `homeassistant/home-assistant:stable` | 8123→8123 |
 | `mosquitto` | `eclipse-mosquitto:2` | 1884→1884 |
+| `aether-simulator` | `python:3.11-slim` | — |
 
-> 小提示：日常启动只需 `docker compose up -d`，会自动起 MQTT + HA + Aether 全部服务。
+> 小提示：日常启动只需 `docker compose up -d`，会自动起全部四个服务。
 
 ## 停止服务
 
@@ -90,23 +93,24 @@ conda run -n yolo python ha_config\ha_simulator.py
 | 配置 | 路径 | 说明 |
 |------|------|------|
 | HA 配置 | `ha_config/` | 挂载到容器 `/config`，含 `configuration.yaml`、`automations.yaml` 等 |
-| MQTT 配置 | `mosquitto/config/mosquitto.conf` | 监听 1884 端口，允许匿名 |
+| MQTT 配置 | `mosquitto/config/mosquitto.conf` | 监听 1884 端口，关匿名（凭证 `aether`/`aether`） |
 
 ### Mosquitto 配置
 
 ```conf
 listener 1884
-allow_anonymous true
+allow_anonymous false
+password_file /mosquitto/config/passwd
 log_type all
 connection_messages true
 ```
 
-> 演示环境允许匿名。生产环境建议加密码认证。
+> Mosquitto 关了匿名访问，`mosquitto/init.sh` 首次启动自动生成 `passwd`（用户 `aether`）。`passwd` 被 .gitignore 排除，新 clone 的仓库首次 `docker compose up` 由 init.sh 自动生成。
 
 ## 常见问题
 
-**Q：`docker compose up` 报错说找不到 `ghcr.io/home-assistant/home-assistant:stable` 镜像？**
-A：本地镜像没构建。先构建 HA 镜像（见项目构建说明），或确认镜像名正确。
+**Q：`docker compose up` 报错说找不到 `homeassistant/home-assistant:stable` 镜像？**
+A：官方镜像会自动拉取；报错一般是网络问题（国内拉 Docker Hub 慢/超时）。重试、换镜像加速源，或确认镜像名正确。
 
 **Q：HA 打开了但没设备？**
 A：模拟器没启动。检查 `logs/ha_simulator.log`，或手动跑 `ha_simulator.py`。

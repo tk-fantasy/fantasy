@@ -2,7 +2,7 @@
 
 这篇讲怎么在你自己电脑上跑 AI 大模型。Aether 支持用 Ollama 在本地跑模型，对话全在本地处理，不联网、不泄隐私。
 
-> **核心一句话**：Ollama 在 Aether 里就是一个普通的 Key。在 `/keys` 页加一个 type 为 `chat`/`vision`/`embed` 的 Key，Base URL 填 `http://127.0.0.1:11434/v1`，然后在 `/models` 页选中它。流程和配云端 API 完全一样。
+> **核心一句话**：Ollama 在 Aether 里就是一个普通的 Key。在 `/models` 页加一个 type 为 `chat`/`vision`/`embed` 的 Key，Base URL 填 `http://127.0.0.1:11434/v1`，然后在 `/models` 页选中它。流程和配云端 API 完全一样。
 
 ## 什么时候用本地模型
 
@@ -65,7 +65,7 @@ ollama list
 
 ## 把 Ollama 加成 Key
 
-1. 聊天框输入 `/keys` 进密钥管理页
+1. 侧边栏进「模型」页（或聊天框输入 `/models`）
 2. 点 **「+ 添加 Key」**
 3. 填：
 
@@ -137,7 +137,7 @@ ollama serve          # 手动启动服务
 netstat -ano | findstr ":11434"   # 确认端口在监听
 ```
 
-确认 `/keys` 页 Base URL 是 `http://127.0.0.1:11434/v1`（带 `/v1`，不是 `http://localhost:11434`）。
+确认 `/models` 页 Base URL 是 `http://127.0.0.1:11434/v1`（带 `/v1`，不是 `http://localhost:11434`）。
 
 ### 回应太慢超时
 

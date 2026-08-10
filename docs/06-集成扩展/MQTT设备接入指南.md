@@ -1,4 +1,4 @@
-# MQTT 设备接入指南
+﻿# MQTT 设备接入指南
 
 本文档说明如何通过 MQTT 协议向 Aether 智能家居系统接入新设备。
 
@@ -19,10 +19,10 @@
 ```
 
 - **Mosquitto**：MQTT 消息代理，容器名 `mosquitto`，端口 `1884`
-- **Home Assistant**：智能家居平台，容器名 `aether-ha`，官方镜像 `ghcr.io/home-assistant/home-assistant:stable`，端口 `8123`，通过 MQTT 集成感知设备
+- **Home Assistant**：智能家居平台，容器名 `aether-ha`，官方镜像 `homeassistant/home-assistant:stable`，端口 `8123`，通过 MQTT 集成感知设备
 - **Aether**：AI 助手后端，通过 HA REST API 读写设备状态并执行自动化
 
-> docker-compose 有三个服务：`mqtt`（mosquitto）、`homeassistant`（HA 官方镜像）、`aether`（本地构建）。HA 配置通过 `./ha_config` 挂载，只用 `default_config` + 内置 MQTT 集成，无需手动构建镜像。
+> docker-compose 有四个服务：`mqtt`（mosquitto）、`homeassistant`（HA 官方镜像）、`aether`（本地构建）、`simulator`（虚拟设备模拟器）。HA 配置通过 `./ha_config` 挂载，只用 `default_config` + 内置 MQTT 集成，无需手动构建镜像。详见《Docker服务部署指南》。
 
 ## 前置准备
 
@@ -105,7 +105,12 @@ mqtt:
 
 ### 第四步：在模拟器中添加设备逻辑
 
-编辑 `ha_config/ha_simulator.py`，分三处修改：
+模拟器的状态发布和命令处理是**通用自动路由**，不需要为单个设备写分支：
+
+- **发布**：`publish_all()` 遍历 `state` 字典，每个设备调 `_publish_device()`——按状态结构自动推断发布格式（light 发 JSON 全量、climate 发多 Topic、fan 发 JSON + 子属性 Topic、cover 发位置 + open/closed 等）。
+- **命令**：`handle_set()` 用 `_resolve_device()` 对 topic 做**最长前缀匹配**找到设备，再按目标属性当前类型自动转换值（`_coerce()`）——设备级 `room/device/set` 支持 JSON 或 `ON/OFF/OPEN/CLOSE/STOP` 文本，属性级 `room/device/attr/set` 单级属性直接赋值。
+
+所以接入新设备只需要两步：
 
 **A. 添加初始状态**
 
@@ -116,50 +121,17 @@ state = {
 }
 ```
 
-**B. 添加状态发布函数**
+**B. 无需改其它代码**
 
-```python
-def publish_fan(c):
-    f = state["living_room/fan"]
-    pub(c, "living_room/fan", json.dumps(f))
-    pub(c, "living_room/fan/speed", f["speed"])
-    pub(c, "living_room/fan/oscillation", "ON" if f["oscillation"] else "OFF")
-```
-
-在 `publish_all()` 中调用：
-
-```python
-def publish_all(c):
-    # ... 已有设备 ...
-    publish_fan(c)
-```
-
-**C. 添加命令处理**
-
-在 `handle_set()` 函数中增加分支：
-
-```python
-elif base == "living_room/fan":
-    try:
-        d = json.loads(raw)
-        fan = state["living_room/fan"]
-        if "state" in d:
-            fan["state"] = d["state"]
-        if "speed" in d:
-            fan["speed"] = d["speed"]
-        log(f"← [客厅风扇] {d}")
-    except json.JSONDecodeError:
-        log(f"← [客厅风扇] 无效JSON: {raw}")
-    publish_fan(c)
-```
+发布和命令处理会自动覆盖新设备。如果新设备的属性结构比较特殊（比如布尔值想发 `ON/OFF`、数值想拆独立 Topic），在 `_publish_device()` 里加一个分支即可（参考现有 fan / humidifier 分支的写法）。
 
 ### 第五步：重启服务验证
 
 ```bash
-# 方式一：一键重启全家桶（推荐）
-run_demo.bat
+# 方式一：全家桶一起重启（HA + 模拟器，Aether 主服务一般不用动）
+docker-compose restart homeassistant simulator
 
-# 方式二：单独重启
+# 方式二：单独重启 HA 和模拟器
 docker-compose restart homeassistant
 # 等 HA 完全启动后，再重启模拟器
 python ha_config/ha_simulator.py
@@ -171,20 +143,23 @@ python ha_config/ha_simulator.py
 2. 如果状态为 `unknown`，重新运行模拟器：`python ha_config/ha_simulator.py`
 3. 打开 Aether 前端 → 设备列表（`/halist`），确认新设备已出现
 
-> 模拟器发布状态是**一次性**的（启动时发布全量），HA 重启后状态会丢失。每次修改配置并重启 HA 后，都需要重启模拟器让设备状态恢复。
+> 模拟器发布状态用 `retain=True`（MQTT 保留消息），mosquitto 会保存每个 topic 的最后一条消息——**HA 重启后重连订阅会收到 retained 消息恢复状态**，不需要重跑模拟器。传感器/加湿器这类还会每 60 秒循环重发（顺便从后端拉真实天气做基准）。
 
 ## Demo 自带设备 Topic 速查
 
-模拟器 `ha_simulator.py` 默认带 6 台设备：
+模拟器 `ha_simulator.py` 默认带 10 个设备：
 
-| 设备 | entity_id 域 | Topic | 载荷示例 |
+| 设备 | entity_id 域 | Topic | 初始载荷 |
 |---|---|---|---|
-| 床头灯 | `light` | `bedroom/light` | `{"state":"ON","brightness":128}` |
+| 床头灯 | `light` | `bedroom/light` | `{"state":"OFF","brightness":null}` |
 | 厨房灯 | `light` | `kitchen/light` | `{"state":"OFF","brightness":null}` |
-| 客厅吊灯 | `light` | `living_room/ceiling` | `{"state":"ON","brightness":200}` |
+| 客厅吊灯 | `light` | `living_room/ceiling` | `{"state":"OFF","brightness":null}` |
 | 中央空调 | `climate` | `living_room/ac/mode` | `cool`（temp/current_temp/fan/swing 各一 Topic） |
-| 客厅窗帘 | `cover` | `living_room/curtain` | `open`（position 单独一个 Topic） |
-| 客厅风扇 | `fan` | `living_room/fan` | `{"state":"ON","speed":"medium","oscillation":false}` |
+| 客厅窗帘 | `cover` | `living_room/curtain` | `open`（position=100 单独一个 Topic） |
+| 客厅风扇 | `fan` | `living_room/fan` | `{"state":"OFF","speed":"low","oscillation":false}` |
+| 温湿度传感器 | `sensor` | `living_room/sensor` | `{"temperature":26.5,"humidity":58}`（每 60s 更新） |
+| 智能插座 ×2 | `switch` | `bedroom/plug`、`kitchen/plug` | `{"state":"OFF"}` |
+| 加湿器 | `humidifier` | `bedroom/humidifier` | `{"state":"OFF","target_humidity":50,...}` |
 
 控制指令统一走 `.../set` Topic，属性控制走 `.../{attr}/set`。
 
@@ -264,17 +239,17 @@ python ha_config/ha_simulator.py
 用 `mosquitto_pub` 手动测试 MQTT 通信：
 
 ```bash
-# 查看风扇状态
-mosquitto_sub -h localhost -p 1884 -t "living_room/fan/#"
+# 查看风扇状态（broker 关了匿名，要带账号密码）
+mosquitto_sub -h localhost -p 1884 -u aether -P aether -t "living_room/fan/#"
 
 # 打开风扇
-mosquitto_pub -h localhost -p 1884 -t "living_room/fan/set" -m '{"state":"ON"}'
+mosquitto_pub -h localhost -p 1884 -u aether -P aether -t "living_room/fan/set" -m '{"state":"ON"}'
 
 # 调至高速
-mosquitto_pub -h localhost -p 1884 -t "living_room/fan/speed/set" -m "high"
+mosquitto_pub -h localhost -p 1884 -u aether -P aether -t "living_room/fan/speed/set" -m "high"
 
-# 开启摇头
-mosquitto_pub -h localhost -p 1884 -t "living_room/fan/oscillation/set" -m "ON"
+# 开启摇头（模拟器状态里有 oscillation 字段，HA 侧风扇模板没配 oscillation topic 的话只是模拟器收到，HA 不会反映）
+mosquitto_pub -h localhost -p 1884 -u aether -P aether -t "living_room/fan/oscillation/set" -m "ON"
 ```
 
 ## 常见问题
@@ -298,7 +273,7 @@ mosquitto_pub -h localhost -p 1884 -t "living_room/fan/oscillation/set" -m "ON"
 Aether 通过 HA REST API 获取设备列表，需要满足以下全部条件才能看到设备：
 
 1. **HA 中实体已注册**：访问 `http://localhost:8123/config/entities` 搜索设备名，确认实体存在且 `entity_id` 格式正确（如 `fan.xxx`、`light.xxx`）
-2. **模拟器已发布初始状态**：MQTT 设备的状态不会自动保留——HA 重启后所有 MQTT 实体变为 `unknown`。必须重新启动模拟器（`python ha_simulator.py`）让它发布全量状态，设备才会变回正常状态
+2. **模拟器已发布初始状态**：MQTT 设备的状态发布带 `retain=True`（保留消息），HA 重启重连订阅后会自动收到 retained 消息恢复状态，通常不需要重跑模拟器。如果实体仍为 `unknown`（比如 broker 数据被清过），再重启一次模拟器（`python ha_config/ha_simulator.py`）让它重新发布全量状态即可
 3. **Aether 后端已同步**：设备在 HA 中状态变为正常后，Aether 会自动刷新设备列表即可看到新设备
 
 > **关键**：设备在 HA 中注册后，状态必须从 `unknown` 变为实际值（如 `ON/OFF`），Aether 才会将其纳入设备列表。如果一直是 `unknown`，Aether 看不到这个设备。

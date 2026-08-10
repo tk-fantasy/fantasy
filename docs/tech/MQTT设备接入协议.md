@@ -1,4 +1,4 @@
-# MQTT 设备接入协议
+﻿# MQTT 设备接入协议
 
 Aether 使用 MQTT 协议连接 Home Assistant 和虚拟设备模拟器。本文档定义完整的 Topic 规范、设备模板和接入流程。
 
@@ -22,11 +22,11 @@ Aether 使用 MQTT 协议连接 Home Assistant 和虚拟设备模拟器。本文
 ```
 
 - **Mosquitto** (`eclipse-mosquitto:2`，容器名 `mosquitto`）：MQTT Broker，端口 1884，**关闭匿名访问**，需账号密码认证
-- **Home Assistant**（容器名 `aether-ha`，官方镜像 `ghcr.io/home-assistant/home-assistant:stable`）：通过内置 MQTT Integration 订阅设备状态、发送控制指令
+- **Home Assistant**（容器名 `aether-ha`，官方镜像 `homeassistant/home-assistant:stable`）：通过内置 MQTT Integration 订阅设备状态、发送控制指令
 - **ha_simulator**：模拟虚拟设备状态并响应控制命令，用 `aether/aether` 账号连接 Broker
 - **Aether**：通过 HA REST API（`/api/states`、`/api/services`）读写设备，**不直接连 MQTT**
 
-> docker-compose 仅 **2 个服务**（mqtt + homeassistant）。Aether 主服务在宿主机直接运行（端口 8010），不入 docker-compose。
+> docker-compose 共 **4 个服务**（aether + aether-ha + mosquitto + aether-simulator），Aether 主服务也在容器里（端口 8010）。详见《Docker服务部署指南》。
 
 ---
 

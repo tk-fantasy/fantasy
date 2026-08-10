@@ -90,7 +90,7 @@ Connect an RTSP or USB camera and the AI analyzes the scene in real time. Suppor
 
 ### 🎯 Focus items — tell the AI what you care about
 
-Customize which objects and areas the vision system watches. You can pin specific regions (doorway, window) or specific objects (person, pet, package). Notifications fire only when a focus item appears, avoiding pointless frequent alerts.
+Configure focus items **per camera** in the `/cameras` page edit dialog. Pin specific regions (doorway, window) or specific objects (person, pet, package). Notifications fire only when a focus item appears, avoiding pointless frequent alerts.
 
 <br/>
 <img src="docs/images/focus.webp" alt="Focus items" width="720"/>
@@ -117,7 +117,7 @@ AI replies stream token-by-token, like a person typing. Markdown rendering with 
 ## 🛠️ What it does
 
 - **🧠 Conversational device control** — Talks to Home Assistant. Say "turn off the living-room lights and set the AC to 26°C" and it does it. A read-only `verify_action` step runs before any state change so the model can't fire invalid service calls.
-- **👁️ Camera vision** — RTSP / USB input, motion-triggered visual reasoning, configurable focus items.
+- **👁️ Camera vision** — Multiple RTSP / USB cameras, motion-triggered visual reasoning, per-camera focus items, single active AI preview.
 - **⏰ Schedules & automation rules** — Natural-language cron generation, auto task naming, a rule engine that chains devices on conditions.
 - **📊 Semantic knowledge graph (RAG)** — Docs vectorized + faiss retrieval + entity co-occurrence graphing, 3D visualization, auto-detect on embed-model change + one-click rebuild.
 - **🔌 MCP tool ecosystem** — Built-in weather / web search / device-control tools, plus support for external MCP servers.
@@ -148,7 +148,7 @@ AI replies stream token-by-token, like a person typing. Markdown rendering with 
 
 ## Quick start (Docker, recommended)
 
-A single `docker compose up` brings up all three services. Prerequisites:
+A single `docker compose up` brings up all four services (aether, aether-ha, mosquitto, aether-simulator). Prerequisites:
 
 ```bash
 # 1. Configure secrets
@@ -320,9 +320,9 @@ Four sidebar entries; other features are reachable via slash commands:
 | Entry | Description |
 |-------|-------------|
 | **Butler** | Main chat. Type `/` to see all slash commands (devices, schedules, models, one-click jumps). |
+| **Cameras** | Multi-camera management: add RTSP/USB, PTZ pan-tilt, ONVIF discovery, per-camera focus items, single active AI preview. |
 | **Settings** | Household info, region, dark mode. |
 | **Advanced** | System-level config page: weather API, Exa search, vision params, HA connection, assistant persona, API Keys (click a card to edit in a modal), plus emoji-index rebuild and doc-vector rebuild. |
-| **Monitor** | System monitoring page (also reachable via `/monitor` in chat). |
 
 ---
 

@@ -31,8 +31,9 @@ class TestShouldRetry:
         mock_llm.ainvoke = AsyncMock(return_value=mock_response)
         validator._llm = mock_llm
         
-        result = await validator.should_retry("我将帮你打开灯", 0)
+        result = await validator.should_retry("收到，我马上处理", 0)
         assert result is True
+        mock_llm.ainvoke.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_llm_returns_false(self):
@@ -43,8 +44,9 @@ class TestShouldRetry:
         mock_llm.ainvoke = AsyncMock(return_value=mock_response)
         validator._llm = mock_llm
         
-        result = await validator.should_retry("已经帮你打开灯了", 0)
+        result = await validator.should_retry("收到，我明白了", 0)
         assert result is False
+        mock_llm.ainvoke.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_llm_exception_returns_false(self):
@@ -53,7 +55,7 @@ class TestShouldRetry:
         mock_llm.ainvoke = AsyncMock(side_effect=Exception("API error"))
         validator._llm = mock_llm
         
-        result = await validator.should_retry("我将帮你打开灯", 0)
+        result = await validator.should_retry("收到，我明白了", 0)
         assert result is False
 
     @pytest.mark.asyncio
@@ -130,7 +132,7 @@ class TestValidatorPerUser:
             with patch("app.agents.validator_agent.ChatOpenAI", return_value=mock_llm) as MockChat:
                 with patch("app.clients.http_client.new_client"), \
                      patch("app.clients.http_client.new_sync_client"):
-                    result = await validator.should_retry("我将帮你打开灯", 0, user_id="u1")
+                    result = await validator.should_retry("收到，我马上处理", 0, user_id="u1")
 
         assert result is True
         # per-user LLM 被构造（带 per-user key）
@@ -155,7 +157,7 @@ class TestValidatorPerUser:
 
         with patch("app.core.key_resolver.resolve_key_for_role_user",
                    new=AsyncMock(return_value=None)):
-            result = await validator.should_retry("已经打开了", 0, user_id="u-no-config")
+            result = await validator.should_retry("收到，我明白了", 0, user_id="u-no-config")
 
         assert result is False
         # 全局 LLM 的 ainvoke 被调
@@ -175,7 +177,7 @@ class TestValidatorPerUser:
 
         with patch("app.core.key_resolver.resolve_key_for_role_user",
                    new=AsyncMock(return_value={"api_key": "should-not-be-called"})) as mock_resolve:
-            result = await validator.should_retry("已经打开了", 0, user_id="")
+            result = await validator.should_retry("收到，我明白了", 0, user_id="")
 
         assert result is False
         # 无 user_id 不调 key 解析
@@ -201,8 +203,8 @@ class TestValidatorPerUser:
             with patch("app.agents.validator_agent.ChatOpenAI", return_value=mock_llm) as MockChat:
                 with patch("app.clients.http_client.new_client"), \
                      patch("app.clients.http_client.new_sync_client"):
-                    await validator.should_retry("我将帮你打开灯", 0, user_id="u1")
-                    await validator.should_retry("我会帮你关灯", 0, user_id="u1")
+                    await validator.should_retry("收到，我马上处理", 0, user_id="u1")
+                    await validator.should_retry("明白，我记下了", 0, user_id="u1")
 
         # key 解析只调一次（第二次命中缓存）
         assert mock_resolve.await_count == 1
@@ -210,3 +212,51 @@ class TestValidatorPerUser:
         assert MockChat.call_count == 1
         # ainvoke 调了两次（复用同一实例）
         assert mock_llm.ainvoke.await_count == 2
+
+
+# ---------------------------------------------------------------------------
+# 硬性规则：声称完成操作但 tool_calls=0 → 强制重试（不调 LLM）
+# ---------------------------------------------------------------------------
+
+class TestHardRule:
+    """validator_agent 新硬性规则：回复声称完成设备操作但没调工具 → 强制重试。"""
+
+    @pytest.mark.asyncio
+    async def test_claims_done_without_tool_calls_forces_retry(self):
+        validator = ValidatorAgent(max_retries=1)
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = AsyncMock()
+        validator._llm = mock_llm
+
+        result = await validator.should_retry("已经帮你打开灯了", 0)
+        assert result is True
+        # 硬规则直接返回，不浪费一次 LLM 调用
+        mock_llm.ainvoke.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_claims_done_with_tool_calls_goes_through_llm(self):
+        """有真实工具调用（tool_calls>0）→ 不触发硬规则，走 LLM 语义判断。"""
+        validator = ValidatorAgent(max_retries=1)
+        mock_llm = MagicMock()
+        mock_response = MagicMock()
+        mock_response.content = '{"need_retry": false}'
+        mock_llm.ainvoke = AsyncMock(return_value=mock_response)
+        validator._llm = mock_llm
+
+        result = await validator.should_retry("已经帮你打开灯了", 2)
+        assert result is False
+        mock_llm.ainvoke.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_no_action_claim_without_tool_calls_goes_through_llm(self):
+        """未声称完成操作 → 不触发硬规则，走 LLM 语义判断。"""
+        validator = ValidatorAgent(max_retries=1)
+        mock_llm = MagicMock()
+        mock_response = MagicMock()
+        mock_response.content = '{"need_retry": false}'
+        mock_llm.ainvoke = AsyncMock(return_value=mock_response)
+        validator._llm = mock_llm
+
+        result = await validator.should_retry("好的，我知道了", 0)
+        assert result is False
+        mock_llm.ainvoke.assert_awaited_once()

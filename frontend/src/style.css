@@ -121,6 +121,7 @@
   --page-max-width: 1200px;
   --sidebar-bg: rgba(14, 14, 20, 0.95);
   --dialog-bg: #181820;
+  --dialog-bg-glass: rgba(20, 20, 28, 0.82);
   --overlay-bg: rgba(0, 0, 0, 0.6);
 }
 
@@ -165,6 +166,7 @@
 
   --sidebar-bg: rgba(255, 255, 255, 0.92);
   --dialog-bg: #ffffff;
+  --dialog-bg-glass: rgba(255, 255, 255, 0.82);
   --overlay-bg: rgba(0, 0, 0, 0.45);
   --g1: rgba(45, 90, 78, 0.04);
   --g2: rgba(74, 124, 112, 0.03);
@@ -535,7 +537,11 @@ body {
 }
 
 .modal-content {
-  background: var(--color-bg-app);
+  position: relative;
+  isolation: isolate;
+  background: var(--dialog-bg-glass);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
   border-radius: var(--radius-2xl);
   border: 1px solid var(--color-border);
   width: 90%;
@@ -545,6 +551,33 @@ body {
   display: flex;
   flex-direction: column;
   box-shadow: var(--shadow-xl);
+}
+
+.modal-content::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse 60% 50% at 25% 30%, var(--g1) 0%, transparent 50%),
+    radial-gradient(ellipse 50% 45% at 70% 25%, var(--g2) 0%, transparent 45%),
+    radial-gradient(ellipse 55% 50% at 45% 70%, var(--g3) 0%, transparent 45%),
+    radial-gradient(ellipse 50% 45% at 60% 50%, var(--g4) 0%, transparent 45%),
+    radial-gradient(ellipse 45% 40% at 35% 55%, var(--g5) 0%, transparent 40%);
+  background-size: 300% 300%, 300% 300%, 300% 300%, 300% 300%, 300% 300%;
+  animation: auroraFlow 12s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+  opacity: 0.9;
+  will-change: background-position;
+}
+
+.light-mode .modal-content::before {
+  opacity: 0.4;
+}
+
+.modal-content > * {
+  position: relative;
+  z-index: 1;
 }
 
 .modal-header {
@@ -624,6 +657,22 @@ body {
 
 .light-mode .aurora-layer {
   opacity: 0.4;
+}
+
+/* Modal 极光容器混入: 半透明玻璃背景 + 内嵌流动极光层 + 子元素自动置顶。
+   给任意 modal 容器(.modal-content/.cam-modal 等)加 .aurora-modal 即可获得极光。
+   依赖 .aurora-layer(需在容器内插入 <div class="aurora-layer"></div>)。 */
+.aurora-modal {
+  position: relative;
+  isolation: isolate;
+  background: var(--dialog-bg-glass);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+}
+
+.aurora-modal > *:not(.aurora-layer) {
+  position: relative;
+  z-index: 1;
 }
 
 /* ============ 共享响应式 ============ */

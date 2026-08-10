@@ -1,4 +1,4 @@
-# 让管家学会上网搜东西——Exa 网页搜索
+﻿# 让管家学会上网搜东西——Exa 网页搜索
 
 你问管家一个问题，除了它自己脑子里的知识，还能真的上网去搜。Aether 用 **Exa** 提供网页搜索能力，管家可以随时帮你查最新消息、找资料、看新闻。
 
@@ -27,7 +27,7 @@ Aether 接 Exa 的方式有点特别：走的是 **MCP（Model Context Protocol�
 | 留空 `""` | **匿名调用** Exa MCP，能直接用，但有速率限制 |
 | 填入你的 Exa API Key | 享每月 2 万次免费额度，不限速 |
 
-> Exa Key **不在** `/keys`（LLM 密钥）页面管理——它和 LLM Key 是两套体系。LLM Key 有 5 种角色（chat/vision/summary/embed/stt），搜索是独立的，配在高级设置里。
+> Exa Key **不在** `/models`（LLM 密钥）页面管理——它和 LLM Key 是两套体系。LLM Key 有 5 种角色（chat/vision/summary/embed/stt），搜索是独立的，配在高级设置里。
 
 ### 去哪申请 Exa Key
 

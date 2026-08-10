@@ -1,4 +1,4 @@
-# API 接口参考
+﻿# API 接口参考
 
 > 对应代码：`app/main.py`（直接注册路由 + 中间件）、`app/routes/*.py`（各业务路由）
 
@@ -119,8 +119,12 @@ JWT 细节：access 24h / refresh 7d，HS256，`JWT_SECRET` 环境变量（自�
 | 方法 | 路径 | 认证 | Body | 说明 |
 | --- | --- | --- | --- | --- |
 | GET | `/api/ha/entities` | JWT | 无 | HA 实体列表 |
+| GET | `/api/ha/entity-aliases` | JWT | 无 | 全部实体别名映射 `{entity_id: alias}` |
+| PUT | `/api/ha/entity-aliases` | JWT | `EntityAliasRequest` | 设置/删除实体别名（空串=删除；同步到 HA entity_registry.name，HA 失败则回滚） |
+| GET | `/api/ha/entity-notes` | JWT | 无 | 全部实体备注映射 `{entity_id: note}`（用户自定义，注入 LLM 认知） |
+| PUT | `/api/ha/entity-notes` | JWT | `EntityNoteRequest` | 设置/删除实体备注（空串=删除；只存 Aether DB，不同步 HA） |
 | GET | `/api/ha/services` | JWT | 无 | HA 服务定义 `{domain:{service:{fields,required}}}` |
-| POST | `/api/ha/call_service` | JWT | `HAServiceCallRequest` | 调用 HA 服务 |
+| POST | `/api/ha/call_service` | JWT | `HAServiceCallRequest` | 调用 HA 服务（经控件范围探测保底） |
 | GET | `/api/ha/config` | JWT | 无 | HA 配置（token 脱敏） |
 | POST | `/api/ha/config` | JWT | `HAConfigRequest` | 保存 HA 配置 |
 | POST | `/api/ha/test` | JWT | 无 | 测试 HA 连接 |
@@ -130,9 +134,11 @@ JWT 细节：access 24h / refresh 7d，HS256，`JWT_SECRET` 环境变量（自�
 { "domain": "light", "service": "turn_on", "entity_id": "light.living_room", "data": {} }
 // HAConfigRequest
 { "url": "http://homeassistant:8123", "token": "长期访问令牌" }
+// EntityAliasRequest / EntityNoteRequest
+{ "entity_id": "switch.door_relay", "alias": "大门开关" }   // alias/note 留空表示删除
 ```
 
-> **没有 `/api/ha/devices`**——设备数据通过 `/api/ha/entities` 获取。HA 集成通过官方镜像 `ghcr.io/home-assistant/home-assistant:stable` 运行，详见《MQTT设备接入协议》。
+> **没有 `/api/ha/devices`**——设备数据通过 `/api/ha/entities` 获取。HA 集成通过官方镜像 `homeassistant/home-assistant:stable` 运行，详见《MQTT设备接入协议》。备注（entity_note）与别名（entity_alias）都存 `emoji_preferences` 表按 scope 隔离，备注只影响 AI 认知（注入后台目录缓存/规则生成/工具返回），别名同步到 HA 并影响界面显示。
 
 ---
 
@@ -216,6 +222,16 @@ JWT 细节：access 24h / refresh 7d，HS256，`JWT_SECRET` 环境变量（自�
 
 规则创建与评估详见《自动化引擎详解》。
 
+### 6.1 自动化引擎调参 /automation
+
+| 方法 | 路径 | 认证 | Body | 说明 |
+| --- | --- | --- | --- | --- |
+| GET | `/api/automation/status` | JWT | 无 | 自动化 Agent 状态（运行中、静默评估开关/间隔、冷却、dhash 阈值、评估计数） |
+| POST | `/api/automation/silent` | JWT | `{enabled, interval_seconds}` | 静默评估开关 + 周期（事件触发 + 定时器兜底） |
+| POST | `/api/automation/vision-recognizer` | JWT | `{enabled}` | 视觉识别器开关（当前 AI 预览路的 VL 预览开关，解耦自动化） |
+| POST | `/api/automation/cooldown` | JWT | `{cooldown_seconds}` | 默认冷却时间 |
+| POST | `/api/automation/dhash-threshold` | JWT | `{threshold}` | 调全局 `vision.motion_threshold` + 热更新旧单摄主路（滑块拉满 = 关 dhash 退化为定时器）。多摄像头下每路阈值存 `cameras` 表，不受此接口影响 |
+
 ---
 
 ## 7. 定时任务 /scheduled-tasks
@@ -228,6 +244,9 @@ JWT 细节：access 24h / refresh 7d，HS256，`JWT_SECRET` 环境变量（自�
 | POST | `/api/scheduled-tasks/{task_id}/enabled` | JWT | `ScheduledTaskEnabledRequest` | 启停任务 |
 | POST | `/api/scheduled-tasks/{task_id}/run` | JWT | 无 | 手动触发一次（调试） |
 | DELETE | `/api/scheduled-tasks/{task_id}` | JWT | 无 | 删除任务 |
+| POST | `/api/scheduled-tasks/{task_id}/revise` | JWT | `{text}` | 自然语言修订任务（LLM 解析出新的 schedule/payload） |
+| PUT | `/api/scheduled-tasks/{task_id}` | JWT | `ScheduledTaskCreateRequest` | 直接更新任务 |
+| POST | `/api/scheduled-tasks/{task_id}/explain` | JWT | 无 | LLM 解释任务（下次触发时间等） |
 
 ```jsonc
 // ScheduleParseRequest
@@ -249,70 +268,112 @@ JWT 细节：access 24h / refresh 7d，HS256，`JWT_SECRET` 环境变量（自�
 
 ---
 
-## 8. 视觉关注项 /vision/focus(es)
+## 8. 视觉关注项（按摄像头） /cameras/{id}/focuses
+
+关注项自多摄像头化后**按摄像头分桶**（`camera_id=""` 空桶为全局/兼容旧数据），管理入口在 `/cameras` 页的配置弹窗：
 
 | 方法 | 路径 | 认证 | Body | 说明 |
 | --- | --- | --- | --- | --- |
-| GET | `/api/vision/focus` | JWT | 无 | 旧接口，返回第一条关注 |
-| POST | `/api/vision/focus` | JWT | `VisionFocusRequest` | 旧接口，追加一条关注 |
-| GET | `/api/vision/focuses` | JWT | 无 | 全部关注项 |
-| POST | `/api/vision/focuses` | JWT | `VisionFocusesCreateRequest` | 新增 |
-| PUT | `/api/vision/focuses/{focus_id}` | JWT | `VisionFocusesUpdateRequest` | 更新 |
-| DELETE | `/api/vision/focuses/{focus_id}` | JWT | 无 | 删除 |
+| GET | `/api/cameras/{camera_id}/focuses` | JWT | 无 | 某路摄像头的全部关注项 |
+| POST | `/api/cameras/{camera_id}/focuses` | JWT | `{text}` | 新增一条 |
+| PUT | `/api/cameras/{camera_id}/focuses/{focus_id}` | JWT | `{text?, enabled?}` | 更新（字段均可空） |
+| DELETE | `/api/cameras/{camera_id}/focuses/{focus_id}` | JWT | 无 | 删除 |
 
 ```jsonc
-// VisionFocusRequest (旧)
-{ "focus": "画面中的人和他们的行为" }
-// VisionFocusesCreateRequest
-{ "text": "画面中的人和他们的行为" }
-// VisionFocusesUpdateRequest（字段均可空）
-{ "text": null, "enabled": true }
+// 创建/更新请求
+{ "text": "猫是否在沙发上" }          // 新增
+{ "enabled": false }                 // 仅启停
 ```
 
-关注项用于 `classify_frame` 分类提示词注入 + 系统提示词注入，OR 关系。详见《05-摄像头视觉/视觉关注项配置》。
+> 旧全局接口 `/api/vision/focus`、`/api/vision/focuses` 仍保留（`settings_routes.py`），无 `camera_id` 时读写空桶，仅供兼容。关注项用于 `classify_frame` 分类提示词注入 + 系统提示词注入，OR 关系。持久化在 `vision_focuses` KV（扁平 list 含 `camera_id` 字段）。详见《05-摄像头视觉/视觉关注项配置》。
 
 ---
 
-## 9. 摄像头与云台 /state, /video_feed, /ptz
+## 9. 摄像头（多路） /cameras
+
+多摄像头由 `CameraManager`（`app/services/camera_manager.py`）统一管理，配置存数据库 `cameras` 表（老单摄配置首次启动自动迁移成一行）。`/api/state`、`/api/video_feed` 为兼容旧入口（返回主摄像头）。
 
 | 方法 | 路径 | 认证 | Body | 说明 |
 | --- | --- | --- | --- | --- |
-| GET | `/api/state` | JWT | 无 | 摄像头状态 `CameraStateModel` |
-| GET | `/api/video_feed` | JWT | 无 | MJPEG 视频流（multipart StreamingResponse） |
-| GET | `/api/ptz/status` | JWT | 无 | PTZ 是否启用 + `step_ms` |
+| GET | `/api/cameras` | JWT | 无 | 列出全部摄像头 |
+| POST | `/api/cameras` | JWT | `CameraCreateRequest` | 新增（enabled=1 立即启动 worker） |
+| GET | `/api/cameras/{camera_id}` | JWT | 无 | 单路详情 |
+| PUT | `/api/cameras/{camera_id}` | JWT | `CameraUpdateRequest` | 更新（重建该路 stream） |
+| DELETE | `/api/cameras/{camera_id}` | JWT | 无 | 删除 |
+| GET | `/api/cameras/{camera_id}/video_feed` | JWT | 无 | 该路 MJPEG 流 |
+| POST | `/api/cameras/{camera_id}/test-stream` | JWT | 无 | RTSP 试连 |
+| POST | `/api/cameras/{camera_id}/display/enable`·`disable` | JWT | 无 | AI 预览开关（单路互斥，enable 会自动停旧路） |
+| GET | `/api/cameras/{camera_id}/state` | JWT | 无 | 该路状态 `CameraStateModel` |
+| POST | `/api/cameras/{camera_id}/ptz/move`·`stop`·`step` | JWT | `{direction}` | 该路云台控制 |
+| POST | `/api/cameras/{camera_id}/discovery/find` | JWT | 无 | ONVIF 发现（按 MAC 扫描子网） |
+| POST | `/api/cameras/{camera_id}/discovery/manual-ip` | JWT | `{ip}` | 手动更新摄像头 IP |
+| GET | `/api/ha/areas` | JWT | 无 | HA 区域列表（摄像头归属下拉） |
+
+```jsonc
+// 摄像头字段（cameras 表）
+{ "id": "cam_xxx", "name": "客厅", "enabled": 1, "source_type": "rtsp|usb",
+  "usb_index": 0, "rtsp_url": "rtsp://...", "rtsp_username": "", "rtsp_password": "",
+  "area": "", "device_mac": "", "discovery_enabled": 1,
+  "ptz_enabled": 0, "ptz_ip": "", "ptz_port": 80, "ptz_username": "", "ptz_password": "",
+  "ptz_speed": 0.5, "ptz_step_ms": 300, "display_enabled": 1,
+  "motion_hash_size": 16, "motion_threshold": 15, "motion_check_interval": 1.0,
+  "vision_min_infer_interval": 8.0, "vision_max_idle_interval": 120.0,
+  "vision_use_img_count": 3, "frame_interval_ms": 2000 }
+```
+
+### 9.1 旧单摄接口 /state, /video_feed, /ptz
+
+| 方法 | 路径 | 认证 | Body | 说明 |
+| --- | --- | --- | --- | --- |
+| GET | `/api/state` | JWT | 无 | 主摄像头状态 `CameraStateModel` |
+| GET | `/api/video_feed` | JWT | 无 | 主摄像头 MJPEG 视频流 |
+| GET | `/api/ptz/status` | JWT | 无 | 旧全局 PTZ 是否启用 + `step_ms` |
 | POST | `/api/ptz/move` | JWT | `PtzMoveRequest` | 开始持续转动（按住式） |
 | POST | `/api/ptz/stop` | JWT | 无 | 停止转动 |
 | POST | `/api/ptz/step` | JWT | `PtzStepRequest` | 步进（点按式，后端自动停转） |
+| GET | `/api/ptz/config` | JWT | 无 | PTZ 全局配置 |
+| POST | `/api/ptz/config` | JWT | `PtzConfigRequest` | 保存全局 PTZ 配置 |
+| POST | `/api/ptz/test` | JWT | 无 | 测试 ONVIF 连接 |
 
 ```jsonc
 // PtzMoveRequest / PtzStepRequest
 { "direction": "up" }   // up / down / left / right
 
-// /api/ptz/status 返回
-{ "enabled": true, "step_ms": 200 }
-
 // /api/state 返回 CameraStateModel（含 presence/action/infer_count 等）
 ```
 
-`/api/video_feed` 在 handler 内显式校验 JWT（除了全局中间件），返回 `multipart/x-mixed-replace` MJPEG 流。PTZ 走 ONVIF（zeep，`asyncio.to_thread` 包同步调用）。详见《05-摄像头视觉/摄像头接入与配置》。
+> 新前端已全部走 `/api/cameras/*`（含每路 PTZ）。`/api/video_feed` 在 handler 内显式校验 JWT（除了全局中间件）。PTZ 走 ONVIF（zeep，`asyncio.to_thread` 包同步调用）。详见《05-摄像头视觉/摄像头接入与配置》。
 
 ---
 
-## 10. MCP 与 Agent 状态 /mcp, /agents/status
+## 9.2 ONVIF 摄像头发现 /discovery
+
+| 方法 | 路径 | 认证 | Body | 说明 |
+| --- | --- | --- | --- | --- |
+| GET | `/api/discovery/status` | JWT | 无 | 发现服务状态 |
+| POST | `/api/discovery/find` | JWT | `{target_mac?, subnet?, timeout?}` | 扫描子网找摄像头（camera_id 空时用旧配置） |
+| POST | `/api/discovery/manual-ip` | JWT | `{new_ip}` | 手动指定 IP |
+
+> 多路模式优先走 `/api/cameras/{id}/discovery/*`（按 cameras 行读 MAC/子网/凭证）；worker 掉线连续开流失败时也会自动触发发现找回 IP。
+
+---
+
+## 10. MCP 与 Agent 状态 /mcp, /automation/status
 
 | 方法 | 路径 | 认证 | Body | 说明 |
 | --- | --- | --- | --- | --- |
 | GET | `/api/mcp/servers` | JWT | 无 | 已连接外部 MCP server + 全部注册工具 |
 | POST | `/api/mcp/servers` | JWT | `MCPConnectRequest` | 运行时连接新 server（白名单校验） |
 | DELETE | `/api/mcp/servers/{name}` | JWT | 无 | 断开指定 server |
-| GET | `/api/agents/status` | JWT | 无 | 自动化 Agent 状态 |
+| GET | `/api/automation/status` | JWT | 无 | 自动化 Agent 状态（运行中/静默评估/dhash 阈值/冷却/评估计数） |
+| GET | `/api/agents/status` | JWT | 无 | 旧兼容端点（只含 running/silent/eval_count 子集） |
 
 ```jsonc
 // MCPConnectRequest
 { "name": "my-server", "cmd": "npx", "args": ["-y", "@some/mcp-server"] }
 ```
 
-`/api/mcp/servers` 的 POST 仅允许连接 `config.json` 预声明过的 server（白名单防 RCE），连接成功后 60s 超时，自动 `_rebuild_agent`。`/api/agents/status` 只返回**自动化 Agent**状态，**不含调度器**（调度器无独立状态端点）。详见《MCP工具参考》《外部MCP Server集成》。
+`/api/mcp/servers` 的 POST 仅允许连接 `config.json` 预声明过的 server（白名单防 RCE），连接成功后 60s 超时，自动 `_rebuild_agent`。`/api/automation/status` 只返回**自动化 Agent**状态，**不含调度器**（调度器无独立状态端点）。详见《MCP工具参考》《外部MCP Server集成》。
 
 ---
 
@@ -323,17 +384,21 @@ JWT 细节：access 24h / refresh 7d，HS256，`JWT_SECRET` 环境变量（自�
 | GET | `/api/advanced/config` | JWT | 无 | 高级配置（网页搜索/视觉/RAG） |
 | POST | `/api/advanced/config` | JWT | `AdvancedConfigRequest` | 保存高级配置 |
 | GET | `/api/advanced/embed-status` | JWT | 无 | Embed 模型状态 + 各搜索功能可用性 |
+| POST | `/api/advanced/test/exa` | JWT | `{api_key}` | 测试 Exa 搜索连通性 |
+| POST | `/api/advanced/test/rtsp` | JWT | `{url, username, password}` | 测试 RTSP 流连通性 |
 
 ```jsonc
 // AdvancedConfigRequest（三段均可空，只更新提供的段）
 {
   "web_search": { "exa": { "api_key": "可选，留空匿名调用" } },
-  "vision": { "downscale_max_side": 448, "jpeg_quality": 70, "motion_hash_size": 16, "motion_threshold": 15, "motion_check_interval_seconds": 0.2, "min_infer_interval_seconds": 3.0, "max_idle_interval_seconds": 60.0, "vision_use_img_count": 3, "frame_interval_ms": 1000 },
+  "vision": { "downscale_max_side": 448, "jpeg_quality": 70, "min_infer_interval_seconds": 3.0, "read_retry_count": 3, "read_retry_interval_seconds": 0.1, "release_cooldown_seconds": 0.8, "max_backoff_seconds": 15.0, "rtsp_transport": "tcp" },
   "rag": { "recent_turns": 5, "retrieve_top_k": 6, "retrieve_top_n": 3, "soft_max_turns": 12, "hard_max_turns": 16, "soft_max_tokens": 12000, "hard_max_tokens": 16000, "soft_max_chars": 24000, "hard_max_chars": 32000, "summary_blocks": 2 }
 }
 ```
 
-Exa 搜索 Key 在此页配置（**不是** `/keys` 页），无环境变量。详见《06-集成扩展/Exa网页搜索配置》。
+> vision 段：per-camera 配置（rtsp_url/motion_threshold/ptz 等）已迁至 `cameras` 表，此段只含全局 VLM 编码/采集鲁棒性参数。摄像头本身在 `/cameras` 页管。
+
+Exa 搜索 Key 在此页配置（**不是** `/models` 页），无环境变量。详见《06-集成扩展/Exa网页搜索配置》。
 
 ---
 
@@ -368,15 +433,19 @@ Exa 搜索 Key 在此页配置（**不是** `/keys` 页），无环境变量。�
 
 | 方法 | 路径 | 认证 | Body | 说明 |
 | --- | --- | --- | --- | --- |
-| GET | `/api/emoji/search` | JWT | 无（query: q） | 语义搜索 emoji，top_k=30 |
+| GET | `/api/emoji/search` | JWT | 无（query: q, top_k 默认 20） | 语义搜索 emoji |
 | GET | `/api/emoji/preferences` | JWT | 无 | 全部偏好 |
-| PUT | `/api/emoji/preferences` | JWT | `EmojiPreferenceRequest` | 保存/更新偏好 |
+| PUT | `/api/emoji/preferences` | JWT | `EmojiPreferenceRequest` | 保存/更新偏好（无 scope 白名单） |
 | DELETE | `/api/emoji/preferences/{scope}/{key}` | JWT | 无 | 删除偏好（恢复默认） |
+| POST | `/api/emoji/rebuild` | JWT | 无 | 重建 emoji 向量索引（后台异步；需 embed Key；重建中重复触发返回 409） |
+| GET | `/api/emoji/rebuild/status` | JWT | 无 | 重建进度（running/total/done/errors/message） |
 
 ```jsonc
 // EmojiPreferenceRequest
-{ "scope": "entity", "key": "light.living_room", "emoji_char": "💡" }
-// scope: entity / domain / task_condition / task_action_node / weather
+{ "scope": "device", "key": "light.living_room", "emoji_char": "💡" }
+// scope: device（/halist 设备图标）/ scheduled_task（定时任务图标）/ task_condition / task_action_node / weather / entity_alias / entity_note
+//   entity_alias = 设备别名（同步到 HA entity_registry.name）
+//   entity_note   = 设备备注（只存 Aether，注入 AI 认知，不同步 HA）
 ```
 
 ### 语音转文字 /stt
@@ -428,9 +497,23 @@ Exa 搜索 Key 在此页配置（**不是** `/keys` 页），无环境变量。�
 | GET | `/api/output/latest/graph.json` | 公开 | 无 | 最新语义图 |
 | GET | `/search` | 公开 | 无（query: q, top_k） | 语义图节点搜索（FAISS 向量检索，回退关键词） |
 | POST | `/api/doc/chat` | JWT | `{message}` | RAG 文档助手流式聊天（SSE） |
+| POST | `/api/doc/rebuild` | JWT | 无 | 重建文档向量索引（异步，后端线程池执行） |
+| GET | `/api/doc/rebuild/status` | JWT | 无 | 重建进度轮询 |
 | GET | `/doc/content` | 公开 | 无（query: doc_id） | 读 docs 下 markdown 内容 |
 
-> **没有 `/docs`**——文档内容接口是 `/doc/content`（无 /api 前缀，公开）。`/api/doc/chat` 是 SSE 流式 RAG 聊天。
+```jsonc
+// /api/doc/rebuild/status 返回
+{
+  "rebuilding": true,           // 是否在重建
+  "total": 100, "done": 42,     // 进度（done/total，前端画进度条）
+  "errors": 0,                  // 失败文档数
+  "message": "正在向量化文档...", // 阶段提示（启动中/向量化/完成）
+  "model": "BAAI/bge-m3",       // 当前 embed 模型
+  "chunk_count": 312            // 已生成 chunk 数
+}
+```
+
+> **没有 `/docs`**——文档内容接口是 `/doc/content`（无 /api 前缀，公开）。`/api/doc/chat` 是 SSE 流式 RAG 聊天。重建进度 UI 在「模型」页（`/models`，改 embed 模型后提示重建）和「高级」页（`/advanced` 文档向量重建段）两处展示。
 
 ### 语义图 /sg
 
@@ -442,7 +525,7 @@ Exa 搜索 Key 在此页配置（**不是** `/keys` 页），无环境变量。�
 | POST | `/api/sg/cancel` | JWT | 无 | 取消正在运行的构建任务 |
 | GET | `/api/sg/latest` | JWT | 无 | 最近一次构建的 graph.json（节点/边统计 + 完整图谱） |
 
-> 语义图用你在 `/keys` 配置的 `embed`（向量）和 `chat`（LLM）角色构建，与 RAG 复用同一向量模型，保证维度一致。构建产物存于 `app/sg/output/`，5 步流水线：解析文档 → 向量化 → 实体抽取 → 邻居关系分析 → 导出图。
+> 语义图用你在 `/models` 配置的 `embed`（向量）和 `chat`（LLM）角色构建，与 RAG 复用同一向量模型，保证维度一致。构建产物存于 `app/sg/output/`，5 步流水线：解析文档 → 向量化 → 实体抽取 → 邻居关系分析 → 导出图。
 
 ---
 
