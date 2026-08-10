@@ -166,3 +166,24 @@ class IntegrationLayer:
                         logger.warning("路由到插件 %s 失败: %s", manifest.id, exc)
                         return {"ok": False, "error": f"插件 {manifest.id} 路由失败"}
         return {"ok": False, "error": "no inbound router available"}
+
+    async def speak_to(self, plugin_id: str, text: str, context: dict) -> dict:
+        """定向调某插件的 sink.speak（带上下文，如飞书 chat_id）。
+
+        与 broadcast 的区别：只发给指定插件，不走 fan-out。
+        用于飞书 webhook 拿到回复后定向发到对应 chat_id。
+        chat_id 作为 msg_id 传入（飞书 speak 从 msg_id 读 chat_id）。
+        """
+        from .rpc_protocol import METHOD_SPEAK
+
+        proc = self._supervisor.get_process(plugin_id)
+        if proc and proc.is_alive:
+            chat_id = context.get("chat_id", "")
+            try:
+                return await proc.call(
+                    METHOD_SPEAK, {"text": text, "msg_id": chat_id}
+                )
+            except Exception as exc:
+                logger.warning("speak_to %s 失败: %s", plugin_id, exc)
+                return {"ok": False, "error": str(exc)}
+        return {"ok": False, "error": f"插件 {plugin_id} 未运行"}
