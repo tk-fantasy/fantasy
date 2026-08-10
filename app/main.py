@@ -708,6 +708,7 @@ from .routes.setup_routes import router as setup_router
 from .routes.doc_routes import router as doc_router
 from .routes.sg_routes import router as sg_router
 from .routes.integration_routes import router as integration_router
+from .routes.feishu_routes import router as feishu_router
 from .routes.ws_routes import router as ws_router
 from .routes.automation_routes import router as automation_router
 app.include_router(settings_router, prefix="/api")
@@ -731,6 +732,7 @@ app.include_router(setup_router)  # 无 prefix，包含 / 和 /favicon.ico
 app.include_router(doc_router)  # 路径已包含 /api 前缀或无
 app.include_router(sg_router, prefix="/api")  # 语义图：/api/sg/*
 app.include_router(integration_router, prefix="/api")  # 集成插件平台：/api/integrations/*
+app.include_router(feishu_router)  # 飞书 webhook：/webhook/feishu（不走 /api 前缀，自动绕过鉴权）
 app.include_router(ws_router)  # WebSocket 路由，无 prefix
 
 # CORS
@@ -865,6 +867,8 @@ def _build_plugin_env(manifests, ha_client) -> dict[str, dict[str, str]]:
     secret_map = {
         "ha_url": ("AETHER_HA_URL", ha_url),
         "ha_token": ("AETHER_HA_TOKEN", ha_token),
+        "feishu_app_id": ("AETHER_FEISHU_APP_ID", os.environ.get("FEISHU_APP_ID", "")),
+        "feishu_app_secret": ("AETHER_FEISHU_APP_SECRET", os.environ.get("FEISHU_APP_SECRET", "")),
     }
     for manifest in manifests:
         env: dict[str, str] = {"PYTHONPATH": "/aether"}
