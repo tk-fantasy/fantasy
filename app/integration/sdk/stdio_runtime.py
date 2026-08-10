@@ -26,12 +26,13 @@ async def run_stdio_plugin(
     plugin = plugin_cls()
     plugin.setup(manifest)
 
-    reader = asyncio.StreamReader()
-    protocol = asyncio.StreamReaderProtocol(reader)
-    await asyncio.get_event_loop().connect_read_pipe(lambda: protocol, sys.stdin)
+    # Windows Proactor 下 connect_read_pipe 对匿名管道（子进程 stdio）读取
+    # 不生效：连接成功但数据永远不会到达，插件会静默卡死到握手超时。
+    # 改用线程阻塞读 stdin，跨平台都可靠（插件流量是低频 JSON-RPC 行）。
+    loop = asyncio.get_running_loop()
 
     while True:
-        line = await reader.readline()
+        line = await loop.run_in_executor(None, sys.stdin.buffer.readline)
         if not line:
             break  # stdin 关闭
         msg = parse_message(line.decode("utf-8", errors="replace"))
@@ -55,5 +56,9 @@ async def run_stdio_plugin(
 
         # Phase 1 简化：业务错误也放 result 字段返回，不使用 JSON-RPC error 字段
         response = build_response(msg_id, result)
-        sys.stdout.write(json.dumps(response, ensure_ascii=False) + "\n")
-        sys.stdout.flush()
+        # 必须走 buffer 写原始 utf-8 字节：文本模式 stdout 会用本地编码
+        # （如 Windows cp936）编码中文，宿主按 utf-8 解析会乱码。
+        sys.stdout.buffer.write(
+            (json.dumps(response, ensure_ascii=False) + "\n").encode("utf-8")
+        )
+        sys.stdout.buffer.flush()

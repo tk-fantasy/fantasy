@@ -59,6 +59,14 @@ class PluginProcess:
         manifest_path = str(Path(self._plugin_root) / "manifest.json")
         cmd = [sys.executable, entry, manifest_path]
 
+        # 子进程 sys.path 不含项目根（脚本目录 ≠ cwd，且无 PYTHONPATH 时
+        # import app.* 失败）。把包含 app/ 的祖先目录注入子进程 PYTHONPATH，
+        # 保证本地开发/CI 与容器（Dockerfile 显式设 PYTHONPATH）行为一致。
+        root = self._find_project_root()
+        if root:
+            old = self._env.get("PYTHONPATH", "")
+            self._env["PYTHONPATH"] = str(root) + (os.pathsep + old if old else "")
+
         logger.info("启动插件 %s: %s", self.manifest.id, " ".join(cmd))
         self._process = await asyncio.create_subprocess_exec(
             *cmd,
@@ -77,6 +85,12 @@ class PluginProcess:
     def _resolve_entry(self) -> str:
         """插件入口脚本路径。"""
         return str(Path(self._plugin_root) / self.manifest.entry)
+
+    @staticmethod
+    def _find_project_root() -> Path | None:
+        """向上找到包含 app/ 包的项目根目录（用于注入子进程 PYTHONPATH）。"""
+        from ..core.config import BASE_DIR
+        return BASE_DIR
 
     async def _handshake(self) -> None:
         result = await self.call(METHOD_HANDSHAKE, {

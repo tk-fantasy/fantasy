@@ -26,6 +26,24 @@ _startup_progress_mod.startup_progress.set = lambda *a, **kw: None
 # 环境可承受（轻量、不连真实外部服务）。故无需再注入 MagicMock 桩模块。
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _close_database_at_session_end():
+    """pytest 退出前关闭全局 SQLite 连接。
+
+    aiosqlite 0.22.1 的连接 worker 线程是非 daemon 线程：只要有一个连接
+    没被 close，解释器退出时会在 threading._shutdown 永久挂起（测试全过
+    但进程不退出，CI 会超时）。测试里的 Database 单例只 init 不 close，
+    故在 session 末尾统一收尾。
+    """
+    yield
+    import asyncio
+
+    from app.core.database import Database
+
+    if Database._db is not None:
+        asyncio.run(Database.close())
+
+
 @pytest.fixture(autouse=True)
 def _patch_config(monkeypatch, tmp_path, request):
     """Auto-patch app.config so tests don't read real config.json / .env."""
