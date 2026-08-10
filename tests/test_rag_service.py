@@ -133,3 +133,36 @@ class TestSafeBuild:
         rag.safe_build()
         assert rag.is_ready
         assert rag.chunks == chunks_after_build
+
+
+class TestBuildIndexNoLoopBound:
+    """build_index 在 _loop 未绑定时必须 fail-fast，不能死锁。
+
+    复现审查 #6：原代码 loop=None 时 asyncio.new_event_loop() 新建一个
+    从不 run 的 loop，后续 run_coroutine_threadsafe().result() 永久阻塞。
+    """
+
+    def test_build_index_without_loop_returns_fast(self, tmp_path: Path):
+        """_loop 为 None 时 build_index 立即返回，不阻塞、不死锁。"""
+        import os
+
+        app_dir = tmp_path / "app"
+        app_dir.mkdir()
+        docs = tmp_path / "docs"
+        docs.mkdir()
+        (docs / "a.md").write_text("## " + "x" * 60, encoding="utf-8")
+        os.environ["DOCS_ROOT"] = str(docs)
+        try:
+            svc = RagService(base_dir=app_dir, embed_client=_make_embed_client())
+            assert svc._loop is None  # 未调 bind_loop
+
+            import time
+            t0 = time.monotonic()
+            svc.build_index()  # 必须立即返回
+            elapsed = time.monotonic() - t0
+
+            assert elapsed < 1.0, "build_index 未绑定 loop 时不应阻塞"
+            assert svc.is_ready is False
+            assert "未绑定" in svc._rebuild_message
+        finally:
+            os.environ.pop("DOCS_ROOT", None)

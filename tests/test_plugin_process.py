@@ -1,6 +1,7 @@
 """PluginProcess 单进程 stdio JSON-RPC 连接测试（spawn 真实 echo 子进程）。"""
 
 import asyncio
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -37,7 +38,35 @@ def test_plugin_process_handshake_and_speak():
     asyncio.new_event_loop().run_until_complete(go())
 
 
-def test_plugin_process_call_after_stop_raises():
+def test_plugin_process_handshake_failure_cleans_up_subprocess():
+    """握手失败必须清理已 spawn 的子进程 + reader/stderr task。
+
+    复现审查 #4：start() 在 _handshake() 抛异常后若无清理，supervisor 重试
+    会累积存活子进程（每次失败泄漏一个）。验证：异常向上抛 + 进程已终止 +
+    is_alive 为 False + 内部 reader/stderr task 已 done。
+    """
+    manifest = _load_echo_manifest()
+    proc = PluginProcess(
+        manifest=manifest,
+        plugin_root=f"{INTEGRATIONS_TESTS_DIR}/echo",
+        rpc_timeout=15.0,
+    )
+
+    async def go():
+        with patch.object(proc, "_handshake", new=AsyncMock(side_effect=RuntimeError("handshake boom"))):
+            with pytest.raises(RuntimeError, match="handshake boom"):
+                await proc.start()
+        # 清理后状态
+        assert proc.is_alive is False
+        # 子进程已被回收（stop 内 terminate→kill→wait）
+        assert proc._process is not None
+        assert proc._process.returncode is not None  # 已退出
+        # reader/stderr task 已结束（被 cancel）
+        for t in (proc._reader_task, proc._stderr_task):
+            if t is not None:
+                assert t.done()
+
+    asyncio.new_event_loop().run_until_complete(go())
     manifest = _load_echo_manifest()
     proc = PluginProcess(
         manifest=manifest,

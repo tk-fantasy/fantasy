@@ -172,8 +172,14 @@ class AutomationService:
             rule_id = rule.get("id", "")
             rule_name = rule.get("name", "")
             if isinstance(result, Exception):
+                # result 来自 gather(return_exceptions=True)，此刻已不在 except 上下文，
+                # traceback.format_exc() 会返回 "NoneType: None"（无活跃异常）。
+                # 用异常对象自带的 __traceback__ 还原真实堆栈。
+                tb_str = "".join(
+                    traceback.format_exception(type(result), result, result.__traceback__)
+                )
                 logger.warning("Rule '%s' (id=%s) eval failed: %s\n%s",
-                               rule_name, rule_id, result, traceback.format_exc())
+                               rule_name, rule_id, result, tb_str)
                 continue
             logger.info("Rule '%s' (id=%s) eval result: %s", rule_name, rule_id, result)
             # 记录自动化评估

@@ -78,7 +78,13 @@ class PluginProcess:
         self._reader_task = asyncio.create_task(self._read_stdout())
         self._stderr_task = asyncio.create_task(self._drain_stderr())
 
-        await self._handshake()
+        # 握手失败必须清理已 spawn 的子进程 + reader/stderr task，
+        # 否则 supervisor 重试会累积存活子进程（每次失败泄漏一个）。
+        try:
+            await self._handshake()
+        except Exception:
+            await self.stop()
+            raise
         self._alive = True
         logger.info("插件 %s 已启动 (pid=%s)", self.manifest.id, self._process.pid)
 

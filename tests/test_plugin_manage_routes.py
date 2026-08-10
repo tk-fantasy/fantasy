@@ -197,3 +197,64 @@ def test_delete_plugin_removes_dir(tmp_path, monkeypatch):
     )
     assert result["success"] is True
     assert not (plugin_root / "gone").exists()
+
+
+# ── 上传防护测试（审查 #13：zip bomb + 大文件限制）──
+
+
+def test_resolve_plugin_dir_uses_base_dir_not_hardcoded(tmp_path, monkeypatch):
+    """_resolve_plugin_dir 基于 BASE_DIR，不再硬编码 /aether（Windows 路径错误）。"""
+    monkeypatch.setattr("app.routes.integration_routes.get_config",
+                        lambda path, default=None: "integrations" if path == "integration.plugin_dir" else default)
+    from app.routes.integration_routes import _resolve_plugin_dir
+    from app.core.config import BASE_DIR
+    result = _resolve_plugin_dir()
+    # 必须以 BASE_DIR 开头（跨平台），而非硬编码的 \aether
+    assert str(result).startswith(str(BASE_DIR))
+    assert str(result).endswith("integrations")
+
+
+def test_upload_oversized_zip_rejected(tmp_path, monkeypatch):
+    """上传超过 MAX_PLUGIN_ZIP_SIZE 的包被拒（防内存 DoS）。"""
+    monkeypatch.setattr("app.routes.integration_routes.get_config",
+                        lambda path, default=None: str(tmp_path) if path == "integration.plugin_dir" else default)
+    # 调小上限避免测试占内存
+    monkeypatch.setattr("app.routes.integration_routes.MAX_PLUGIN_ZIP_SIZE", 1024)
+
+    from app.routes.integration_routes import upload_plugin
+
+    class FakeUpload:
+        async def read(self):
+            return b"\x00" * 2048  # 2KB > 1KB 上限
+
+    result = asyncio.new_event_loop().run_until_complete(upload_plugin(file=FakeUpload()))
+    assert result["success"] is False
+    assert "过大" in result["message"]
+
+
+def test_upload_zip_bomb_rejected(tmp_path, monkeypatch):
+    """高压缩比 zip（解压后体积远超压缩体积）被拒（防 zip bomb 磁盘 DoS）。"""
+    plugin_root = tmp_path / "integrations"
+    plugin_root.mkdir()
+    monkeypatch.setattr("app.routes.integration_routes.get_config",
+                        lambda path, default=None: str(plugin_root) if path == "integration.plugin_dir" else default)
+    # 调小压缩比阈值：合法 manifest(小) + 一个高度可压缩的大条目
+    monkeypatch.setattr("app.routes.integration_routes.MAX_PLUGIN_COMPRESSION_RATIO", 10)
+
+    # 造 zip：manifest 合法 + 一个 50KB 全零条目（压缩后极小，解压比远超 10x）
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("manifest.json", _make_manifest_bytes("bombplug"))
+        zf.writestr("plugin.py", b"print('hi')\n")
+        zf.writestr("payload.dat", b"\x00" * 50000)
+    data = buf.getvalue()  # getvalue 避免指针状态问题
+
+    from app.routes.integration_routes import upload_plugin
+
+    class FakeUpload:
+        async def read(self):
+            return data
+
+    result = asyncio.new_event_loop().run_until_complete(upload_plugin(file=FakeUpload()))
+    assert result["success"] is False
+    assert "压缩比" in result["message"] or "zip bomb" in result["message"]
