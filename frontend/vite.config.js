@@ -3,6 +3,11 @@ import vue from '@vitejs/plugin-vue'
 import { VitePWA } from 'vite-plugin-pwa'
 
 export default defineConfig({
+  resolve: {
+    alias: {
+      '@': '/src',
+    },
+  },
   plugins: [
     vue(),
     VitePWA({
@@ -36,6 +41,10 @@ export default defineConfig({
   server: {
     port: 5173,
     strictPort: true,
+    fs: {
+      // 允许导入项目根目录下的 integrations/ 插件前端组件
+      allow: ['..'],
+    },
     proxy: {
       '/api/startup-progress': {
         target: 'http://localhost:9011',

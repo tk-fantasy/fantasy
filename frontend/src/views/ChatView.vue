@@ -6,7 +6,7 @@ import { toolIcon, summarizeToolCall, summarizeToolResult, parseToolResult } fro
 import { useVoiceInput } from '../composables/useVoiceInput'
 import { useCamera } from '../composables/useCamera'
 import { apiGet, apiPost } from '../utils/api'
-import IntegrationDropdown from '../components/integration/IntegrationDropdown.vue'
+import PluginSlot from '../components/integration/PluginSlot.vue'
 
 const router = useRouter()
 
@@ -884,7 +884,7 @@ onUnmounted(() => {
   <div class="chat-view">
     <!-- Top Left Controls -->
     <div class="top-left-controls">
-      <IntegrationDropdown />
+      <PluginSlot slot="chat_top_bar" />
     </div>
 
     <!-- Status Bar -->

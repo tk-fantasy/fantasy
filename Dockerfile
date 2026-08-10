@@ -13,6 +13,8 @@ RUN cd frontend && npm ci
 
 # 拷源码并构建
 COPY frontend/ ./frontend/
+# 拷插件目录（import.meta.glob 构建时扫描 integrations/*/frontend/*.vue）
+COPY integrations/ ./integrations/
 RUN cd frontend && npm run build
 
 
