@@ -123,10 +123,11 @@ function goToLogin() {
   router.push('/login')
 }
 
-// 监听设置变更事件
-window.addEventListener('home-info-changed', () => {
+// 监听设置变更事件（命名函数，供 onUnmounted 移除，避免泄漏）
+function onHomeInfoChanged() {
   loadHomeInfo()
-})
+}
+window.addEventListener('home-info-changed', onHomeInfoChanged)
 
 const navItems = [
   { path: '/chat', icon: '&#128172;', label: '管家' },
@@ -170,6 +171,7 @@ onMounted(() => {
 onUnmounted(() => {
   clearInterval(timer)
   document.removeEventListener('click', handleClickOutside)
+  window.removeEventListener('home-info-changed', onHomeInfoChanged)
 })
 
 // 路由变化或用户变化时重新加载用户列表（注册/登录后返回）
