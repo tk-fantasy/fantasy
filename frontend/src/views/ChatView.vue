@@ -5,36 +5,15 @@ import { SS_CHAT_SESSION } from '../utils/constants'
 import { toolIcon, summarizeToolCall, summarizeToolResult, parseToolResult } from '../utils/toolNames'
 import { useVoiceInput } from '../composables/useVoiceInput'
 import { useCamera } from '../composables/useCamera'
+import { useLlmStatus, ROLE_LABELS } from '../composables/useLlmStatus'
+import { usePtz } from '../composables/usePtz'
 import { apiGet, apiPost } from '../utils/api'
 import PluginSlot from '../components/integration/PluginSlot.vue'
 
 const router = useRouter()
 
-// LLM 模型状态：状态条显示 chat 模型名，悬停时懒加载测试连通性
-// - chatModelName：从 /api/llm/settings 静态读，不耗 API（进页面就显示）
-// - llmStatus：悬停时才调 /api/llm/status 真实测试（含 4 个角色连通结果）
-const chatModelName = ref('')
-const llmStatus = ref(null)        // null=未测 | {roles:{chat:{...},...}}
-const llmStatusLoading = ref(false)
-const showLlmPopover = ref(false)
-let llmStatusLoaded = false        // 悬停过一次后缓存，避免重复测试
-
-// 悬停状态条：首次触发连通性测试（懒加载）
-async function onStatusHover() {
-  if (llmStatusLoaded || llmStatusLoading.value) return
-  llmStatusLoading.value = true
-  try {
-    const data = await apiGet('/api/llm/status')
-    llmStatus.value = data
-    llmStatusLoaded = true
-  } catch (e) {
-    console.error('Failed to load llm status:', e)
-  } finally {
-    llmStatusLoading.value = false
-  }
-}
-
-const ROLE_LABELS = { chat: '对话', summary: '摘要', vision: '视觉', embed: '向量' }
+// LLM 模型状态（composable 统一封装：模型名静态读 + 悬停懒加载连通性测试）
+const { chatModelName, llmStatus, llmStatusLoading, showLlmPopover, onStatusHover, loadChatModelName } = useLlmStatus()
 
 // 计算 video_feed URL（认证通过 cookie 自动处理）
 // Task 12:多路切换 — video_feed 走 /api/cameras/{activeCameraId}/video_feed
@@ -707,58 +686,8 @@ function stopCameraPolling() {
   }
 }
 
-// ============ PTZ 云台控制 ============
-// 点一下方向键 → POST /ptz/step：后端 ContinuousMove 一小段后自动 Stop，
-// 实现"按一下动一下"。停转由后端保证（即使关页面也会停），不依赖 pointerup，
-// 避免松手事件丢失导致摄像头转飞。
-const ptzEnabled = ref(false)
-const ptzMoving = ref(false)   // 步进冷却中，忽略连点
-const ptzStepMs = ref(300)     // 单步时长(ms)，与后端 ptz.step_ms 一致
-let ptzCooldownTimer = null
-
-async function fetchPtzStatus() {
-  try {
-    // Task 12:有 activeCameraId 时读 per-camera PTZ 配置(cameras 表 ptz_enabled/ptz_step_ms);
-    // 无则走旧 /api/ptz/status 兼容(读全局 config)。
-    const cid = activeCameraId.value
-    if (cid) {
-      const cam = cameras.value.find(c => c.id === cid)
-      if (cam) {
-        ptzEnabled.value = !!cam.ptz_enabled
-        ptzStepMs.value = cam.ptz_step_ms || 300
-        return
-      }
-    }
-    const res = await fetch('/api/ptz/status')
-    const json = await res.json()
-    const data = json.data || json
-    ptzEnabled.value = !!data.enabled
-    if (data.step_ms) ptzStepMs.value = Number(data.step_ms) || 300
-  } catch (e) {
-    console.error('Failed to fetch PTZ status:', e)
-  }
-}
-
-// 单击步进：发一次 move，后端到点自动 stop。冷却期内忽略新点击，
-// 避免步与步的 ONVIF 指令堆叠（后端 _lock 也会串行，双保险）。
-function ptzStep(direction) {
-  if (!ptzEnabled.value || ptzMoving.value) return
-  ptzMoving.value = true
-  if (ptzCooldownTimer) { clearTimeout(ptzCooldownTimer); ptzCooldownTimer = null }
-  // Task 12:有 activeCameraId 走 per-camera PTZ 端点
-  const cid = activeCameraId.value
-  const url = cid ? `/api/cameras/${cid}/ptz/step` : '/api/ptz/step'
-  fetch(url, {
-    method: 'POST',
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ direction }),
-  }).catch(e => console.error('PTZ step failed:', e))
-  ptzCooldownTimer = setTimeout(() => {
-    ptzCooldownTimer = null
-    ptzMoving.value = false
-  }, ptzStepMs.value)
-}
+// ============ PTZ 云台控制（composable 统一封装） ============
+const { ptzEnabled, ptzMoving, ptzStepMs, fetchPtzStatus, ptzStep } = usePtz(activeCameraId, cameras)
 
 // ============ Session History ============
 async function loadSessionHistory(sid) {
@@ -833,22 +762,8 @@ onMounted(async () => {
   // 监听插件贡献的模式按钮切换（ModeOptionContribution 派发 mode-changed 事件）
   window.addEventListener('mode-changed', onModeChanged)
 
-  // 静态读取 chat 模型名（不耗 API，仅显示配置）
-  try {
-    const settingsData = await apiGet('/api/llm/settings')
-    const chatProvider = settingsData?.current?.chat
-    if (chatProvider?.key_id) {
-      // 从 llm_keys 列表匹配出 model 名
-      const keysData = await apiGet('/api/llm_keys')
-      const matched = (keysData || []).find(k => k.id === chatProvider.key_id)
-      chatModelName.value = matched?.model || ''
-    } else if (!chatProvider?.use_global) {
-      // 用户未选 key_id 但未切全局 → resolver 会 auto-select，先不显示具体名
-      chatModelName.value = ''
-    }
-  } catch (e) {
-    console.error('Failed to load chat model name:', e)
-  }
+  // 静态读取 chat 模型名（composable 封装，不耗测试 API）
+  await loadChatModelName()
 
   // 只有从 Landing 进入时才显示问候
   const shouldShowGreeting = sessionStorage.getItem('aether-show-greeting')
