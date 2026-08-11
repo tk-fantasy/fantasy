@@ -24,7 +24,9 @@ export function useEmojiPref() {
       if (!res.ok) return
       const json = await res.json()
       const prefs = {}
-      for (const item of (json.data || [])) {
+      // API 正常返回 { data: [...] }，防御非数组（null/{}/网络错误兜底）
+      const items = Array.isArray(json.data) ? json.data : []
+      for (const item of items) {
         prefs[`${item.scope}:${item.key}`] = item.emoji_char
       }
       emojiPrefs.value = prefs
