@@ -1,6 +1,7 @@
 """校验 Agent — 用 LLM 语义判断模型是否表达了执行意图但没有确认动作已完成。"""
 from __future__ import annotations
 
+import json
 import logging
 import re
 
@@ -13,11 +14,23 @@ from ..core.key_resolver import resolve_key_for_role
 logger = logging.getLogger(__name__)
 
 # 匹配声称已完成设备操作的措辞（"已打开""已关闭""已调节""搞定了"等）
-# 当 LLM 说了这类话但 tool_call_count=0 时，说明它在撒谎，需要强制重试
+# 当 LLM 说了这类话但 tool_call_count=0 时，说明它在撒谎，需要强制重试。
+# 注意：删掉了原先的"好了"——它太常作语气词（"计划好了""方案做好了"），
+# 把正常闲聊误判为撒谎强制重试。"完成"保留（强完成态）。
 _ACTION_DONE_RE = re.compile(
-    r"已(经)?(打开|关闭|开启|关掉|调节|调整|设置|切换|执行|完成|搞[定好])|"
-    r"帮\s*你.*(打开|关闭|开启|关掉|调[节整])|"
-    r"(搞定|完成|done|ok了|好了)",
+    r"已(经)?(打开|关闭|开启|关掉|调节|调整|设置|切换|执行|完成|搞定)|"
+    r"帮\s*你.*(打开|关闭|开启|关掉|调[节整])",
+    re.IGNORECASE,
+)
+
+# 用户 query 含设备操作意图词时，才可能触发"声称完成但没调工具"硬规则。
+# 纯闲聊（"讲个笑话""排个计划"）即使模型说"好了"也不强制重试——
+# validator 的职责是兜底设备操作的漏调，不是审查所有回复。
+# 词表覆盖：动作动词 + 常见设备/参数名。
+_DEVICE_INTENT_RE = re.compile(
+    r"开|关|调|设置|切换|打开|关闭|调节|调整|"
+    r"灯|空调|窗帘|电视|插座|开关|风扇|扫地机|净化器|加湿器|"
+    r"温度|亮度|音量|风速|模式",
     re.IGNORECASE,
 )
 
@@ -133,12 +146,17 @@ class ValidatorAgent:
             http_async_client=http_async_client,
         )
 
-    async def should_retry(self, final_content: str, tool_call_count: int, user_id: str = "") -> bool:
+    async def should_retry(self, final_content: str, tool_call_count: int,
+                           user_id: str = "", user_query: str = "") -> bool:
         """判断模型是否需要重试。
 
         硬性规则优先：如果回复声称完成了设备操作（"已打开""已关闭"等），
         但 tool_call_count == 0，说明模型在撒谎（嘴上说了但没真调工具），
         直接返回 True 强制重试，不浪费一次 LLM 语义判断调用。
+
+        硬性规则仅在"用户 query 表达了设备操作意图"时才触发——纯闲聊
+        （"讲个笑话""排个计划"）即使模型说"完成"也不强制重试，因为
+        validator 的职责是兜底设备操作的漏调，不是审查所有回复。
 
         硬性规则不命中时，回退到 LLM 语义判断。
 
@@ -146,6 +164,7 @@ class ValidatorAgent:
             final_content: 模型最终输出的文本内容
             tool_call_count: 工具调用次数
             user_id: 当前用户 ID，用于解析 per-user chat key。为空或用户无 per-user 配置时走全局。
+            user_query: 用户本轮原始提问，用于判断是否设备操作场景（闸门硬规则）。
 
         Returns:
             True 表示需要重试
@@ -154,10 +173,14 @@ class ValidatorAgent:
             logger.debug("Validator: empty content, skip retry")
             return False
 
-        # 硬性规则：声称完成操作但没调任何工具 → 撒谎，强制重试
-        if tool_call_count == 0 and _ACTION_DONE_RE.search(final_content):
-            logger.info("Validator: 检测到声称完成操作但 tool_calls=0，强制重试: %r",
-                        final_content[:80])
+        # 硬性规则：用户要操作设备 + 模型声称完成 + 没调任何工具 → 撒谎，强制重试
+        # 三个条件缺一不可：user_query 有设备意图词，避免闲聊误判
+        if (tool_call_count == 0
+                and user_query
+                and _DEVICE_INTENT_RE.search(user_query)
+                and _ACTION_DONE_RE.search(final_content)):
+            logger.info("Validator: 检测到设备操作场景下声称完成但 tool_calls=0，强制重试 "
+                        "(query=%r, content=%r)", user_query[:40], final_content[:80])
             return True
 
         # per-user 优先：解析用户 chat key 构建专用 LLM（缓存），失败/无配置回退全局
@@ -181,12 +204,9 @@ class ValidatorAgent:
             text = response.content.strip() if response.content else ""
             logger.info("Validator: content=%r..., tool_calls=%d, validator_response=%r",
                         final_content[:80], tool_call_count, text[:80])
-            # 解析 JSON 响应
-            if "true" in text.lower():
-                logger.info("Validator: retry needed")
-                return True
-            logger.info("Validator: no retry needed")
-            return False
+            # 解析 JSON 响应：优先 json.loads 精确解析 need_retry 字段，
+            # LLM 偶尔返回非 JSON 时降级到词边界匹配 "true"（避免 "true story" 误判）。
+            return self._parse_need_retry(text)
         except Exception:
             logger.exception("Validator: LLM call failed, fallback to no retry")
             # 记录 LLM 调用错误
@@ -196,6 +216,29 @@ class ValidatorAgent:
             except Exception:
                 pass
             return False
+
+    @staticmethod
+    def _parse_need_retry(text: str) -> bool:
+        """解析 validator LLM 的返回，判断是否 need_retry。
+
+        优先 json.loads 精确解析 {"need_retry": true/false}；
+        LLM 偶尔返回纯 "true"/"false" 时按词边界判定。
+        其它非 JSON 解释性文本（如 "true story"）一律不重试——
+        原代码 "true" in text 会把这类子串误判为需重试。
+        """
+        text = text.strip()
+        # 尝试精确 JSON 解析
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                return bool(parsed.get("need_retry", False))
+            if isinstance(parsed, bool):
+                return parsed
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
+        # 降级：只有整段文本就是独立的 true（去掉空格后）才算，
+        # 避免把 "true story" / "not true" 这类解释性文本误判为需重试。
+        return text.lower() in ("true", "yes", "1")
 
     def build_retry_message(self) -> HumanMessage:
         """构建重试提示消息。"""

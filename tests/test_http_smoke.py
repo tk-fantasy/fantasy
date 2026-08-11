@@ -54,6 +54,10 @@ class TestMiddlewareAuthGuard:
         resp = client.get("/api/health", headers={"Authorization": "Bearer not.a.real.token"})
         assert resp.status_code == 401
 
+    # 注：refresh token 中间件拒绝的端到端测试见 test_auth.py 的
+    # test_refresh_token_rejected_by_middleware_logic（纯逻辑，不启动 app）。
+    # 此处不重复 TestClient 版本——本机摄像头副作用会让 TestClient 卡住。
+
 
 class TestMiddlewareTracing:
     """request_tracing 中间件：注入 X-Request-ID。"""

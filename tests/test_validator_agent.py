@@ -219,16 +219,22 @@ class TestValidatorPerUser:
 # ---------------------------------------------------------------------------
 
 class TestHardRule:
-    """validator_agent 新硬性规则：回复声称完成设备操作但没调工具 → 强制重试。"""
+    """validator_agent 硬性规则：设备操作场景下声称完成但没调工具 → 强制重试。
+
+    审查 #10：硬规则现在需要 user_query 表达设备操作意图才触发，
+    避免纯闲聊（"计划好了"）被误判为撒谎强制重试。
+    """
 
     @pytest.mark.asyncio
     async def test_claims_done_without_tool_calls_forces_retry(self):
+        """用户要开灯 + 模型说"已打开"但没调工具 → 强制重试。"""
         validator = ValidatorAgent(max_retries=1)
         mock_llm = MagicMock()
         mock_llm.ainvoke = AsyncMock()
         validator._llm = mock_llm
 
-        result = await validator.should_retry("已经帮你打开灯了", 0)
+        result = await validator.should_retry(
+            "已经帮你打开灯了", 0, user_query="帮我开一下灯")
         assert result is True
         # 硬规则直接返回，不浪费一次 LLM 调用
         mock_llm.ainvoke.assert_not_awaited()
@@ -243,7 +249,8 @@ class TestHardRule:
         mock_llm.ainvoke = AsyncMock(return_value=mock_response)
         validator._llm = mock_llm
 
-        result = await validator.should_retry("已经帮你打开灯了", 2)
+        result = await validator.should_retry(
+            "已经帮你打开灯了", 2, user_query="开灯")
         assert result is False
         mock_llm.ainvoke.assert_awaited_once()
 
@@ -257,6 +264,74 @@ class TestHardRule:
         mock_llm.ainvoke = AsyncMock(return_value=mock_response)
         validator._llm = mock_llm
 
-        result = await validator.should_retry("好的，我知道了", 0)
+        result = await validator.should_retry(
+            "好的，我知道了", 0, user_query="开灯")
         assert result is False
         mock_llm.ainvoke.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_chitchat_not_trigger_hard_rule_even_if_says_done(self):
+        """纯闲聊（query 无设备意图）即使模型说"完成"也不触发硬规则。
+
+        审查 #10 核心：validator 只兜底设备操作漏调，不审查闲聊。
+        """
+        validator = ValidatorAgent(max_retries=1)
+        mock_llm = MagicMock()
+        mock_response = MagicMock()
+        mock_response.content = '{"need_retry": false}'
+        mock_llm.ainvoke = AsyncMock(return_value=mock_response)
+        validator._llm = mock_llm
+
+        # query="帮我排个计划" 无设备词，content="计划好了，稍后执行"
+        result = await validator.should_retry(
+            "计划好了，稍后执行", 0, user_query="帮我排个计划")
+        # 硬规则不触发（query 无设备意图）→ 走 LLM 判断 → false
+        assert result is False
+        mock_llm.ainvoke.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_no_user_query_skips_hard_rule(self):
+        """无 user_query（向后兼容旧调用）→ 不触发硬规则，走 LLM。"""
+        validator = ValidatorAgent(max_retries=1)
+        mock_llm = MagicMock()
+        mock_response = MagicMock()
+        mock_response.content = '{"need_retry": false}'
+        mock_llm.ainvoke = AsyncMock(return_value=mock_response)
+        validator._llm = mock_llm
+
+        result = await validator.should_retry("已经帮你打开灯了", 0)
+        assert result is False
+        mock_llm.ainvoke.assert_awaited_once()
+
+
+class TestParseNeedRetry:
+    """_parse_need_retry：json.loads 优先，降级词边界匹配。
+
+    审查 #10：原 "true" in text 子串匹配会把 "true story" 误判为需重试。
+    """
+
+    def test_valid_json_true(self):
+        assert ValidatorAgent._parse_need_retry('{"need_retry": true}') is True
+
+    def test_valid_json_false(self):
+        assert ValidatorAgent._parse_need_retry('{"need_retry": false}') is False
+
+    def test_plain_text_true(self):
+        """LLM 偶尔只返回 "true"。"""
+        assert ValidatorAgent._parse_need_retry("true") is True
+
+    def test_plain_text_false(self):
+        assert ValidatorAgent._parse_need_retry("false") is False
+
+    def test_true_story_not_mismatched(self):
+        """含 "true" 子串但非纯 true 词 → 不误判为需重试。
+
+        审查 #10：原 "true" in text 会把 "true story" 误判。
+        现在降级只接受整段就是 "true"/"yes"/"1" 的纯文本。
+        """
+        assert ValidatorAgent._parse_need_retry("true story") is False
+        assert ValidatorAgent._parse_need_retry("not true at all") is False
+
+    def test_explanatory_text_without_true(self):
+        """解释性文本无 true → False。"""
+        assert ValidatorAgent._parse_need_retry("模型只是闲聊，不需要重试") is False
