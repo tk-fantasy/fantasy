@@ -7,7 +7,7 @@
  * 依赖外部传入的 activeCameraId（当前弹窗摄像头）和 cameras（摄像头列表），
  * 以决定走 per-camera PTZ 端点还是旧的全局 /api/ptz/step 兼容端点。
  */
-import { ref } from 'vue'
+import { ref, onScopeDispose } from 'vue'
 
 export function usePtz(activeCameraId, cameras) {
   const ptzEnabled = ref(false)
@@ -55,6 +55,12 @@ export function usePtz(activeCameraId, cameras) {
       ptzMoving.value = false
     }, ptzStepMs.value)
   }
+
+  // 组件卸载时清掉残留冷却计时器，避免 ptzMoving 卡 true / 计时器泄漏。
+  // onScopeDispose 在所属组件作用域销毁时触发，与 onUnmounted 同时机。
+  onScopeDispose(() => {
+    if (ptzCooldownTimer) { clearTimeout(ptzCooldownTimer); ptzCooldownTimer = null }
+  })
 
   return { ptzEnabled, ptzMoving, ptzStepMs, fetchPtzStatus, ptzStep }
 }
