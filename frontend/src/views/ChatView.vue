@@ -8,6 +8,7 @@ import { useCamera } from '../composables/useCamera'
 import { useLlmStatus, ROLE_LABELS } from '../composables/useLlmStatus'
 import { usePtz } from '../composables/usePtz'
 import { useCameraPreview } from '../composables/useCameraPreview'
+import { useGreeting } from '../composables/useGreeting'
 import { apiGet, apiPost } from '../utils/api'
 import PluginSlot from '../components/integration/PluginSlot.vue'
 
@@ -54,9 +55,7 @@ let ws = null
 let reconnectTimer = null
 
 const SESSION_STORAGE_KEY = SS_CHAT_SESSION
-const showGreeting = ref(false)
-const greetingText = ref('')
-let greetingTimer = null
+const { showGreeting, greetingText, showGreetingMessage } = useGreeting()
 
 // Slash command autocomplete
 const showSlashMenu = ref(false)
@@ -560,42 +559,6 @@ async function loadSessionHistory(sid) {
   }
 }
 
-// ============ Greeting ============
-function getGreeting(ownerName) {
-  const hour = new Date().getHours()
-  let timeGreeting = ''
-  
-  if (hour >= 5 && hour < 12) {
-    timeGreeting = '早上好'
-  } else if (hour >= 12 && hour < 14) {
-    timeGreeting = '中午好'
-  } else if (hour >= 14 && hour < 18) {
-    timeGreeting = '下午好'
-  } else {
-    timeGreeting = '晚上好'
-  }
-  
-  return ownerName ? `${timeGreeting}，${ownerName}` : timeGreeting
-}
-
-async function showGreetingMessage() {
-  try {
-    const res = await fetch('/api/home/info')
-    const json = await res.json()
-    const ownerName = json.data?.owner_name || ''
-    
-    greetingText.value = getGreeting(ownerName)
-    showGreeting.value = true
-    
-    // 1.5秒后开始淡化
-    greetingTimer = setTimeout(() => {
-      showGreeting.value = false
-    }, 1500)
-  } catch (e) {
-    console.error('Failed to load home info for greeting:', e)
-  }
-}
-
 // ============ Lifecycle ============
 onMounted(async () => {
   connectWS()
@@ -653,10 +616,9 @@ onMounted(async () => {
 onUnmounted(() => {
   if (ws) ws.close()
   if (reconnectTimer) clearTimeout(reconnectTimer)
-  if (greetingTimer) clearTimeout(greetingTimer)
   window.removeEventListener('mode-changed', onModeChanged)
-  // 摄像头预览模态框的计时器清理（feedRetryTimer / 轮询）由 useCameraPreview 的
-  // onScopeDispose 自行处理，这里无需感知。
+  // 摄像头预览模态框（feedRetryTimer / 轮询）与欢迎语计时器（greetingTimer）
+  // 均由各自 composable 的 onScopeDispose 自行清理，这里无需感知。
   // 保持 sessionId 在 sessionStorage 中，下次进入可恢复
 })
 </script>
