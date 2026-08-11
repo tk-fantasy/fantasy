@@ -58,6 +58,17 @@ class ValidatorAgent:
         # 这里只缓存已构建的 ChatOpenAI 实例。
         self._user_llms: dict[str, ChatOpenAI] = {}
 
+    def invalidate_user(self, user_id: str) -> None:
+        """用户修改 chat key 后清除其缓存的 per-user LLM，下次 should_retry 重建。
+
+        与 dispatcher.invalidate_user_agent 对齐——key 变更后旧 LLM 实例
+        （带旧 api_key）必须清除，否则 validator 用旧 key 请求会误判或报错。
+        user_id 为空或未缓存则 no-op。
+        """
+        old = self._user_llms.pop(user_id, None)
+        if old is not None:
+            logger.info("Validator: invalidated cached LLM for user_id=%s", user_id)
+
     def _get_llm(self, user_id: str = "") -> ChatOpenAI:
         """按 user_id 取已缓存的 per-user LLM；未缓存或无 user_id 回退全局。
 

@@ -17,6 +17,10 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+# 音频上传大小上限：浏览器 MediaRecorder 录音通常几十~几百 KB，
+# 25MB 足够覆盖长语音 + 高码率。防恶意大文件撑爆内存。
+MAX_AUDIO_SIZE = 25 * 1024 * 1024  # 25 MB
+
 
 @router.post("/stt/transcribe")
 async def transcribe(audio: UploadFile = File(...), current_user: dict = Depends(get_current_user)) -> ApiResponse[dict]:
@@ -28,6 +32,12 @@ async def transcribe(audio: UploadFile = File(...), current_user: dict = Depends
     audio_bytes = await audio.read()
     if not audio_bytes:
         return ApiResponse(code="invalid_input", message="音频为空", data={"text": ""})
+    if len(audio_bytes) > MAX_AUDIO_SIZE:
+        return ApiResponse(
+            code="invalid_input",
+            message=f"音频过大（{len(audio_bytes) // 1024 // 1024}MB > {MAX_AUDIO_SIZE // 1024 // 1024}MB 上限）",
+            data={"text": ""},
+        )
     text = await stt_service.transcribe(
         audio_bytes,
         filename=audio.filename or "voice.webm",

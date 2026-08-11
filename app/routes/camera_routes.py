@@ -99,12 +99,14 @@ async def test_stream(camera_id: str, body: dict):
             if st.get("camera_opened") and str(row.get("rtsp_url", "") or "").strip() == base:
                 return ApiResponse(data={"ok": True, "error": ""})
     # 凭证注入:rtsp://host → rtsp://user:pwd@host(与 _resolve_rtsp_url 一致)
+    # user/pwd 必须 percent-encode：含 @:/# 等特殊字符会破坏 URL 结构。
+    from urllib.parse import quote
     user = str(body.get("rtsp_username", "") or "").strip()
     pwd = str(body.get("rtsp_password", "") or "").strip()
     url = base
     if user and pwd and "://" in base:
         scheme, rest = base.split("://", 1)
-        url = f"{scheme}://{user}:{pwd}@{rest}"
+        url = f"{scheme}://{quote(user, safe='')}:{quote(pwd, safe='')}@{rest}"
     # RTSP over TCP + 低延迟(与 _open_network_stream 一致;默认 UDP 在 NAT/桥接
     # 网络下信令通但拿不到帧)
     transport = str(get_config("vision.rtsp_transport", "tcp")).strip().lower() or "tcp"
