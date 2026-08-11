@@ -25,6 +25,10 @@ async def run_stdio_plugin(
     manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
     plugin = plugin_cls()
     plugin.setup(manifest)
+    # 显式赋值 manifest，保证 capability 校验有数据（不依赖子类调 super().setup）。
+    # 子类 setup 可能只建 sinks/routers 漏存 manifest，导致 handle 的 capability
+    # 校验拿到空 dict 而误拒所有方法。
+    plugin.manifest = manifest
 
     # Windows Proactor 下 connect_read_pipe 对匿名管道（子进程 stdio）读取
     # 不生效：连接成功但数据永远不会到达，插件会静默卡死到握手超时。
@@ -52,7 +56,14 @@ async def run_stdio_plugin(
             else:
                 result = await plugin.handle(method, params)
         except Exception as exc:  # 插件代码异常不能崩 runtime
-            result = {"error": f"{type(exc).__name__}: {exc}"}
+            # 回传给宿主的 error 只保留异常类型名，不含 message 详情——
+            # message 可能含敏感信息（路径/token 片段），宿主可能再回传 API。
+            # 完整 traceback 写 stderr，宿主 _drain_stderr 以 debug 记录（不外泄）。
+            import traceback
+            print(f"[{manifest.get('id', '?')}] plugin error: "
+                  f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}",
+                  file=sys.stderr, flush=True)
+            result = {"error": type(exc).__name__}
 
         # Phase 1 简化：业务错误也放 result 字段返回，不使用 JSON-RPC error 字段
         response = build_response(msg_id, result)

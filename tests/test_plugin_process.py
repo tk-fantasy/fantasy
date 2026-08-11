@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from app.integration.manifest_loader import load_manifests
-from app.integration.plugin_process import PluginProcess
+from app.integration.plugin_process import PluginProcess, _sandbox_env
 from app.integration.rpc_protocol import METHOD_SPEAK
 
 INTEGRATIONS_TESTS_DIR = "tests/integrations"
@@ -104,3 +104,50 @@ def test_plugin_process_multiple_calls():
             await proc.stop()
 
     asyncio.new_event_loop().run_until_complete(go())
+
+
+class TestEnvSandbox:
+    """子进程环境沙箱（审查 #12-B）：白名单继承系统变量，排除宿主密钥。
+
+    原代码 dict(os.environ) 全量继承 → 插件能读走 JWT_SECRET/RTSP_PASSWORD
+    等宿主密钥。改白名单后，只保留运行必需的系统变量，凭证走 manifest.secrets 注入。
+    """
+
+    def test_sandbox_excludes_host_secrets(self, monkeypatch):
+        """宿主密钥不应进入子进程环境。"""
+        monkeypatch.setenv("JWT_SECRET", "super-secret-jwt")
+        monkeypatch.setenv("RTSP_PASSWORD", "camera-pwd")
+        monkeypatch.setenv("PTZ_PASSWORD", "ptz-pwd")
+        env = _sandbox_env()
+        assert "JWT_SECRET" not in env
+        assert "RTSP_PASSWORD" not in env
+        assert "PTZ_PASSWORD" not in env
+
+    def test_sandbox_keeps_system_vars(self, monkeypatch):
+        """系统必需变量应保留（PATH/SYSTEMROOT/TEMP 等）。"""
+        monkeypatch.setenv("PATH", "/usr/bin:/bin")
+        env = _sandbox_env()
+        assert env["PATH"] == "/usr/bin:/bin"
+
+    def test_plugin_process_uses_sandbox(self, monkeypatch):
+        """PluginProcess 构造的 _env 不含宿主密钥。"""
+        monkeypatch.setenv("JWT_SECRET", "should-not-leak")
+        manifest = _load_echo_manifest()
+        proc = PluginProcess(
+            manifest=manifest,
+            plugin_root=f"{INTEGRATIONS_TESTS_DIR}/echo",
+        )
+        assert "JWT_SECRET" not in proc._env
+
+    def test_plugin_process_keeps_injected_credentials(self, monkeypatch):
+        """env 参数注入的凭证（manifest.secrets）仍能进入子进程。"""
+        monkeypatch.setenv("JWT_SECRET", "host-secret")  # 应被排除
+        manifest = _load_echo_manifest()
+        proc = PluginProcess(
+            manifest=manifest,
+            plugin_root=f"{INTEGRATIONS_TESTS_DIR}/echo",
+            env={"AETHER_HA_TOKEN": "plugin-allowed-token"},  # 应保留
+        )
+        assert proc._env.get("AETHER_HA_TOKEN") == "plugin-allowed-token"
+        assert "JWT_SECRET" not in proc._env
+
