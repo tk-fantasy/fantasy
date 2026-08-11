@@ -1,6 +1,8 @@
 """Tests for JWT authentication."""
 from __future__ import annotations
 
+import time
+
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -9,6 +11,7 @@ from app.core.auth import (
     verify_password,
     create_access_token,
     create_refresh_token,
+    revoke_token,
     verify_token,
 )
 
@@ -91,6 +94,95 @@ class TestJWTTokens:
             verify_token("invalid-token")
         assert exc_info.value.http_status == 401
 
+
+class TestTokenRevocation:
+    """Token 撤销黑名单（审查 #低：登出不撤销 token）。
+
+    登出后 token 的 jti 入黑名单，verify_token 拒绝；过期项自动清理。
+    """
+
+    def setup_method(self):
+        """每个测试前清空黑名单，避免互相污染。"""
+        from app.core import auth
+        with auth._revoked_lock:
+            auth._revoked_tokens.clear()
+
+    def test_revoked_token_rejected(self):
+        """登出后 token 被 verify_token 拒绝（code=token_revoked）。"""
+        from app.core.exceptions import AppException
+        token = create_access_token("u1", "tester")
+        # 撤销前：验证通过
+        payload = verify_token(token)
+        assert payload["sub"] == "u1"
+        # 撤销
+        revoke_token(payload)
+        # 撤销后：拒绝
+        with pytest.raises(AppException) as exc:
+            verify_token(token)
+        assert exc.value.code == "token_revoked"
+        assert exc.value.http_status == 401
+
+    def test_unrevoked_token_still_valid(self):
+        """未撤销的 token 不受影响。"""
+        token = create_access_token("u2", "tester")
+        payload = verify_token(token)
+        assert payload["sub"] == "u2"
+
+    def test_expired_revocation_auto_cleaned(self):
+        """过期的黑名单项被懒惰清理（revoked_tokens 不无限增长）。"""
+        from app.core import auth
+        # 手动塞一个已过期的 jti
+        with auth._revoked_lock:
+            auth._revoked_tokens["expired-jti"] = int(time.time()) - 1
+        # revoke 另一个 token 时触发清理
+        token = create_access_token("u3", "t")
+        payload = verify_token(token)
+        revoke_token(payload)
+        with auth._revoked_lock:
+            assert "expired-jti" not in auth._revoked_tokens
+            assert payload["jti"] in auth._revoked_tokens
+
+    def test_refresh_token_also_revoked(self):
+        """登出同时撤销 refresh token。"""
+        from app.core.exceptions import AppException
+        refresh = create_refresh_token("u4")
+        payload = verify_token(refresh)
+        revoke_token(payload)
+        with pytest.raises(AppException):
+            verify_token(refresh)
+
+    @pytest.mark.asyncio
+    async def test_logout_route_revokes_tokens(self):
+        """logout 路由应把 access + refresh token 加入黑名单。
+
+        登出后这两个 token 再 verify 应抛 token_revoked。
+        """
+        from app.routes.auth_routes import logout
+        from app.core import auth
+
+        access = create_access_token("u-logout", "tester")
+        refresh = create_refresh_token("u-logout")
+        access_payload = verify_token(access)
+        refresh_payload = verify_token(refresh)
+
+        # mock Request：access 走 cookie，refresh 走 cookie
+        mock_request = MagicMock()
+        mock_request.headers = {}
+        mock_request.cookies = {
+            "aether_token": access,
+            "aether_refresh_token": refresh,
+        }
+        mock_response = MagicMock()
+
+        with patch("app.routes.auth_routes.extract_token_from_request", return_value=access), \
+             patch("app.routes.auth_routes.extract_refresh_token_from_request", return_value=refresh):
+            await logout(mock_request, mock_response)
+
+        # 两个 token 的 jti 都应进黑名单
+        assert access_payload["jti"] in auth._revoked_tokens
+        assert refresh_payload["jti"] in auth._revoked_tokens
+        # cookie 被清
+        mock_response.delete_cookie.assert_called()
 
 class TestAuthRoutes:
     @pytest.mark.asyncio

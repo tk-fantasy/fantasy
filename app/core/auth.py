@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import os
 import secrets
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -77,6 +78,37 @@ def verify_password(password: str, password_hash: str) -> bool:
     return pwd_context.verify(password, password_hash)
 
 
+# ============ Token 撤销黑名单 ============
+# 登出时把 token 的 jti 加入黑名单，verify_token 检查命中即拒绝。
+# 存 (jti, exp) 而非裸 jti：清理线程能按 exp 过期移除，避免 set 无限增长。
+# 内存存储（process-local）——重启清空，合理：重启后旧 cookie 也失效了。
+_revoked_tokens: dict[str, int] = {}  # jti → exp（unix 秒）
+_revoked_lock = threading.Lock()
+
+
+def revoke_token(payload: dict[str, Any]) -> None:
+    """把一个 token 标记为已撤销（登出时调用）。按 jti + exp 入表。"""
+    jti = payload.get("jti")
+    if not jti:
+        return
+    exp = payload.get("exp", int(time.time()) + 86400)
+    with _revoked_lock:
+        _revoked_tokens[jti] = exp
+        # 顺手清理已过期的项（懒惰清理，无需独立线程）
+        now = int(time.time())
+        expired = [k for k, e in _revoked_tokens.items() if e <= now]
+        for k in expired:
+            _revoked_tokens.pop(k, None)
+
+
+def is_revoked(jti: str | None) -> bool:
+    """检查 jti 是否在黑名单且未过期。过期项视为未撤销（token 本身已失效）。"""
+    if not jti:
+        return False
+    with _revoked_lock:
+        return jti in _revoked_tokens
+
+
 def create_access_token(user_id: str, username: str) -> str:
     """创建访问 token（短期）。"""
     payload = {
@@ -109,15 +141,18 @@ def verify_token(token: str) -> dict[str, Any]:
         payload 字典
 
     Raises:
-        AppException: token 无效或过期
+        AppException: token 无效、过期、或已撤销（登出黑名单）
     """
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-        return payload
     except jwt.ExpiredSignatureError:
         raise AppException("Token 已过期", code="token_expired", http_status=401)
     except jwt.InvalidTokenError:
         raise AppException("无效的 Token", code="invalid_token", http_status=401)
+    # 黑名单检查：登出后的 token 即使未过期也拒绝
+    if is_revoked(payload.get("jti")):
+        raise AppException("Token 已撤销", code="token_revoked", http_status=401)
+    return payload
 
 
 # Cookie 配置
