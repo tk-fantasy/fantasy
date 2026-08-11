@@ -266,7 +266,10 @@ class CameraManager:
                 "id": cid,
                 "name": cfg.get("name", cid),
                 "area": cfg.get("area", ""),
-                "online": bool(st.get("online", False)),
+                # CameraState 无 online 字段，只有 camera_opened。
+                # 原 st.get("online") 恒 False（MCP 工具拿到永远离线），
+                # 与 cameras_all() 对齐改用 camera_opened 推断。
+                "online": bool(st.get("camera_opened", False)),
             })
         return out
 

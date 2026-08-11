@@ -13,7 +13,11 @@ from app.services.camera_manager import CameraManager
 
 
 def _make_stream(camera_id, online=True, name="x", area=""):
-    """Mock CameraStream。补 _config(name/area)供 list_cameras 读。"""
+    """Mock CameraStream。补 _config(name/area)供 list_cameras 读。
+
+    get_state 返回真实 CameraState 结构（camera_opened 而非 online），
+    这样 list_cameras 的 online 推断逻辑才被真正验证。
+    """
     s = MagicMock()
     s.camera_id = camera_id
     s._config = {"name": name, "area": area}
@@ -26,7 +30,8 @@ def _make_stream(camera_id, online=True, name="x", area=""):
     s.set_on_automation_trigger = MagicMock()
     s.start_display = MagicMock()
     s.stop_display = MagicMock()
-    s.get_state = MagicMock(return_value={"camera_id": camera_id, "online": online})
+    # CameraState 实际字段是 camera_opened（camera_stream.py:33），无 online
+    s.get_state = MagicMock(return_value={"camera_id": camera_id, "camera_opened": online})
     s.mjpeg_generator = MagicMock(return_value=iter([b"x"]))
     return s
 

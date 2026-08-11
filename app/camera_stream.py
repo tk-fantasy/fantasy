@@ -529,10 +529,12 @@ class CameraStream:
             # 没配凭证就裸连（部分摄像头 RTSP 不要求鉴权）
             return base
         # 把 rtsp://host/path → rtsp://user:pwd@host/path
+        # user/pwd 必须 percent-encode：含 @:/# 等特殊字符会破坏 URL 结构。
         if "://" not in base:
             return base
+        from urllib.parse import quote
         scheme, rest = base.split("://", 1)
-        return f"{scheme}://{user}:{pwd}@{rest}"
+        return f"{scheme}://{quote(user, safe='')}:{quote(pwd, safe='')}@{rest}"
 
     def _open_network_stream(self, url: str) -> cv2.VideoCapture:
         """打开 RTSP/HTTP 网络流（WiFi/IP 摄像头）。

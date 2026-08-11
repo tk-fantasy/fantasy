@@ -293,10 +293,12 @@ class Dispatcher:
         """用户修改 chat key 绑定后清除其 agent 缓存，下次聊天用新 key 重建。
 
         清缓存前先关闭该 agent 的 httpx 客户端，回收连接池。
+        同时清 validator 的 per-user LLM 缓存，避免 validator 用旧 key 请求。
         """
         old = self._user_agents.pop(user_id, None)
         if old is not None:
             await self._close_agent_clients(old)
+        self._validator.invalidate_user(user_id)
 
     async def _close_agent_clients(self, agent: Any) -> None:
         """关闭单个 agent 绑定的 httpx 客户端，从映射移除。agent 未登记则 no-op。"""
