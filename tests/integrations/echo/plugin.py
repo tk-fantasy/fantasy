@@ -23,6 +23,7 @@ class EchoSink(OutputSink):
 
 class EchoPlugin(IntegrationPlugin):
     def setup(self, manifest_dict: dict) -> None:
+        super().setup(manifest_dict)  # 存 manifest，供 handle 的 capability 校验
         self.sinks = [EchoSink()]
 
 
