@@ -33,7 +33,8 @@ def test_inbound_router_is_abstract():
 def test_plugin_handles_router_handle():
     """plugin.handle(METHOD_ROUTE) 调用 router.route。"""
     plugin = FakePlugin()
-    plugin.setup({})
+    # manifest 需声明 inbound_router capability，否则 handle 的 capability 校验会拒绝
+    plugin.setup({"capabilities": [{"type": "inbound_router", "id": "test"}]})
 
     async def go():
         result = await plugin.handle(METHOD_ROUTE, {"text": "播放音乐"})
@@ -44,12 +45,14 @@ def test_plugin_handles_router_handle():
 
 
 def test_plugin_router_handle_no_router_registered():
-    """没注册 router 时返回 error。"""
+    """声明了 router capability 但没注册 router 实例 → error。"""
     plugin = IntegrationPlugin()  # 没设 routers
+    plugin.setup({"capabilities": [{"type": "inbound_router", "id": "test"}]})
 
     async def go():
         result = await plugin.handle(METHOD_ROUTE, {"text": "hi"})
         assert "error" in result
+        assert "no router" in result["error"]
 
     asyncio.new_event_loop().run_until_complete(go())
 
