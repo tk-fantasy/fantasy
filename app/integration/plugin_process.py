@@ -20,6 +20,29 @@ from .schema import Manifest
 
 logger = logging.getLogger(__name__)
 
+# 子进程沙箱：只继承运行必需的系统级环境变量，排除宿主密钥。
+# 这是最小必需集——少了 Python 起不来（PATH/SYSTEMROOT）或 IO 异常（TEMP）。
+# 凭证性变量（JWT_SECRET/RTSP_PASSWORD 等宿主密钥）刻意不在此列，
+# 由 _build_plugin_env 按 manifest.secrets 白名单注入。
+# 注意：PYTHONPATH 不在此列——start() 会动态注入项目根，不继承宿主的。
+_SANDBOX_ALLOWED_ENV = frozenset({
+    "PATH",                           # 解释器找依赖
+    "SYSTEMROOT",                     # Windows 必需（Win32 API）
+    "TEMP", "TMP", "TMPDIR",          # 临时目录
+    "LANG", "LC_ALL", "LC_CTYPE",     # 区域（影响日志/编码）
+    "HOME", "USERPROFILE",            # 用户目录（部分库读 ~/.cache）
+    "APPDATA", "LOCALAPPDATA",        # Windows 应用数据
+})
+
+
+def _sandbox_env() -> dict[str, str]:
+    """构造子进程沙箱环境：白名单继承宿主变量，排除全部密钥。
+
+    只保留 _SANDBOX_ALLOWED_ENV 中的变量；宿主的 JWT_SECRET /
+    RTSP_PASSWORD / PTZ_PASSWORD 等敏感变量不会进入子进程。
+    """
+    return {k: v for k, v in os.environ.items() if k in _SANDBOX_ALLOWED_ENV}
+
 
 class PluginProcess:
     """一个插件进程的连接器。
@@ -38,8 +61,11 @@ class PluginProcess:
         self.manifest = manifest
         self._plugin_root = plugin_root
         self._rpc_timeout = rpc_timeout
-        # 注入子进程的环境变量（继承宿主 + 额外覆盖，如 HA 凭证）
-        self._env: dict[str, str] = dict(os.environ)
+        # 子进程环境沙箱：只白名单继承子进程运行必需的系统变量，
+        # 不全量继承宿主 os.environ——否则插件能读走 JWT_SECRET /
+        # RTSP_PASSWORD / PTZ_PASSWORD 等宿主密钥（开放第三方插件时的安全边界）。
+        # 凭证通过 env 参数按 manifest.secrets 声明白名单注入（_build_plugin_env）。
+        self._env: dict[str, str] = _sandbox_env()
         if env:
             self._env.update({k: str(v) for k, v in env.items()})
         self._process: asyncio.subprocess.Process | None = None
