@@ -68,6 +68,22 @@ class TestJWTTokens:
         assert payload["sub"] == user_id
         assert payload["type"] == "refresh"
 
+    def test_refresh_token_rejected_by_middleware_logic(self):
+        """中间件 api_token_guard 的 type 校验逻辑（审查 #2）。
+
+        不启动完整 app（避免摄像头副作用），直接验证中间件的核心判定：
+        refresh token 的 payload type != "access" → 中间件应置 token=None → 401。
+        与 get_current_user 依赖（auth.py:207）的校验对齐。
+        """
+        user_id = "test-user-id"
+        access = create_access_token(user_id, "tester")
+        refresh = create_refresh_token(user_id)
+        access_payload = verify_token(access)
+        refresh_payload = verify_token(refresh)
+        # 中间件判定逻辑：payload.get("type") != "access" → 拒绝
+        assert access_payload.get("type") == "access"     # access 放行
+        assert refresh_payload.get("type") != "access"    # refresh 被拒
+
     def test_verify_invalid_token(self):
         """测试验证无效 token。"""
         from app.core.exceptions import AppException

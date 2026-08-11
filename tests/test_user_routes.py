@@ -165,3 +165,78 @@ class TestUserRoutes:
                 await switch_user(mock_request, payload, mock_response, current_user, mock_container)
             assert exc_info.value.code == "invalid_credentials"
             assert exc_info.value.http_status == 401
+
+
+class TestGetUserLlmKeysIdor:
+    """GET /users/{username}/llm_keys 归属校验（审查 #7a：防 IDOR）。
+
+    原代码写接口有归属校验、读接口没有 → 任意登录用户可读他人 key 元数据。
+    """
+
+    @pytest.mark.asyncio
+    async def test_reading_other_users_keys_forbidden(self):
+        """用户 A 读用户 B 的 keys → 403。"""
+        from app.routes.user_routes import get_user_llm_keys
+        from app.core.exceptions import AppException
+
+        other_user = {"id": "2", "username": "userB"}
+        mock_db = AsyncMock()
+        mock_db.user_get_by_username = AsyncMock(return_value=other_user)
+        current_user = {"user_id": "1", "username": "admin"}  # A
+
+        with patch("app.routes.user_routes.Database.get", return_value=mock_db):
+            with pytest.raises(AppException) as exc_info:
+                await get_user_llm_keys("userB", current_user)
+            assert exc_info.value.code == "forbidden"
+            assert exc_info.value.http_status == 403
+
+    @pytest.mark.asyncio
+    async def test_reading_own_keys_allowed(self):
+        """用户读自己的 keys → 200。"""
+        from app.routes.user_routes import get_user_llm_keys
+
+        me = {"id": "1", "username": "admin"}
+        mock_db = AsyncMock()
+        mock_db.user_get_by_username = AsyncMock(return_value=me)
+        mock_db.user_setting_get = AsyncMock(return_value='[{"id":"k1","model":"gpt"}]')
+        current_user = {"user_id": "1", "username": "admin"}
+
+        with patch("app.routes.user_routes.Database.get", return_value=mock_db):
+            result = await get_user_llm_keys("admin", current_user)
+        assert result.data[0]["id"] == "k1"
+
+
+class TestGetUserProvidersIdor:
+    """GET /users/{username}/providers 归属校验（审查 #7a：防 IDOR）。"""
+
+    @pytest.mark.asyncio
+    async def test_reading_other_users_providers_forbidden(self):
+        """用户 A 读用户 B 的 providers → 403。"""
+        from app.routes.user_routes import get_user_providers
+        from app.core.exceptions import AppException
+
+        other_user = {"id": "2", "username": "userB"}
+        mock_db = AsyncMock()
+        mock_db.user_get_by_username = AsyncMock(return_value=other_user)
+        current_user = {"user_id": "1", "username": "admin"}
+
+        with patch("app.routes.user_routes.Database.get", return_value=mock_db):
+            with pytest.raises(AppException) as exc_info:
+                await get_user_providers("userB", current_user)
+            assert exc_info.value.code == "forbidden"
+            assert exc_info.value.http_status == 403
+
+    @pytest.mark.asyncio
+    async def test_reading_own_providers_allowed(self):
+        """用户读自己的 providers → 200。"""
+        from app.routes.user_routes import get_user_providers
+
+        me = {"id": "1", "username": "admin"}
+        mock_db = AsyncMock()
+        mock_db.user_get_by_username = AsyncMock(return_value=me)
+        mock_db.user_setting_get = AsyncMock(return_value='{"openai":{}}')
+        current_user = {"user_id": "1", "username": "admin"}
+
+        with patch("app.routes.user_routes.Database.get", return_value=mock_db):
+            result = await get_user_providers("admin", current_user)
+        assert result.data == {"openai": {}}

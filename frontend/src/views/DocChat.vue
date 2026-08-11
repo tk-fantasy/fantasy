@@ -64,9 +64,10 @@ function connectWS() {
 
   ws.onclose = (event) => {
     wsConnected.value = false
-    // 1008 = Policy Violation (认证失败)，不重连
+    // 1008 = Policy Violation (认证失败)。access token 可能过期。
+    // 先静默刷新 cookie 再重连（用户无感），失败则走 session-expired 登录流程。
     if (event.code === 1008) {
-      console.warn('WebSocket closed due to authentication failure, not reconnecting')
+      refreshAndReconnect()
       return
     }
     reconnectTimer = setTimeout(connectWS, 3000)
@@ -88,6 +89,21 @@ function connectWS() {
       console.error('Failed to parse WS message:', e)
     }
   }
+}
+
+// access token 过期导致 WS 被 1008 踢：先静默刷新 cookie 再重连，用户无感。
+// refresh 也过期则派发 session-expired（useAuth 会清登录态跳登录）。
+async function refreshAndReconnect() {
+  try {
+    const res = await fetch('/api/auth/refresh', { method: 'POST', credentials: 'include' })
+    if (res.ok) {
+      reconnectTimer = setTimeout(connectWS, 500)
+      return
+    }
+  } catch (e) {
+    console.warn('WS reconnect refresh failed:', e)
+  }
+  window.dispatchEvent(new Event('aether:session-expired'))
 }
 
 function handleInstruction(msg) {

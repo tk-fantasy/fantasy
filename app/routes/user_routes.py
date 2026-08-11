@@ -100,11 +100,15 @@ async def get_user_llm_keys(
     username: str,
     current_user: dict = Depends(get_current_user),
 ) -> ApiResponse[list[dict]]:
-    """获取指定用户的 LLM keys。"""
+    """获取指定用户的 LLM keys。仅允许查看自己的配置。"""
     db = Database.get()
     user = await db.user_get_by_username(username)
     if not user:
         raise AppException("用户不存在", code="user_not_found", http_status=404)
+
+    # 仅允许查看自己的配置（与 POST 写接口的归属校验对齐，防 IDOR）
+    if user["id"] != current_user["user_id"]:
+        raise AppException("无权查看他人配置", code="forbidden", http_status=403)
 
     llm_keys_json = await db.user_setting_get(user["id"], "llm_keys")
     llm_keys = json.loads(llm_keys_json) if llm_keys_json else []
@@ -177,11 +181,15 @@ async def get_user_providers(
     username: str,
     current_user: dict = Depends(get_current_user),
 ) -> ApiResponse[dict]:
-    """获取指定用户的 providers 配置。"""
+    """获取指定用户的 providers 配置。仅允许查看自己的配置。"""
     db = Database.get()
     user = await db.user_get_by_username(username)
     if not user:
         raise AppException("用户不存在", code="user_not_found", http_status=404)
+
+    # 仅允许查看自己的配置（防 IDOR，与 POST 写接口归属校验对齐）
+    if user["id"] != current_user["user_id"]:
+        raise AppException("无权查看他人配置", code="forbidden", http_status=403)
 
     providers_json = await db.user_setting_get(user["id"], "providers")
     providers = json.loads(providers_json) if providers_json else {}

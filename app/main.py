@@ -805,13 +805,20 @@ async def api_token_guard(request, call_next):
     token = extract_token_from_request(request)
     if token:
         try:
-            verify_token(token)
+            payload = verify_token(token)
         except Exception:
             token = None  # token 无效，落入下方 401
         else:
-            # token 有效：执行路由。注意 call_next 必须在 try 之外，
-            # 否则路由本身的异常会被误吞成 401。
-            return await call_next(request)
+            # refresh token 不能访问 API（只能用于 /api/auth/refresh）。
+            # get_current_user 依赖已有此校验，但 13 个路由文件未挂该依赖，
+            # 只靠本中间件守门——故中间件必须同样拒绝 refresh token，否则
+            # 持 refresh token 即可访问摄像头/HA/自动化等全部控制面。
+            if payload.get("type") != "access":
+                token = None
+            else:
+                # token 有效：执行路由。注意 call_next 必须在 try 之外，
+                # 否则路由本身的异常会被误吞成 401。
+                return await call_next(request)
 
     # 向后兼容：检查 APP_TOKEN（仅 header）
     if APP_TOKEN:
