@@ -398,9 +398,11 @@ async function saveGlobalKey() {
 async function deleteGlobalKey(keyId) {
   if (!confirm(`确认删除全局 key ${keyId}？.env 中的密钥会保留，但该 key 将从全局配置移除。`)) return
   try {
-    const res = await fetch(`/api/global/llm_keys/${encodeURIComponent(keyId)}?password=${encodeURIComponent(sessionPassword.value)}`, {
+    const res = await fetch(`/api/global/llm_keys/${encodeURIComponent(keyId)}`, {
       method: 'DELETE',
       credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: sessionPassword.value }),
     })
     if (!res.ok) {
       const j = await res.json().catch(() => ({}))

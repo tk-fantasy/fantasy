@@ -418,6 +418,7 @@ class TestGlobalLlmKeyRoutes:
     async def test_delete_global_key_with_password(self):
         """删除全局 key：需密码，从 config.json 移除。"""
         from app.routes.settings_routes import delete_global_llm_key_route
+        from app.schema.api_schemas import SecondaryPasswordVerifyRequest
 
         existing = [
             {"id": "keep", "type": "chat", "api_key_env": "LLM_KEY_KEEP"},
@@ -435,7 +436,8 @@ class TestGlobalLlmKeyRoutes:
              patch("app.routes.settings_routes.get_config", return_value=existing), \
              patch("app.routes.settings_routes.save_global_llm_keys", side_effect=lambda keys: saved_arg.extend(keys) or keys):
             result = await delete_global_llm_key_route(
-                "del", password="correct-pw",
+                "del",
+                SecondaryPasswordVerifyRequest(password="correct-pw"),
                 current_user={"user_id": "u1", "username": "t"},
                 container=mock_container,
             )

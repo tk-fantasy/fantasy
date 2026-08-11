@@ -653,15 +653,16 @@ async def upsert_global_llm_key_route(
 @router.delete("/global/llm_keys/{key_id}")
 async def delete_global_llm_key_route(
     key_id: str,
-    password: str = "",
+    payload: SecondaryPasswordVerifyRequest,
     current_user: dict = Depends(get_current_user),
     container: AppContainer = Depends(get_container),
 ) -> ApiResponse[dict]:
     """删除全局 LLM Key（.env 密钥保留，避免误伤其他引用）。需二级密码。
 
-    DELETE 请求体不便带 JSON，这里用 query 参数 ?password=xxx。
+    password 走请求体（JSON body），不进 URL query——query 会被访问日志、
+    nginx、浏览器历史记录，导致二级密码泄漏。
     """
-    _verify_secondary_password(password)
+    _verify_secondary_password(payload.password)
     keys = [k for k in (get_config("llm_keys", []) or []) if k.get("id") != key_id]
     saved = save_global_llm_keys(keys)
     _reload_key_pools(container)
