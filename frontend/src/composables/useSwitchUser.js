@@ -9,7 +9,7 @@
 import { ref } from 'vue'
 import { LS_USER, SS_CHAT_SESSION } from '../utils/constants'
 
-export function useSwitchUser(user, isAuthenticated, router, showUserMenu) {
+export function useSwitchUser(user, isAuthenticated, router) {
   const users = ref([])
   const switchingUser = ref(false)
   // 切换用户时的密码确认子状态
@@ -37,9 +37,8 @@ export function useSwitchUser(user, isAuthenticated, router, showUserMenu) {
   // 切换用户：点击用户后先要求输入目标用户密码（方案A：切换需密码确认）
   function promptSwitchUser(u) {
     if (u.username === user.value?.username) return
-    // 未登录时，跳转到登录页
+    // 未登录时，跳转到登录页（路由切换后 SidebarNav 卸载，菜单自然消失）
     if (!isAuthenticated.value) {
-      showUserMenu.value = false
       router.push('/login')
       return
     }

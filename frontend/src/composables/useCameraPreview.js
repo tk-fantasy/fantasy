@@ -13,7 +13,9 @@
  * 依赖外部传入：
  *   - activeCameraId / cameras：多路选择状态（与 usePtz 共享）
  *   - loadCameras：useCamera 的拉列表方法
- *   - fetchPtzStatus：切路后同步 PTZ 配置（usePtz 方法）
+ *
+ * 注：切路后需同步 PTZ 配置是编排关注点，不在此 composable 内——
+ * 由调用方在 openCamera/switchCamera 之后自行调 fetchPtzStatus。
  */
 import { ref } from 'vue'
 import { onScopeDispose } from 'vue'
@@ -21,7 +23,7 @@ import { apiPost } from '../utils/api'
 
 const FEED_MAX_RETRIES = 10  // 设备掉线时最多重连 10 次（指数退避后约 5 分钟）
 
-export function useCameraPreview(activeCameraId, cameras, loadCameras, fetchPtzStatus) {
+export function useCameraPreview(activeCameraId, cameras, loadCameras) {
   // 计算 video_feed URL（认证通过 cookie 自动处理）
   // Task 12:多路切换 — video_feed 走 /api/cameras/{activeCameraId}/video_feed
   const videoFeedUrl = ref('')
@@ -97,7 +99,6 @@ export function useCameraPreview(activeCameraId, cameras, loadCameras, fetchPtzS
     }
     refreshVideoFeed()
     startCameraPolling()
-    fetchPtzStatus()
   }
 
   async function closeCamera() {
@@ -124,7 +125,6 @@ export function useCameraPreview(activeCameraId, cameras, loadCameras, fetchPtzS
     try { await apiPost(`/api/cameras/${id}/display/enable`, {}) } catch (e) { console.warn('enable new display:', e) }
     prevCameraOpened = null
     refreshVideoFeed()
-    fetchPtzStatus()
   }
 
   async function fetchCameraState() {

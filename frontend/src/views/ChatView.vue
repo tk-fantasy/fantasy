@@ -30,7 +30,17 @@ const {
   showCamera, cameraState,
   refreshVideoFeed, onVideoFeedError, onVideoFeedLoad,
   openCamera, closeCamera, switchCamera, fetchCameraState,
-} = useCameraPreview(activeCameraId, cameras, loadCameras, fetchPtzStatus)
+} = useCameraPreview(activeCameraId, cameras, loadCameras)
+
+// 编排：打开/切路后同步 PTZ 配置（composable 不感知 PTZ，由调用方编排）
+async function openCameraModal() {
+  await openCamera()
+  fetchPtzStatus()
+}
+async function switchCameraRoute(id) {
+  await switchCamera(id)
+  fetchPtzStatus()
+}
 
 // ============ State ============
 const messages = ref([])
@@ -67,7 +77,7 @@ const SLASH_COMMANDS = [
   { cmd: '/clear', desc: '清空当前会话消息', action: 'api', handler: doClear },
   { cmd: '/compress', desc: '压缩当前上下文生成摘要', action: 'api', handler: doCompress },
   { cmd: '/new', desc: '创建新会话', action: 'fn', handler: doNewSession },
-  { cmd: '/camera', desc: '摄像头预览(切换后影响 AI 看哪路)', action: 'fn', handler: openCamera },
+  { cmd: '/camera', desc: '摄像头预览(切换后影响 AI 看哪路)', action: 'fn', handler: openCameraModal },
   { cmd: '/halist', desc: '查看智能家居设备', action: 'nav', url: '/halist' },
   { cmd: '/task', desc: '查看自动化规则', action: 'nav', url: '/task' },
   { cmd: '/scheduled', desc: '查看定时任务', action: 'nav', url: '/scheduled' },
@@ -804,7 +814,7 @@ onUnmounted(() => {
                 :key="cam.id"
                 class="camera-tab"
                 :class="{ active: activeCameraId === cam.id }"
-                @click="switchCamera(cam.id)"
+                @click="switchCameraRoute(cam.id)"
               >{{ cam.name || cam.id }}</button>
             </div>
             <div class="camera-stage">

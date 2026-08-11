@@ -16,7 +16,7 @@ const showUserMenu = ref(false)
 const {
   users, switchingUser, pendingSwitch, switchPassword, switchError,
   loadUsers, promptSwitchUser, cancelSwitch, confirmSwitchUser,
-} = useSwitchUser(user, isAuthenticated, router, showUserMenu)
+} = useSwitchUser(user, isAuthenticated, router)
 
 // 从 API 加载家庭信息
 async function loadHomeInfo() {
