@@ -192,9 +192,18 @@ class RagService:
         """
         import faiss
 
+        # 必须由 bind_loop 预先绑定主事件循环：本方法在线程池内跑，
+        # 依赖 run_coroutine_threadsafe 把 async embed 调用投递回主 loop。
+        # 若 _loop 为 None（启动顺序异常/未调 bind_loop），原代码新建一个
+        # 从不 run 的 loop，导致 fut.result() 永久阻塞（死锁）。改为 fail-fast。
         loop = self._loop
         if loop is None:
-            loop = asyncio.new_event_loop()
+            logger.error(
+                "RAG: 主事件循环未绑定（未调 bind_loop），无法构建索引。"
+                "请确保启动时 RagService.bind_loop(main_loop) 已执行。"
+            )
+            self._rebuild_message = "主事件循环未绑定，索引构建被跳过"
+            return
         if self._embed_client is None:
             logger.warning("RAG: embed_client 未注入，跳过索引构建")
             return

@@ -90,3 +90,31 @@ class TestPerCameraFocuses:
         vs2.load_focuses(flat)
         assert len(vs2.get_vision_focuses(camera_id="cam_a")) == 2
         assert len(vs2.get_vision_focuses(camera_id="cam_b")) == 1
+
+
+class TestGetVisionFocusLegacy:
+    """get_vision_focus() 兼容旧单条 API：曾因整数索引 dict 导致 KeyError。
+
+    _vision_focuses 是 {camera_id: [items]}，旧代码 self._vision_focuses[0]
+    在任何非空状态下必抛 KeyError（settings_routes:722/735 调用即 500）。
+    """
+
+    def test_empty_returns_default(self):
+        vs = VisionService(client=MagicMock())
+        assert vs.get_vision_focus() == "画面中的人和他们的行为"
+
+    def test_non_empty_returns_first_bucket_first_item_text(self):
+        """非空时取第一个 bucket 的第一项 text（不再 KeyError）。"""
+        vs = VisionService(client=MagicMock())
+        vs.add_focus("车", camera_id="cam_b")
+        vs.add_focus("人", camera_id="cam_a")
+        # cam_b 先插入 → 第一个 bucket → 返回 "车"
+        assert vs.get_vision_focus() == "车"
+
+    def test_after_load_focuses_returns_first_item(self):
+        """load_focuses 后同样能正确返回（复现 settings_routes 启动加载路径）。"""
+        vs = VisionService(client=MagicMock())
+        vs.load_focuses([
+            {"id": "f1", "text": "门口来人", "enabled": True, "camera_id": "cam_a"},
+        ])
+        assert vs.get_vision_focus() == "门口来人"

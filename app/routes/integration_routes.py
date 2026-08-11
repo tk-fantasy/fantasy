@@ -12,7 +12,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from ..container import get_container
-from ..core.config import get_config
+from ..core.config import BASE_DIR, get_config
 from ..integration.schema import Manifest
 
 router = APIRouter()
@@ -20,6 +20,12 @@ logger = logging.getLogger(__name__)
 
 # 插件 id 合法字符（防路径穿越：只允许字母数字下划线中划线）
 _PLUGIN_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+# 插件包上传防护：限制上传体积 + 解压后体积 + 压缩比，防 zip bomb 与内存/磁盘 DoS。
+# 插件场景（几个 .py + manifest + 少量资源）远小于这些阈值。
+MAX_PLUGIN_ZIP_SIZE = 50 * 1024 * 1024        # 50 MB 上传上限
+MAX_PLUGIN_UNCOMPRESSED_SIZE = 500 * 1024 * 1024  # 500 MB 解压后总大小
+MAX_PLUGIN_COMPRESSION_RATIO = 100            # 解压/压缩 比值上限
 
 
 class BroadcastRequest(BaseModel):
@@ -181,10 +187,14 @@ async def invoke_action(action: str, body: dict = Body(default={}),
 # ── 插件导出/上传 ──
 
 def _resolve_plugin_dir() -> Path:
-    """从 config 读 plugin_dir，解析为绝对路径（容器内项目根 /aether）。"""
-    from pathlib import Path as _Path
+    """从 config 读 plugin_dir，解析为绝对路径（基于项目根，跨平台）。
+
+    原代码硬编码 Path("/aether")，Windows 上解析成当前盘符的 \\aether，
+    导致本地开发/Windows 部署找不到插件目录。改用 BASE_DIR（容器内为
+    /aether，Windows 开发为项目根），跨环境一致。
+    """
     dir_cfg = get_config("integration.plugin_dir", "integrations")
-    return _Path("/aether") / dir_cfg
+    return Path(BASE_DIR) / dir_cfg
 
 
 @router.get("/integrations/{plugin_id}/export")
@@ -224,12 +234,28 @@ async def upload_plugin(file: UploadFile = File(...)):
     - 同名插件已存在 → 拒绝（需先删除）
     """
     content = await file.read()
+    if len(content) > MAX_PLUGIN_ZIP_SIZE:
+        return {"success": False,
+                "message": f"插件包过大（{len(content) // 1024 // 1024}MB > "
+                           f"{MAX_PLUGIN_ZIP_SIZE // 1024 // 1024}MB 上限）"}
     try:
         zf = zipfile.ZipFile(io.BytesIO(content))
     except zipfile.BadZipFile:
         return {"success": False, "message": "不是有效的 zip 文件"}
 
     names = zf.namelist()
+
+    # zip bomb 防护：累计解压后大小 + 压缩比，超阈值拒绝。
+    # 压实率为 0 的空条目跳过（避免除零）。
+    total_uncompressed = sum(i.file_size for i in zf.infolist())
+    if total_uncompressed > MAX_PLUGIN_UNCOMPRESSED_SIZE:
+        return {"success": False,
+                "message": f"解压后体积过大（{total_uncompressed // 1024 // 1024}MB > "
+                           f"{MAX_PLUGIN_UNCOMPRESSED_SIZE // 1024 // 1024}MB 上限）"}
+    if content and total_uncompressed // len(content) > MAX_PLUGIN_COMPRESSION_RATIO:
+        return {"success": False,
+                "message": f"压缩比异常（{total_uncompressed // max(len(content), 1)}x > "
+                           f"{MAX_PLUGIN_COMPRESSION_RATIO}x），疑似 zip bomb"}
 
     # 找 manifest.json（可能在根目录或单层子目录）
     manifest_name = None

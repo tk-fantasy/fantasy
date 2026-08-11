@@ -611,3 +611,41 @@ class TestEvaluateFiltersByCamera:
         assert "每天8点" in seen and "每天9点" in seen
 
 
+class TestApplyResultsExceptionTraceback:
+    """_apply_results 处理 gather(return_exceptions=True) 收集的异常对象时，
+    必须还原真实堆栈，不能用 traceback.format_exc()（会返回 "NoneType: None"）。
+
+    复现审查 #9：原代码在非 except 上下文调 format_exc()，日志诊断失效。
+    """
+
+    @pytest.mark.asyncio
+    async def test_exception_result_logs_real_traceback(self):
+        svc = AutomationService.__new__(AutomationService)
+        svc._run_actions = AsyncMock(return_value=[])
+
+        # 构造一个带 __traceback__ 的异常（模拟 gather 收集到的）
+        try:
+            raise ValueError("boom from vision eval")
+        except ValueError as exc:
+            captured_exc = exc
+
+        rules = [{"id": "r1", "name": "测试规则"}]
+        results = [captured_exc]
+
+        with patch("app.services.automation_service.logger") as mock_logger:
+            await svc._apply_results(rules, results, time.time(), [])
+
+        # 找到 eval failed 的那条 warning
+        warning_calls = [c for c in mock_logger.warning.call_args_list
+                         if "eval failed" in str(c)]
+        assert len(warning_calls) == 1
+        tb_arg = warning_calls[0].args[0] if warning_calls[0].args else \
+            warning_calls[0][0]["args"][0]
+        # 实际堆栈字符串是第 5 个参数（%s\n%s 格式的第二段）
+        all_args = warning_calls[0].args
+        tb_str = all_args[-1] if len(all_args) >= 1 else ""
+        # 不能是 "NoneType: None"，必须含真实异常类型/消息
+        assert "NoneType: None" not in tb_str
+        assert "ValueError" in tb_str or "boom" in tb_str
+
+
