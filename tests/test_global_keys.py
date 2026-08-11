@@ -190,11 +190,11 @@ class TestSecondaryPassword:
 
     @pytest.mark.asyncio
     async def test_setup_password_first_time(self):
-        from app.routes.settings_routes import set_global_password
+        from app.routes.global_config_routes import set_global_password
         from app.schema.api_schemas import SecondaryPasswordSetupRequest
 
         # 初始未设
-        with patch("app.routes.settings_routes.get_secondary_password_hash", return_value=""):
+        with patch("app.services.llm_key_service.get_secondary_password_hash", return_value=""):
             result = await set_global_password(
                 SecondaryPasswordSetupRequest(password="new-pw-123"),
                 current_user={"user_id": "u1", "username": "t"},
@@ -203,11 +203,11 @@ class TestSecondaryPassword:
 
     @pytest.mark.asyncio
     async def test_setup_password_already_set_returns_409(self):
-        from app.routes.settings_routes import set_global_password
+        from app.routes.global_config_routes import set_global_password
         from app.schema.api_schemas import SecondaryPasswordSetupRequest
         from app.core.exceptions import AppException
 
-        with patch("app.routes.settings_routes.get_secondary_password_hash", return_value="existing-hash"):
+        with patch("app.services.llm_key_service.get_secondary_password_hash", return_value="existing-hash"):
             with pytest.raises(AppException) as exc:
                 await set_global_password(
                     SecondaryPasswordSetupRequest(password="new-pw-123"),
@@ -217,13 +217,13 @@ class TestSecondaryPassword:
 
     @pytest.mark.asyncio
     async def test_verify_password_correct(self):
-        from app.routes.settings_routes import verify_global_password
+        from app.routes.global_config_routes import verify_global_password
         from app.schema.api_schemas import SecondaryPasswordVerifyRequest
         from app.core.auth import hash_password
 
         h = hash_password("correct-pw")
-        with patch("app.routes.settings_routes.get_secondary_password_hash", return_value=h), \
-             patch("app.routes.settings_routes.verify_password", return_value=True):
+        with patch("app.services.llm_key_service.get_secondary_password_hash", return_value=h), \
+             patch("app.services.llm_key_service.verify_password", return_value=True):
             result = await verify_global_password(
                 SecondaryPasswordVerifyRequest(password="correct-pw")
             )
@@ -231,13 +231,13 @@ class TestSecondaryPassword:
 
     @pytest.mark.asyncio
     async def test_verify_password_wrong_returns_403(self):
-        from app.routes.settings_routes import verify_global_password, _verify_secondary_password
+        from app.routes.global_config_routes import verify_global_password
         from app.schema.api_schemas import SecondaryPasswordVerifyRequest
         from app.core.exceptions import AppException
         from app.core.auth import hash_password
 
         h = hash_password("correct-pw")
-        with patch("app.routes.settings_routes.get_secondary_password_hash", return_value=h):
+        with patch("app.services.llm_key_service.get_secondary_password_hash", return_value=h):
             with pytest.raises(AppException) as exc:
                 await verify_global_password(
                     SecondaryPasswordVerifyRequest(password="wrong-pw")
@@ -246,12 +246,12 @@ class TestSecondaryPassword:
 
     @pytest.mark.asyncio
     async def test_verify_password_not_set_returns_403(self):
-        from app.routes.settings_routes import _verify_secondary_password
+        from app.services.llm_key_service import verify_secondary_password
         from app.core.exceptions import AppException
 
-        with patch("app.routes.settings_routes.get_secondary_password_hash", return_value=""):
+        with patch("app.services.llm_key_service.get_secondary_password_hash", return_value=""):
             with pytest.raises(AppException) as exc:
-                _verify_secondary_password("anything")
+                verify_secondary_password("anything")
             assert exc.value.http_status == 403
             assert exc.value.code == "secondary_password_not_set"
 
@@ -264,9 +264,9 @@ class TestGlobalLlmKeyRoutes:
     @pytest.mark.asyncio
     async def test_list_global_keys_no_password_needed(self):
         """GET /global/llm_keys 是读操作，不需密码。"""
-        from app.routes.settings_routes import list_global_llm_keys
+        from app.routes.global_config_routes import list_global_llm_keys
 
-        with patch("app.routes.settings_routes.get_config", return_value=[
+        with patch("app.routes.global_config_routes.get_config", return_value=[
             {"id": "k1", "base_url": "https://a.com/v1", "model": "m1",
              "type": "chat", "api_key_env": "LLM_KEY_K1"},
         ]):
@@ -281,7 +281,7 @@ class TestGlobalLlmKeyRoutes:
     @pytest.mark.asyncio
     async def test_upsert_global_key_without_password_rejected(self):
         """未设二级密码时 POST /global/llm_keys 拒绝。"""
-        from app.routes.settings_routes import upsert_global_llm_key_route
+        from app.routes.global_config_routes import upsert_global_llm_key_route
         from app.schema.api_schemas import GlobalLLMKeyRequest
         from app.core.exceptions import AppException
 
@@ -290,7 +290,7 @@ class TestGlobalLlmKeyRoutes:
             base_url="https://a.com/v1", model="m1", type="chat",
             api_key="sk-xxx", password="",
         )
-        with patch("app.routes.settings_routes.get_secondary_password_hash", return_value=""):
+        with patch("app.services.llm_key_service.get_secondary_password_hash", return_value=""):
             with pytest.raises(AppException) as exc:
                 await upsert_global_llm_key_route(
                     payload,
@@ -302,7 +302,7 @@ class TestGlobalLlmKeyRoutes:
     @pytest.mark.asyncio
     async def test_upsert_global_key_with_wrong_password_rejected(self):
         """密码错误拒绝。"""
-        from app.routes.settings_routes import upsert_global_llm_key_route
+        from app.routes.global_config_routes import upsert_global_llm_key_route
         from app.schema.api_schemas import GlobalLLMKeyRequest
         from app.core.exceptions import AppException
         from app.core.auth import hash_password
@@ -312,7 +312,7 @@ class TestGlobalLlmKeyRoutes:
             base_url="https://a.com/v1", model="m1", type="chat",
             api_key="sk-xxx", password="wrong-pw",
         )
-        with patch("app.routes.settings_routes.get_secondary_password_hash", return_value=h):
+        with patch("app.services.llm_key_service.get_secondary_password_hash", return_value=h):
             with pytest.raises(AppException) as exc:
                 await upsert_global_llm_key_route(
                     payload,
@@ -325,7 +325,7 @@ class TestGlobalLlmKeyRoutes:
     @pytest.mark.asyncio
     async def test_upsert_global_key_new_key_writes_config_and_env(self):
         """新增全局 key：写 .env + save_global_llm_keys + reload key pools。"""
-        from app.routes.settings_routes import upsert_global_llm_key_route
+        from app.routes.global_config_routes import upsert_global_llm_key_route
         from app.schema.api_schemas import GlobalLLMKeyRequest
 
         saved_keys = []
@@ -344,13 +344,13 @@ class TestGlobalLlmKeyRoutes:
             api_key="sk-real-key", password="correct-pw",
         )
 
-        with patch("app.routes.settings_routes.get_secondary_password_hash", return_value="hash"), \
-             patch("app.routes.settings_routes.verify_password", return_value=True), \
-             patch("app.routes.settings_routes.test_model_connection", new=AsyncMock(side_effect=fake_test)), \
-             patch("app.routes.settings_routes.write_secrets", side_effect=lambda d: written_secrets.update(d)), \
-             patch("app.routes.settings_routes.save_global_llm_keys", side_effect=lambda keys: saved_keys.extend(keys) or saved_keys), \
-             patch("app.routes.settings_routes.get_config", return_value=[]), \
-             patch("app.routes.settings_routes.GLOBAL_KEY_HOT_RELOAD", False):
+        with patch("app.services.llm_key_service.get_secondary_password_hash", return_value="hash"), \
+             patch("app.services.llm_key_service.verify_password", return_value=True), \
+             patch("app.routes.global_config_routes.test_model_connection", new=AsyncMock(side_effect=fake_test)), \
+             patch("app.routes.global_config_routes.write_secrets", side_effect=lambda d: written_secrets.update(d)), \
+             patch("app.routes.global_config_routes.save_global_llm_keys", side_effect=lambda keys: saved_keys.extend(keys) or saved_keys), \
+             patch("app.routes.global_config_routes.get_config", return_value=[]), \
+             patch("app.routes.global_config_routes.GLOBAL_KEY_HOT_RELOAD", False):
             result = await upsert_global_llm_key_route(
                 payload,
                 current_user={"user_id": "u1", "username": "t"},
@@ -372,7 +372,7 @@ class TestGlobalLlmKeyRoutes:
     @pytest.mark.asyncio
     async def test_upsert_global_key_edit_blank_api_key_keeps_env(self):
         """编辑现有 key 且 api_key 留空：不覆盖 .env，沿用原 env。"""
-        from app.routes.settings_routes import upsert_global_llm_key_route
+        from app.routes.global_config_routes import upsert_global_llm_key_route
         from app.schema.api_schemas import GlobalLLMKeyRequest
 
         existing = [{
@@ -396,13 +396,13 @@ class TestGlobalLlmKeyRoutes:
             password="correct-pw",
         )
 
-        with patch("app.routes.settings_routes.get_secondary_password_hash", return_value="hash"), \
-             patch("app.routes.settings_routes.verify_password", return_value=True), \
-             patch("app.routes.settings_routes.test_model_connection", new=AsyncMock(side_effect=fake_test)), \
-             patch("app.routes.settings_routes.write_secrets", side_effect=lambda d: written_secrets.update(d)), \
-             patch("app.routes.settings_routes.save_global_llm_keys", side_effect=lambda keys: keys), \
-             patch("app.routes.settings_routes.get_config", return_value=existing), \
-             patch("app.routes.settings_routes.GLOBAL_KEY_HOT_RELOAD", False):
+        with patch("app.services.llm_key_service.get_secondary_password_hash", return_value="hash"), \
+             patch("app.services.llm_key_service.verify_password", return_value=True), \
+             patch("app.routes.global_config_routes.test_model_connection", new=AsyncMock(side_effect=fake_test)), \
+             patch("app.routes.global_config_routes.write_secrets", side_effect=lambda d: written_secrets.update(d)), \
+             patch("app.routes.global_config_routes.save_global_llm_keys", side_effect=lambda keys: keys), \
+             patch("app.routes.global_config_routes.get_config", return_value=existing), \
+             patch("app.routes.global_config_routes.GLOBAL_KEY_HOT_RELOAD", False):
             result = await upsert_global_llm_key_route(
                 payload,
                 current_user={"user_id": "u1", "username": "t"},
@@ -417,7 +417,7 @@ class TestGlobalLlmKeyRoutes:
     @pytest.mark.asyncio
     async def test_delete_global_key_with_password(self):
         """删除全局 key：需密码，从 config.json 移除。"""
-        from app.routes.settings_routes import delete_global_llm_key_route
+        from app.routes.global_config_routes import delete_global_llm_key_route
         from app.schema.api_schemas import SecondaryPasswordVerifyRequest
 
         existing = [
@@ -431,10 +431,10 @@ class TestGlobalLlmKeyRoutes:
         mock_container.embed_client = MagicMock()
         mock_container.rag_service = None
 
-        with patch("app.routes.settings_routes.get_secondary_password_hash", return_value="hash"), \
-             patch("app.routes.settings_routes.verify_password", return_value=True), \
-             patch("app.routes.settings_routes.get_config", return_value=existing), \
-             patch("app.routes.settings_routes.save_global_llm_keys", side_effect=lambda keys: saved_arg.extend(keys) or keys):
+        with patch("app.services.llm_key_service.get_secondary_password_hash", return_value="hash"), \
+             patch("app.services.llm_key_service.verify_password", return_value=True), \
+             patch("app.routes.global_config_routes.get_config", return_value=existing), \
+             patch("app.routes.global_config_routes.save_global_llm_keys", side_effect=lambda keys: saved_arg.extend(keys) or keys):
             result = await delete_global_llm_key_route(
                 "del",
                 SecondaryPasswordVerifyRequest(password="correct-pw"),
@@ -454,7 +454,7 @@ class TestPerUserUseGlobalPassthrough:
 
     @pytest.mark.asyncio
     async def test_use_global_true_writes_flag_and_clears_key_id(self):
-        from app.routes.settings_routes import set_llm_settings
+        from app.routes.llm_key_routes import set_llm_settings
         from app.schema.api_schemas import LLMSettingsRequest
 
         saved = {}
@@ -469,7 +469,7 @@ class TestPerUserUseGlobalPassthrough:
 
         payload = LLMSettingsRequest(role="chat", key_id="some-key", use_global=True)
 
-        with patch("app.routes.settings_routes._save_user_provider", new=AsyncMock(side_effect=mock_save)):
+        with patch("app.services.llm_key_service.save_user_provider", new=AsyncMock(side_effect=mock_save)):
             await set_llm_settings(
                 payload, current_user={"user_id": "u1", "username": "t"},
                 container=mock_container,
@@ -483,7 +483,7 @@ class TestPerUserUseGlobalPassthrough:
 
     @pytest.mark.asyncio
     async def test_use_global_false_keeps_key_id(self):
-        from app.routes.settings_routes import set_llm_settings
+        from app.routes.llm_key_routes import set_llm_settings
         from app.schema.api_schemas import LLMSettingsRequest
 
         saved = {}
@@ -498,7 +498,7 @@ class TestPerUserUseGlobalPassthrough:
 
         payload = LLMSettingsRequest(role="chat", key_id="my-key", use_global=False)
 
-        with patch("app.routes.settings_routes._save_user_provider", new=AsyncMock(side_effect=mock_save)):
+        with patch("app.services.llm_key_service.save_user_provider", new=AsyncMock(side_effect=mock_save)):
             await set_llm_settings(
                 payload, current_user={"user_id": "u1", "username": "t"},
                 container=mock_container,
@@ -510,7 +510,7 @@ class TestPerUserUseGlobalPassthrough:
     @pytest.mark.asyncio
     async def test_use_global_unset_does_not_set_flag(self):
         """use_global=None（老前端调用）不改此标志。"""
-        from app.routes.settings_routes import set_llm_settings
+        from app.routes.llm_key_routes import set_llm_settings
         from app.schema.api_schemas import LLMSettingsRequest
 
         saved = {}
@@ -524,7 +524,7 @@ class TestPerUserUseGlobalPassthrough:
 
         payload = LLMSettingsRequest(role="chat", key_id="my-key")  # 无 use_global
 
-        with patch("app.routes.settings_routes._save_user_provider", new=AsyncMock(side_effect=mock_save)):
+        with patch("app.services.llm_key_service.save_user_provider", new=AsyncMock(side_effect=mock_save)):
             await set_llm_settings(
                 payload, current_user={"user_id": "u1", "username": "t"},
                 container=mock_container,
@@ -540,14 +540,14 @@ class TestGetLlmSettingsReturnsUseGlobal:
 
     @pytest.mark.asyncio
     async def test_returns_use_global_false_when_unset(self):
-        from app.routes.settings_routes import get_llm_settings
+        from app.routes.llm_key_routes import get_llm_settings
 
         mock_container = MagicMock()
         mock_container.llm_settings_service = MagicMock()
         mock_container.llm_settings_service.current_settings = MagicMock(return_value={})
         mock_container.llm_settings_service.warnings = MagicMock(return_value=[])
 
-        with patch("app.routes.settings_routes._get_user_providers", new=AsyncMock(return_value={})):
+        with patch("app.services.llm_key_service.get_user_providers", new=AsyncMock(return_value={})):
             result = await get_llm_settings(
                 current_user={"user_id": "u1", "username": "t"},
                 container=mock_container,
@@ -558,7 +558,7 @@ class TestGetLlmSettingsReturnsUseGlobal:
 
     @pytest.mark.asyncio
     async def test_returns_use_global_true_when_set(self):
-        from app.routes.settings_routes import get_llm_settings
+        from app.routes.llm_key_routes import get_llm_settings
 
         mock_container = MagicMock()
         mock_container.llm_settings_service = MagicMock()
@@ -567,7 +567,7 @@ class TestGetLlmSettingsReturnsUseGlobal:
 
         user_providers = {"chat": {"key_id": "", "use_global": True}}
 
-        with patch("app.routes.settings_routes._get_user_providers", new=AsyncMock(return_value=user_providers)):
+        with patch("app.services.llm_key_service.get_user_providers", new=AsyncMock(return_value=user_providers)):
             result = await get_llm_settings(
                 current_user={"user_id": "u1", "username": "t"},
                 container=mock_container,

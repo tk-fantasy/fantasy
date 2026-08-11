@@ -98,7 +98,7 @@ class TestSyncLlmKeysStoresPlaintext:
 
     @pytest.mark.asyncio
     async def test_sync_writes_plaintext_api_key(self):
-        from app.routes.settings_routes import _sync_llm_keys_to_current_user
+        from app.services.llm_key_service import sync_llm_keys_to_current_user
 
         # 全局 CONFIG 中有 key 但只有 env 名，没有明文
         global_keys = [
@@ -116,7 +116,7 @@ class TestSyncLlmKeysStoresPlaintext:
         with patch("app.core.config.get_config", return_value=global_keys), \
              patch("app.core.database.Database.get", return_value=mock_db), \
              patch("os.getenv", return_value="plaintext-secret"):
-            await _sync_llm_keys_to_current_user({"user_id": "user-1"})
+            await sync_llm_keys_to_current_user({"user_id": "user-1"})
 
         synced = json.loads(stored_keys["llm_keys"])
         assert synced[0]["api_key"] == "plaintext-secret"

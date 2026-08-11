@@ -700,7 +700,7 @@ app = FastAPI(title="Aether", lifespan=lifespan)
 register_exception_handlers(app)
 
 # 注册路由模块
-from .routes import settings_router, home_router, weather_router, emoji_router, advanced_router, stt_router
+from .routes import llm_key_router, global_config_router, home_router, weather_router, emoji_router, advanced_router, stt_router
 from .routes.auth_routes import router as auth_router
 from .routes.user_routes import router as user_router
 from .routes.rule_routes import router as rule_router
@@ -717,7 +717,8 @@ from .routes.sg_routes import router as sg_router
 from .routes.integration_routes import router as integration_router
 from .routes.ws_routes import router as ws_router
 from .routes.automation_routes import router as automation_router
-app.include_router(settings_router, prefix="/api")
+app.include_router(llm_key_router, prefix="/api")
+app.include_router(global_config_router, prefix="/api")
 app.include_router(home_router, prefix="/api")
 app.include_router(weather_router, prefix="/api")
 app.include_router(emoji_router, prefix="/api")
