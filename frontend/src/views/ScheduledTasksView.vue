@@ -4,6 +4,7 @@ import BaseToggle from '../components/BaseToggle.vue'
 import EmojiPicker from '../components/EmojiPicker.vue'
 import ReviseChatModal from '../components/ReviseChatModal.vue'
 import { apiGet, apiPost } from '../utils/api'
+import { useEmojiPref } from '../composables/useEmojiPref'
 
 const tasks = ref([])
 const loading = ref(true)
@@ -14,45 +15,8 @@ const creating = ref(false)
 const selectedTask = ref(null)
 const showReviseModal = ref(false)
 
-// Emoji 偏好管理
-const emojiPrefs = ref({}) // { "scheduled_task:xxx": "🔔" }
-const showEmojiPicker = ref(false)
-const currentEmojiTarget = ref(null) // { scope, key, defaultEmoji }
-
-async function loadEmojiPrefs() {
-  try {
-    const res = await fetch('/api/emoji/preferences')
-    const json = await res.json()
-    const prefs = {}
-    for (const item of (json.data || [])) {
-      prefs[`${item.scope}:${item.key}`] = item.emoji_char
-    }
-    emojiPrefs.value = prefs
-  } catch (e) {
-    console.error('Failed to load emoji prefs:', e)
-  }
-}
-
-function openEmojiPicker(scope, key, defaultEmoji) {
-  currentEmojiTarget.value = { scope, key, defaultEmoji }
-  showEmojiPicker.value = true
-}
-
-async function onEmojiSelect(item) {
-  if (!currentEmojiTarget.value) return
-  const { scope, key } = currentEmojiTarget.value
-  const prefKey = `${scope}:${key}`
-  try {
-    await fetch('/api/emoji/preferences', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ scope, key, emoji_char: item.char }),
-    })
-    emojiPrefs.value[prefKey] = item.char
-  } catch (e) {
-    console.error('Failed to save emoji pref:', e)
-  }
-}
+// Emoji 偏好管理（composable 统一封装，原 4 处复制已去重）
+const { emojiPrefs, showEmojiPicker, loadEmojiPrefs, openEmojiPicker, onEmojiSelect } = useEmojiPref()
 
 function openTaskRevise(task) {
   selectedTask.value = task

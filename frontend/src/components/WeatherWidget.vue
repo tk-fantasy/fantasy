@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import EmojiPicker from './EmojiPicker.vue'
+import { useEmojiPref } from '../composables/useEmojiPref'
 
 const weather = ref(null)
 const loading = ref(true)
@@ -8,47 +9,8 @@ const error = ref(null)
 const expanded = ref(false)
 let timer = null
 
-// Emoji 偏好管理
-const emojiPrefs = ref({})
-const showEmojiPicker = ref(false)
-const currentEmojiTarget = ref(null)
-
-async function loadEmojiPrefs() {
-  try {
-    const res = await fetch('/api/emoji/preferences')
-    if (!res.ok) return
-    const json = await res.json()
-    const prefs = {}
-    for (const item of (json.data || [])) {
-      prefs[`${item.scope}:${item.key}`] = item.emoji_char
-    }
-    emojiPrefs.value = prefs
-  } catch (e) {
-    console.error('Failed to load emoji prefs:', e)
-  }
-}
-
-function openEmojiPicker(scope, key) {
-  currentEmojiTarget.value = { scope, key }
-  showEmojiPicker.value = true
-}
-
-async function onEmojiSelect(item) {
-  if (!currentEmojiTarget.value) return
-  const { scope, key } = currentEmojiTarget.value
-  const prefKey = `${scope}:${key}`
-  
-  try {
-    await fetch('/api/emoji/preferences', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ scope, key, emoji_char: item.char }),
-    })
-    emojiPrefs.value[prefKey] = item.char
-  } catch (e) {
-    console.error('Failed to save emoji pref:', e)
-  }
-}
+// Emoji 偏好管理（composable 统一封装，原 4 处复制已去重）
+const { emojiPrefs, showEmojiPicker, loadEmojiPrefs, openEmojiPicker, onEmojiSelect } = useEmojiPref()
 
 const isNight = computed(() => {
   const hour = new Date().getHours()

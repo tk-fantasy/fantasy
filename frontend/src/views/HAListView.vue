@@ -5,6 +5,7 @@ import EmojiPicker from '../components/EmojiPicker.vue'
 import SensorChart from '../components/SensorChart.vue'
 import { adaptControls, formatSliderValue, toActualValue } from '../utils/deviceCapabilities.js'
 import { apiGet } from '../utils/api'
+import { useEmojiPref } from '../composables/useEmojiPref'
 
 const entities = ref([])        // 扁平实体列表（兼容，也供 modal 内按 id 查找）
 const devices = ref([])         // 设备分组（主数据源）
@@ -17,9 +18,8 @@ const selectedEntity = ref(null)       // 设备详情内当前展开的子实�
 const showModal = ref(false)
 const togglingDevices = ref(new Set())
 
-const emojiPrefs = ref({})
-const showEmojiPicker = ref(false)
-const currentEmojiTarget = ref(null)
+// Emoji 偏好管理（composable 统一封装，原 4 处复制已去重）
+const { emojiPrefs, showEmojiPicker, loadEmojiPrefs, openEmojiPicker, onEmojiSelect } = useEmojiPref()
 
 // 实体别名（用户自定义显示名，覆盖 HA 生成的难看名字）
 const entityAliases = ref({})         // {entity_id: alias}
@@ -30,46 +30,6 @@ const nameInput = ref('')
 const entityNotes = ref({})          // {entity_id: note}
 const noteInput = ref('')
 const editingNote = ref(false)
-
-// ========================
-//  Emoji preferences
-// ========================
-
-async function loadEmojiPrefs() {
-  try {
-    const res = await fetch('/api/emoji/preferences', { credentials: 'include' })
-    const json = await res.json()
-    const prefs = {}
-    for (const item of (json.data || [])) {
-      prefs[`${item.scope}:${item.key}`] = item.emoji_char
-    }
-    emojiPrefs.value = prefs
-  } catch (e) {
-    console.error('Failed to load emoji prefs:', e)
-  }
-}
-
-function openEmojiPicker(scope, key) {
-  currentEmojiTarget.value = { scope, key }
-  showEmojiPicker.value = true
-}
-
-async function onEmojiSelect(item) {
-  if (!currentEmojiTarget.value) return
-  const { scope, key } = currentEmojiTarget.value
-  const prefKey = `${scope}:${key}`
-  try {
-    await fetch('/api/emoji/preferences', {
-      method: 'PUT',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ scope, key, emoji_char: item.char }),
-    })
-    emojiPrefs.value[prefKey] = item.char
-  } catch (e) {
-    console.error('Failed to save emoji pref:', e)
-  }
-}
 
 // ========================
 //  Entity alias (用户自定义实体显示名)
