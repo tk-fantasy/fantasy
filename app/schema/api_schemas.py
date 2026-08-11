@@ -130,22 +130,6 @@ class GlobalLLMSettingsRequest(BaseModel):
     password: str = ""
 
 
-class VisionFocusRequest(BaseModel):
-    """POST /vision/focus — 设置视觉关注指令。"""
-    focus: str = ""
-
-
-class VisionFocusesCreateRequest(BaseModel):
-    """POST /vision/focuses — 新增一条视觉关注。"""
-    text: str = Field(min_length=1)
-
-
-class VisionFocusesUpdateRequest(BaseModel):
-    """PUT /vision/focuses/{focus_id} — 更新一条视觉关注。"""
-    text: str | None = None
-    enabled: bool | None = None
-
-
 # --------------- 高级配置 ---------------
 
 class ExaConfig(BaseModel):

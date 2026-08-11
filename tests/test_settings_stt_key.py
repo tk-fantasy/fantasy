@@ -24,7 +24,7 @@ class TestUpsertSttKeyRoute:
     @pytest.mark.asyncio
     async def test_stt_key_new_runs_test_and_sets_empty_paths(self):
         """新增 type=stt 的 key：也测连接（b521941）、chat_path/embed_path 置空。"""
-        from app.routes.settings_routes import upsert_llm_key_route
+        from app.routes.llm_key_routes import upsert_llm_key_route
 
         captured: dict = {}
 
@@ -43,9 +43,9 @@ class TestUpsertSttKeyRoute:
             id="",  # 新增
         )
 
-        with patch("app.routes.settings_routes.test_model_connection", new_callable=AsyncMock) as mock_test, \
-             patch("app.routes.settings_routes.upsert_llm_key", side_effect=fake_upsert), \
-             patch("app.routes.settings_routes._sync_llm_keys_to_current_user", new_callable=AsyncMock) as mock_sync:
+        with patch("app.routes.llm_key_routes.test_model_connection", new_callable=AsyncMock) as mock_test, \
+             patch("app.routes.llm_key_routes.upsert_llm_key", side_effect=fake_upsert), \
+             patch("app.services.llm_key_service.sync_llm_keys_to_current_user", new_callable=AsyncMock) as mock_sync:
             mock_test.return_value = {"ok": True}
             result = await upsert_llm_key_route(payload=payload, current_user=current_user, container=container)
 
@@ -69,7 +69,7 @@ class TestUpsertSttKeyRoute:
     @pytest.mark.asyncio
     async def test_stt_key_new_test_failure_rejected(self):
         """新增 stt key 时连接测试失败应被拒（b521941：stt 也走测试+拦截）。"""
-        from app.routes.settings_routes import upsert_llm_key_route
+        from app.routes.llm_key_routes import upsert_llm_key_route
 
         payload = LLMKeyRequest(
             base_url="https://api.siliconflow.cn/v1",
@@ -79,9 +79,9 @@ class TestUpsertSttKeyRoute:
             id="",
         )
 
-        with patch("app.routes.settings_routes.test_model_connection", new_callable=AsyncMock) as mock_test, \
-             patch("app.routes.settings_routes.upsert_llm_key") as mock_upsert, \
-             patch("app.routes.settings_routes._sync_llm_keys_to_current_user", new_callable=AsyncMock):
+        with patch("app.routes.llm_key_routes.test_model_connection", new_callable=AsyncMock) as mock_test, \
+             patch("app.routes.llm_key_routes.upsert_llm_key") as mock_upsert, \
+             patch("app.services.llm_key_service.sync_llm_keys_to_current_user", new_callable=AsyncMock):
             mock_test.return_value = {"ok": False, "error": "401 Unauthorized"}
             with pytest.raises(AppException) as exc_info:
                 await upsert_llm_key_route(
@@ -97,7 +97,7 @@ class TestUpsertSttKeyRoute:
     @pytest.mark.asyncio
     async def test_invalid_type_rejected(self):
         """非法 type 抛 AppException(400)。"""
-        from app.routes.settings_routes import upsert_llm_key_route
+        from app.routes.llm_key_routes import upsert_llm_key_route
 
         payload = LLMKeyRequest(
             base_url="https://api.example.com/v1",
@@ -118,7 +118,7 @@ class TestUpsertSttKeyRoute:
     @pytest.mark.asyncio
     async def test_non_stt_new_key_runs_test(self):
         """新增 type=chat 的 key 仍触发连接测试（验证 stt 跳过是针对性的）。"""
-        from app.routes.settings_routes import upsert_llm_key_route
+        from app.routes.llm_key_routes import upsert_llm_key_route
 
         payload = LLMKeyRequest(
             base_url="https://api.example.com/v1",
@@ -128,9 +128,9 @@ class TestUpsertSttKeyRoute:
             id="",
         )
 
-        with patch("app.routes.settings_routes.test_model_connection", new_callable=AsyncMock) as mock_test, \
-             patch("app.routes.settings_routes.upsert_llm_key", return_value=[]), \
-             patch("app.routes.settings_routes._sync_llm_keys_to_current_user", new_callable=AsyncMock):
+        with patch("app.routes.llm_key_routes.test_model_connection", new_callable=AsyncMock) as mock_test, \
+             patch("app.routes.llm_key_routes.upsert_llm_key", return_value=[]), \
+             patch("app.services.llm_key_service.sync_llm_keys_to_current_user", new_callable=AsyncMock):
             mock_test.return_value = {"ok": True}
             await upsert_llm_key_route(
                 payload=payload,

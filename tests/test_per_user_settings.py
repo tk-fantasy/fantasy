@@ -17,7 +17,7 @@ class TestPostLlmSettingsPerUser:
     @pytest.mark.asyncio
     async def test_chat_role_writes_to_user_db(self):
         """chat 角色保存写入用户 DB，不调 llm_settings_service.apply。"""
-        from app.routes.settings_routes import set_llm_settings
+        from app.routes.llm_key_routes import set_llm_settings
         from app.schema.api_schemas import LLMSettingsRequest
 
         saved = {}
@@ -35,7 +35,7 @@ class TestPostLlmSettingsPerUser:
 
         payload = LLMSettingsRequest(role="chat", key_id="key-1")
 
-        with patch("app.routes.settings_routes._save_user_provider", new=AsyncMock(side_effect=mock_save)):
+        with patch("app.services.llm_key_service.save_user_provider", new=AsyncMock(side_effect=mock_save)):
             result = await set_llm_settings(
                 payload, current_user=_mock_current_user(), container=mock_container
             )
@@ -52,7 +52,7 @@ class TestPostLlmSettingsPerUser:
     @pytest.mark.asyncio
     async def test_vision_role_writes_to_global_config(self):
         """vision 角色保存走全局 config.json（现有逻辑不变）。"""
-        from app.routes.settings_routes import set_llm_settings
+        from app.routes.llm_key_routes import set_llm_settings
         from app.schema.api_schemas import LLMSettingsRequest
 
         mock_container = MagicMock()
@@ -62,7 +62,7 @@ class TestPostLlmSettingsPerUser:
 
         payload = LLMSettingsRequest(role="vision", key_id="key-v")
 
-        with patch("app.routes.settings_routes._save_user_provider", new=AsyncMock()) as mock_save:
+        with patch("app.services.llm_key_service.save_user_provider", new=AsyncMock()) as mock_save:
             await set_llm_settings(
                 payload, current_user=_mock_current_user(), container=mock_container
             )
@@ -78,7 +78,7 @@ class TestGetLlmSettingsMerge:
 
     @pytest.mark.asyncio
     async def test_chat_uses_user_binding_vision_uses_global(self):
-        from app.routes.settings_routes import get_llm_settings
+        from app.routes.llm_key_routes import get_llm_settings
 
         global_settings = {
             "chat": {"key_id": "global-chat", "max_concurrency": 8},
@@ -97,7 +97,7 @@ class TestGetLlmSettingsMerge:
         mock_container.llm_settings_service.current_settings = MagicMock(return_value=dict(global_settings))
         mock_container.llm_settings_service.warnings = MagicMock(return_value=[])
 
-        with patch("app.routes.settings_routes._get_user_providers", new=AsyncMock(return_value=user_providers)), \
+        with patch("app.services.llm_key_service.get_user_providers", new=AsyncMock(return_value=user_providers)), \
              patch("app.core.config.get_config", return_value=8):
             result = await get_llm_settings(
                 current_user=_mock_current_user(), container=mock_container
