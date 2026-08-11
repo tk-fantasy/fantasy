@@ -659,6 +659,42 @@ body {
   opacity: 0.4;
 }
 
+/* 伪元素版极光层:与 .aurora-layer 同配方,但挂在容器的 ::before 上,
+   免改动 template(无需插入 <div class="aurora-layer">)。
+   用法:容器加 .aurora-before,容器需 position:relative + overflow:hidden。
+   AdvancedModal/EmojiPicker/SidebarNav/ReviseChatModal/CameraSettingsView/ModelsView 共用。 */
+.aurora-before {
+  position: relative;
+  isolation: isolate;
+}
+
+.aurora-before::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse 60% 50% at 25% 30%, var(--g1) 0%, transparent 50%),
+    radial-gradient(ellipse 50% 45% at 70% 25%, var(--g2) 0%, transparent 45%),
+    radial-gradient(ellipse 55% 50% at 45% 70%, var(--g3) 0%, transparent 45%),
+    radial-gradient(ellipse 50% 45% at 60% 50%, var(--g4) 0%, transparent 45%),
+    radial-gradient(ellipse 45% 40% at 35% 55%, var(--g5) 0%, transparent 40%);
+  background-size: 300% 300%, 300% 300%, 300% 300%, 300% 300%, 300% 300%;
+  animation: auroraFlow 12s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+  opacity: 0.9;
+  will-change: background-position;
+}
+
+.aurora-before > * {
+  position: relative;
+  z-index: 1;
+}
+
+.light-mode .aurora-before::before {
+  opacity: 0.4;
+}
+
 /* Modal 极光容器混入: 半透明玻璃背景 + 内嵌流动极光层 + 子元素自动置顶。
    给任意 modal 容器(.modal-content/.cam-modal 等)加 .aurora-modal 即可获得极光。
    依赖 .aurora-layer(需在容器内插入 <div class="aurora-layer"></div>)。 */

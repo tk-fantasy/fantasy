@@ -289,7 +289,7 @@ const areaOptions = computed(() => [
     <Teleport to="body">
       <Transition name="modal">
         <div v-if="editing" class="cam-modal-overlay" @click.self="cancelEdit">
-          <div class="cam-modal">
+          <div class="cam-modal aurora-before">
             <div class="cam-modal-header">
               <h2>{{ isEdit ? '编辑摄像头' : '添加摄像头' }}</h2>
               <button class="modal-close" @click="cancelEdit">关闭</button>
@@ -550,33 +550,6 @@ const areaOptions = computed(() => [
   display: flex;
   flex-direction: column;
   box-shadow: var(--shadow-xl);
-}
-
-.cam-modal::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-  background:
-    radial-gradient(ellipse 60% 50% at 25% 30%, var(--g1) 0%, transparent 50%),
-    radial-gradient(ellipse 50% 45% at 70% 25%, var(--g2) 0%, transparent 45%),
-    radial-gradient(ellipse 55% 50% at 45% 70%, var(--g3) 0%, transparent 45%),
-    radial-gradient(ellipse 50% 45% at 60% 50%, var(--g4) 0%, transparent 45%),
-    radial-gradient(ellipse 45% 40% at 35% 55%, var(--g5) 0%, transparent 40%);
-  background-size: 300% 300%, 300% 300%, 300% 300%, 300% 300%, 300% 300%;
-  animation: auroraFlow 12s cubic-bezier(0.45, 0, 0.55, 1) infinite;
-  opacity: 0.9;
-  will-change: background-position;
-}
-
-.cam-modal > * {
-  position: relative;
-  z-index: 1;
-}
-
-.light-mode .cam-modal::before {
-  opacity: 0.4;
 }
 
 .cam-modal-header {
