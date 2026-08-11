@@ -99,9 +99,10 @@ class TestGetVisionFocusLegacy:
     在任何非空状态下必抛 KeyError（settings_routes:722/735 调用即 500）。
     """
 
-    def test_empty_returns_default(self):
+    def test_empty_returns_empty_string(self):
+        """未配置任何关注时返回空字符串（默认描述由推理侧 _get_combined_focus 兜底）。"""
         vs = VisionService(client=MagicMock())
-        assert vs.get_vision_focus() == "画面中的人和他们的行为"
+        assert vs.get_vision_focus() == ""
 
     def test_non_empty_returns_first_bucket_first_item_text(self):
         """非空时取第一个 bucket 的第一项 text（不再 KeyError）。"""

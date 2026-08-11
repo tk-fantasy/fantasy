@@ -132,15 +132,17 @@ class VisionService:
         self.add_focus(text)
 
     def get_vision_focus(self) -> str:
-        """兼容旧接口：返回第一条 focus 的 text，或默认值。
+        """兼容旧接口：返回第一条 focus 的 text；未配置时返回空字符串。
 
         _vision_focuses 是 {camera_id: [items]} 字典，不能用整数索引。
         取第一个 bucket 的第一项（插入顺序，py3.7+ dict 保序）。
+        注意：这里只反映"用户配置"，无配置返回 ""，由推理侧兜底
+        （_get_combined_focus 会用默认描述），不要在此虚构默认值。
         """
         for bucket in self._vision_focuses.values():
             if bucket:
                 return bucket[0]["text"]
-        return "画面中的人和他们的行为"
+        return ""
 
     async def evaluate_condition(
         self,
