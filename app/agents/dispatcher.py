@@ -681,7 +681,7 @@ class Dispatcher:
         # has_error 对 REST 恒为 False，tool_call_count==0 短路与原 REST 的 if 守卫等价。
         retry_count = 0
         while (state.tool_call_count == 0 and not state.has_error
-               and await self._validator.should_retry(state.final_content, state.tool_call_count, user_id=user_id, user_query=query)
+               and await self._validator.should_retry(state.final_content, state.tool_call_count, user_id=user_id)
                and retry_count < self._validator._max_retries):
             retry_count += 1
             logger.info("Validator: auto-retry (%d/%d) [%s]", retry_count, self._validator._max_retries, path)

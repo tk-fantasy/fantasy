@@ -13,24 +13,18 @@ from ..core.key_resolver import resolve_key_for_role
 
 logger = logging.getLogger(__name__)
 
-# 匹配声称已完成设备操作的措辞（"已打开""已关闭""已调节""搞定了"等）
-# 当 LLM 说了这类话但 tool_call_count=0 时，说明它在撒谎，需要强制重试。
-# 注意：删掉了原先的"好了"——它太常作语气词（"计划好了""方案做好了"），
-# 把正常闲聊误判为撒谎强制重试。"完成"保留（强完成态）。
+# 匹配"声称已完成设备控制操作"的措辞，用于硬规则短路：
+# tool_call_count==0 但说了这类话 → 模型在撒谎，强制重试。
+#
+# 设计原则：只匹配"已+控制动词"这种强完成态结构，不匹配通用完成词。
+# - "已打开/已关闭/已调节/已切换" 基本只出现在设备控制语境，闲聊不会这么说；
+# - 刻意不收 "完成/搞定/好了" 等通用词——它们在闲聊里太常见
+#   （"计划好了""方案完成了"），会误判正常对话为撒谎。
+# - 动作动词是通用控制动作（开/关/调/设置/切换），不硬编码设备名，
+#   用户加新设备类型无需改正则。
 _ACTION_DONE_RE = re.compile(
-    r"已(经)?(打开|关闭|开启|关掉|调节|调整|设置|切换|执行|完成|搞定)|"
+    r"已(经)?(打开|关闭|开启|关掉|调节|调整|设置|切换)|"
     r"帮\s*你.*(打开|关闭|开启|关掉|调[节整])",
-    re.IGNORECASE,
-)
-
-# 用户 query 含设备操作意图词时，才可能触发"声称完成但没调工具"硬规则。
-# 纯闲聊（"讲个笑话""排个计划"）即使模型说"好了"也不强制重试——
-# validator 的职责是兜底设备操作的漏调，不是审查所有回复。
-# 词表覆盖：动作动词 + 常见设备/参数名。
-_DEVICE_INTENT_RE = re.compile(
-    r"开|关|调|设置|切换|打开|关闭|调节|调整|"
-    r"灯|空调|窗帘|电视|插座|开关|风扇|扫地机|净化器|加湿器|"
-    r"温度|亮度|音量|风速|模式",
     re.IGNORECASE,
 )
 
@@ -147,16 +141,16 @@ class ValidatorAgent:
         )
 
     async def should_retry(self, final_content: str, tool_call_count: int,
-                           user_id: str = "", user_query: str = "") -> bool:
+                           user_id: str = "") -> bool:
         """判断模型是否需要重试。
 
-        硬性规则优先：如果回复声称完成了设备操作（"已打开""已关闭"等），
+        硬性规则优先：如果回复声称完成了设备控制操作（"已打开""已关闭"等），
         但 tool_call_count == 0，说明模型在撒谎（嘴上说了但没真调工具），
         直接返回 True 强制重试，不浪费一次 LLM 语义判断调用。
 
-        硬性规则仅在"用户 query 表达了设备操作意图"时才触发——纯闲聊
-        （"讲个笑话""排个计划"）即使模型说"完成"也不强制重试，因为
-        validator 的职责是兜底设备操作的漏调，不是审查所有回复。
+        _ACTION_DONE_RE 只匹配"已+控制动词"强完成态，不收"完成/搞定/好了"等
+        通用词——避免把闲聊（"计划好了"）误判为撒谎。这样无需 user_query 闸门，
+        单看回复即可区分设备控制的漏调与正常闲聊。
 
         硬性规则不命中时，回退到 LLM 语义判断。
 
@@ -164,7 +158,6 @@ class ValidatorAgent:
             final_content: 模型最终输出的文本内容
             tool_call_count: 工具调用次数
             user_id: 当前用户 ID，用于解析 per-user chat key。为空或用户无 per-user 配置时走全局。
-            user_query: 用户本轮原始提问，用于判断是否设备操作场景（闸门硬规则）。
 
         Returns:
             True 表示需要重试
@@ -173,14 +166,12 @@ class ValidatorAgent:
             logger.debug("Validator: empty content, skip retry")
             return False
 
-        # 硬性规则：用户要操作设备 + 模型声称完成 + 没调任何工具 → 撒谎，强制重试
-        # 三个条件缺一不可：user_query 有设备意图词，避免闲聊误判
-        if (tool_call_count == 0
-                and user_query
-                and _DEVICE_INTENT_RE.search(user_query)
-                and _ACTION_DONE_RE.search(final_content)):
-            logger.info("Validator: 检测到设备操作场景下声称完成但 tool_calls=0，强制重试 "
-                        "(query=%r, content=%r)", user_query[:40], final_content[:80])
+        # 硬性规则：声称已完成设备控制操作但没调任何工具 → 撒谎，强制重试。
+        # _ACTION_DONE_RE 只匹配"已打开/已关闭"等控制动作强完成态，
+        # 不匹配"完成/搞定/好了"等通用词，闲聊不会误触发。
+        if tool_call_count == 0 and _ACTION_DONE_RE.search(final_content):
+            logger.info("Validator: 检测到声称已完成控制操作但 tool_calls=0，强制重试: %r",
+                        final_content[:80])
             return True
 
         # per-user 优先：解析用户 chat key 构建专用 LLM（缓存），失败/无配置回退全局

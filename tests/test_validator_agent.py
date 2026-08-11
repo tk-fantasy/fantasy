@@ -219,22 +219,22 @@ class TestValidatorPerUser:
 # ---------------------------------------------------------------------------
 
 class TestHardRule:
-    """validator_agent 硬性规则：设备操作场景下声称完成但没调工具 → 强制重试。
+    """validator_agent 硬性规则：声称已完成控制操作但没调工具 → 强制重试。
 
-    审查 #10：硬规则现在需要 user_query 表达设备操作意图才触发，
-    避免纯闲聊（"计划好了"）被误判为撒谎强制重试。
+    审查 #10：_ACTION_DONE_RE 只匹配"已+控制动词"（打开/关闭/调节/设置/切换），
+    不匹配"完成/搞定/好了"等通用词——后者在闲聊里太常见会误判。
+    这样无需 user_query 闸门或硬编码设备名，单看回复即可区分。
     """
 
     @pytest.mark.asyncio
-    async def test_claims_done_without_tool_calls_forces_retry(self):
-        """用户要开灯 + 模型说"已打开"但没调工具 → 强制重试。"""
+    async def test_claims_control_done_without_tool_calls_forces_retry(self):
+        """说"已打开/已关闭"但没调工具 → 强制重试（控制动作强完成态）。"""
         validator = ValidatorAgent(max_retries=1)
         mock_llm = MagicMock()
         mock_llm.ainvoke = AsyncMock()
         validator._llm = mock_llm
 
-        result = await validator.should_retry(
-            "已经帮你打开灯了", 0, user_query="帮我开一下灯")
+        result = await validator.should_retry("已经帮你打开了", 0)
         assert result is True
         # 硬规则直接返回，不浪费一次 LLM 调用
         mock_llm.ainvoke.assert_not_awaited()
@@ -249,31 +249,15 @@ class TestHardRule:
         mock_llm.ainvoke = AsyncMock(return_value=mock_response)
         validator._llm = mock_llm
 
-        result = await validator.should_retry(
-            "已经帮你打开灯了", 2, user_query="开灯")
+        result = await validator.should_retry("已经帮你打开了", 2)
         assert result is False
         mock_llm.ainvoke.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_no_action_claim_without_tool_calls_goes_through_llm(self):
-        """未声称完成操作 → 不触发硬规则，走 LLM 语义判断。"""
-        validator = ValidatorAgent(max_retries=1)
-        mock_llm = MagicMock()
-        mock_response = MagicMock()
-        mock_response.content = '{"need_retry": false}'
-        mock_llm.ainvoke = AsyncMock(return_value=mock_response)
-        validator._llm = mock_llm
+    async def test_generic_done_words_not_trigger_hard_rule(self):
+        """通用完成词（完成/搞定/好了）不触发硬规则 → 走 LLM。
 
-        result = await validator.should_retry(
-            "好的，我知道了", 0, user_query="开灯")
-        assert result is False
-        mock_llm.ainvoke.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_chitchat_not_trigger_hard_rule_even_if_says_done(self):
-        """纯闲聊（query 无设备意图）即使模型说"完成"也不触发硬规则。
-
-        审查 #10 核心：validator 只兜底设备操作漏调，不审查闲聊。
+        这些词在闲聊里太常见（"计划好了""方案完成了"），收进硬规则会误判。
         """
         validator = ValidatorAgent(max_retries=1)
         mock_llm = MagicMock()
@@ -282,16 +266,14 @@ class TestHardRule:
         mock_llm.ainvoke = AsyncMock(return_value=mock_response)
         validator._llm = mock_llm
 
-        # query="帮我排个计划" 无设备词，content="计划好了，稍后执行"
-        result = await validator.should_retry(
-            "计划好了，稍后执行", 0, user_query="帮我排个计划")
-        # 硬规则不触发（query 无设备意图）→ 走 LLM 判断 → false
-        assert result is False
-        mock_llm.ainvoke.assert_awaited_once()
+        for content in ["计划好了，稍后执行", "方案完成了", "这事搞定了"]:
+            result = await validator.should_retry(content, 0)
+            # 硬规则不触发（无"已+控制动词"）→ 走 LLM
+            assert result is False, f"通用词误触发硬规则: {content}"
 
     @pytest.mark.asyncio
-    async def test_no_user_query_skips_hard_rule(self):
-        """无 user_query（向后兼容旧调用）→ 不触发硬规则，走 LLM。"""
+    async def test_no_action_claim_goes_through_llm(self):
+        """未声称完成操作（普通回复）→ 走 LLM 语义判断。"""
         validator = ValidatorAgent(max_retries=1)
         mock_llm = MagicMock()
         mock_response = MagicMock()
@@ -299,7 +281,7 @@ class TestHardRule:
         mock_llm.ainvoke = AsyncMock(return_value=mock_response)
         validator._llm = mock_llm
 
-        result = await validator.should_retry("已经帮你打开灯了", 0)
+        result = await validator.should_retry("好的，我知道了", 0)
         assert result is False
         mock_llm.ainvoke.assert_awaited_once()
 
