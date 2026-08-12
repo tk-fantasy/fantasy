@@ -84,8 +84,12 @@ class MetricsService:
                 "latency_samples": len(lats),
             },
             "tools": {
-                "calls": dict(self.tool_calls),
-                "errors": dict(self.tool_errors),
+                # 强制 str 键：record_tool_call 上游若传入非 str 工具名（如某些
+                # langgraph 路径的 generator/对象），会让 JSON 序列化抛
+                # "X not valid as object key"，整个 /api/metrics 端点崩。metrics
+                # 永远不该因单条脏数据失效——此处兜底转 str。
+                "calls": {str(k): v for k, v in self.tool_calls.items()},
+                "errors": {str(k): v for k, v in self.tool_errors.items()},
             },
             "llm": {
                 "calls": self.llm_calls,

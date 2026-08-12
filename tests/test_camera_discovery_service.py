@@ -325,10 +325,14 @@ class TestCaptureMacOnStartup:
     """首次 MAC 捕获:有 IP 无 MAC 时用现有 IP 读 MAC 写回 config。"""
 
     @pytest.mark.asyncio
-    async def test_captures_when_no_mac(self):
+    async def test_captures_when_no_mac(self, monkeypatch):
         from app.core import config as cfg
         cfg.CONFIG["vision"]["device_mac"] = ""
         cfg.CONFIG["ptz"]["ip"] = "192.168.1.50"
+        # 凭证经 ptz.password_env 读 env（默认 PTZ_PASSWORD）。测试环境无 .env，
+        # 不注入则 capture_mac_on_startup 在"无 ONVIF 凭证"处提前 return，
+        # 触不到 update_config_section —— 这正是该用例在容器里 historical 失败的原因。
+        monkeypatch.setenv("PTZ_PASSWORD", "test-pwd")
         svc = CameraDiscoveryService()
         with patch.object(svc, "read_device_hardware_id", AsyncMock(return_value="aabbccddeeff")), \
              patch("app.services.camera_discovery_service.update_config_section") as uc:
