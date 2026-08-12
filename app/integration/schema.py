@@ -48,6 +48,9 @@ class Manifest(BaseModel):
     author: str = ""
     depends_on: list[str] = Field(default_factory=list)
     capabilities: list[Capability] = Field(default_factory=list)
+    # 反向 RPC（方向 2）权限白名单：插件只能调声明了权限的宿主能力。
+    # 支持值: "ha"（ha.call_service/get_states/get_devices_grouped）、
+    #         "llm"（llm.chat）、"broadcast"（sink.broadcast）。HostMethodRegistry 校验。
     permissions: list[str] = Field(default_factory=list)
     resources: dict[str, Any] = Field(default_factory=dict)
     # 声明需要的凭证类型（宿主统一注入，解耦具体插件名）

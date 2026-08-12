@@ -1,7 +1,13 @@
 """JSON-RPC 2.0 over stdio 协议常量与消息构造。
 
-方向 1（Aether → 插件）使用的方法名定义于此。
-Phase 1 只实现方向 1，Phase 3 补方向 2（插件 → Aether 反向调用）。
+两个方向的请求方法名都定义于此：
+- 方向 1（Aether → 插件）：handshake / sink.speak / sink.interrupt / router.handle / ...
+- 方向 2（插件 → Aether，Phase 3）：ha.call_service / ha.get_states / llm.chat / sink.broadcast ...
+
+id 奇偶约定（双方零冲突）：
+- 方向 1 请求（Aether 发起）用 **偶数** id，从 2 开始（``plugin_process._next_id`` 从 1 自增到 2）。
+- 方向 2 请求（插件发起）用 **奇数** id，从 1 开始（``stdio_runtime`` 反向 _next_id 从 0 自增到 1）。
+- 双方各自维护 pending future map，奇偶天然不撞；响应原路返回，按 id 配对。
 """
 
 import json
@@ -13,6 +19,13 @@ METHOD_INTERRUPT = "sink.interrupt"
 METHOD_ROUTE = "router.handle"
 METHOD_HEALTH = "health.check"
 METHOD_SHUTDOWN = "shutdown"
+
+# ── 方法名常量（方向 2: 插件 → Aether 反向调用）──
+METHOD_HOST_HA_CALL = "ha.call_service"
+METHOD_HOST_HA_STATES = "ha.get_states"
+METHOD_HOST_HA_DEVICES = "ha.get_devices_grouped"
+METHOD_HOST_LLM_CHAT = "llm.chat"
+METHOD_HOST_BROADCAST = "sink.broadcast"
 
 JSONRPC_VERSION = "2.0"
 

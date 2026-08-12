@@ -6,8 +6,16 @@
 
 import logging
 
+from .host_registry import HostMethodRegistry
 from .manifest_loader import load_manifests
 from .plugin_supervisor import PluginSupervisor
+from .rpc_protocol import (
+    METHOD_HOST_BROADCAST,
+    METHOD_HOST_HA_CALL,
+    METHOD_HOST_HA_DEVICES,
+    METHOD_HOST_HA_STATES,
+    METHOD_HOST_LLM_CHAT,
+)
 from .sink_manager import SinkManager
 
 logger = logging.getLogger(__name__)
@@ -28,19 +36,69 @@ class IntegrationLayer:
         max_restarts: int = 3,
         env_per_plugin: dict[str, dict[str, str]] | None = None,
         broadcast_enabled: bool = True,
+        host_deps: dict | None = None,
     ) -> None:
         self._plugin_dir = plugin_dir
         self._api_version = api_version
+        # 方向 2 反向方法注册表：先建空表传给 supervisor（PluginProcess 持同一引用），
+        # sink_manager 构造后再注册 handler（broadcast handler 需要 sink_manager）。
+        self._host_registry = HostMethodRegistry()
         self._supervisor = PluginSupervisor(
             rpc_timeout=rpc_timeout, max_restarts=max_restarts,
             env_per_plugin=env_per_plugin,
+            host_registry=self._host_registry,
         )
         self.sink_manager = SinkManager(self._supervisor,
                                         broadcast_enabled=broadcast_enabled)
+        self._register_host_methods(host_deps)
         self._started = False
         # 宿主侧集成注册表（非子进程插件，如飞书 WebSocket 长连接）
         # key=集成名, value={"name","description","alive"}
         self.host_integrations: dict[str, dict] = {}
+
+    def _register_host_methods(self, host_deps: dict | None) -> None:
+        """注册方向 2 宿主能力到 host_registry。
+
+        插件在 manifest.permissions 声明对应权限（ha/llm/broadcast）后，才能反向调用。
+        host_deps=None（如 e2e 测试）→ 不注册任何 handler，反向调用回 "未知方法" 错误。
+        """
+        if not host_deps:
+            return
+        ha_client = host_deps.get("ha_client")
+        ha_service = host_deps.get("ha_service")
+        llm_chat_client = host_deps.get("llm_chat_client")
+        reg = self._host_registry
+
+        if ha_client is not None:
+            async def _ha_call(params: dict) -> dict:
+                return await ha_client.call_service(
+                    params.get("domain"), params.get("service"),
+                    params.get("entity_id"), params.get("data"),
+                )
+            reg.register(METHOD_HOST_HA_CALL, _ha_call, required_permission="ha")
+
+        if ha_service is not None:
+            async def _ha_states(params: dict) -> dict:
+                return {"states": await ha_service.get_states_snapshot()}
+            async def _ha_devices(params: dict) -> dict:
+                return await ha_service.get_all_devices_grouped()
+            reg.register(METHOD_HOST_HA_STATES, _ha_states, required_permission="ha")
+            reg.register(METHOD_HOST_HA_DEVICES, _ha_devices, required_permission="ha")
+
+        if llm_chat_client is not None:
+            async def _llm_chat(params: dict) -> dict:
+                text = await llm_chat_client.chat(
+                    params.get("messages") or [], params.get("timeout") or 120,
+                )
+                return {"text": text}
+            reg.register(METHOD_HOST_LLM_CHAT, _llm_chat, required_permission="llm")
+
+        async def _broadcast(params: dict) -> dict:
+            await self.sink_manager.broadcast(
+                params.get("text", ""), params.get("msg_id", ""),
+            )
+            return {"ok": True}
+        reg.register(METHOD_HOST_BROADCAST, _broadcast, required_permission="broadcast")
 
     async def start(self) -> None:
         """加载清单 + 启动所有插件进程（跳过禁用的）。"""

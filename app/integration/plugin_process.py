@@ -9,11 +9,15 @@ import json
 import logging
 import os
 import sys
+from contextlib import suppress
 from pathlib import Path
 
+from .host_registry import HostMethodRegistry
 from .rpc_protocol import (
     METHOD_HANDSHAKE,
+    build_error,
     build_request,
+    build_response,
     parse_message,
 )
 from .schema import Manifest
@@ -57,10 +61,14 @@ class PluginProcess:
         plugin_root: str,
         rpc_timeout: float = 30.0,
         env: dict[str, str] | None = None,
+        host_registry: HostMethodRegistry | None = None,
     ) -> None:
         self.manifest = manifest
         self._plugin_root = plugin_root
         self._rpc_timeout = rpc_timeout
+        # 方向 2 反向方法注册表：插件 → Aether 调用时按 method dispatch（Phase 3）。
+        # None 时插件发反向请求会收到 "宿主未注入" 错误（向后兼容旧部署）。
+        self._host_registry = host_registry
         # 子进程环境沙箱：只白名单继承子进程运行必需的系统变量，
         # 不全量继承宿主 os.environ——否则插件能读走 JWT_SECRET /
         # RTSP_PASSWORD / PTZ_PASSWORD 等宿主密钥（开放第三方插件时的安全边界）。
@@ -133,8 +141,24 @@ class PluginProcess:
             raise RuntimeError(f"插件 {self.manifest.id} 握手失败: {result}")
         logger.info("插件 %s 握手成功: %s", self.manifest.id, result)
 
+    async def _write_line(self, payload: dict) -> None:
+        """写一行 JSON-RPC 到插件 stdin。
+
+        并发安全：单事件循环内 ``write()`` 同步且无 await 点，整行原子入缓冲；
+        正向 call 与反向响应两个协程并发写不会交错。
+        """
+        if self._process is None or self._process.stdin is None or self._process.stdin.is_closing():
+            raise RuntimeError(f"插件 {self.manifest.id} 未运行")
+        line = json.dumps(payload, ensure_ascii=False)
+        assert self._process.stdin is not None
+        self._process.stdin.write((line + "\n").encode("utf-8"))
+        try:
+            await asyncio.wait_for(self._process.stdin.drain(), timeout=self._rpc_timeout)
+        except asyncio.TimeoutError:
+            raise RuntimeError(f"插件 {self.manifest.id} stdin 写入超时")
+
     async def call(self, method: str, params: dict | None = None) -> dict:
-        """发 JSON-RPC 请求，等响应。
+        """发 JSON-RPC 请求（方向 1），等响应。
 
         超时或进程未运行时抛 RuntimeError。
         """
@@ -147,21 +171,21 @@ class PluginProcess:
         future: asyncio.Future = loop.create_future()
         self._pending[rid] = future
 
-        payload = build_request(rid, method, params)
-        line = json.dumps(payload, ensure_ascii=False)
         try:
-            assert self._process.stdin is not None
-            self._process.stdin.write((line + "\n").encode("utf-8"))
-            await asyncio.wait_for(self._process.stdin.drain(), timeout=self._rpc_timeout)
-            result = await asyncio.wait_for(future, timeout=self._rpc_timeout)
-            return result
+            await self._write_line(build_request(rid, method, params))
+            return await asyncio.wait_for(future, timeout=self._rpc_timeout)
         except asyncio.TimeoutError:
             raise RuntimeError(f"插件 {self.manifest.id} 调用 {method} 超时")
         finally:
             self._pending.pop(rid, None)
 
     async def _read_stdout(self) -> None:
-        """读取子进程 stdout，按 id 配对响应到 pending future。"""
+        """读子进程 stdout：方向 1 响应按 id 配对，方向 2 反向请求异步分发。
+
+        - 带 ``method`` 的消息 = 插件发来的反向请求（方向 2）→ 起独立 task 分发，
+          reader 立即继续读下一条，不被 dispatch 阻塞（避免反向调用回环死锁）。
+        - 其余 = 方向 1 响应，按 id 配对到 pending future（含 error 字段 → set_exception）。
+        """
         assert self._process is not None and self._process.stdout is not None
         while True:
             line = await self._process.stdout.readline()
@@ -170,11 +194,43 @@ class PluginProcess:
             msg = parse_message(line.decode("utf-8", errors="replace"))
             if msg is None:
                 continue
+            if "method" in msg:
+                # 方向 2：插件 → Aether 反向请求
+                asyncio.create_task(self._handle_reverse(msg))
+                continue
+            # 方向 1 响应：按 id 配对
             rid = msg.get("id")
             if rid is not None and rid in self._pending:
                 fut = self._pending.pop(rid)
                 if not fut.done():
-                    fut.set_result(msg.get("result", {}))
+                    if "error" in msg:
+                        fut.set_exception(
+                            RuntimeError(f"插件 {self.manifest.id} 返回错误: {msg['error']}")
+                        )
+                    else:
+                        fut.set_result(msg.get("result", {}))
+
+    async def _handle_reverse(self, msg: dict) -> None:
+        """处理插件发来的反向请求（方向 2）：dispatch 后把响应写回插件 stdin。"""
+        rid = msg.get("id")
+        method = msg.get("method", "")
+        params = msg.get("params", {}) or {}
+        try:
+            if self._host_registry is None:
+                raise RuntimeError("宿主未注入反向方法注册表")
+            result = await self._host_registry.dispatch(self.manifest, method, params)
+            response = build_response(rid, result)
+        except PermissionError as exc:
+            logger.warning("插件 %s 反向调用被拒: %s", self.manifest.id, exc)
+            response = build_error(rid, -32500, f"permission denied: {exc}")
+        except Exception as exc:
+            logger.warning("插件 %s 反向调用 %s 失败: %s", self.manifest.id, method, exc)
+            response = build_error(rid, -32000, f"{type(exc).__name__}: {exc}")
+        try:
+            await self._write_line(response)
+        except RuntimeError:
+            # 插件已退出 / stdin 已关闭，响应写不回——忽略
+            pass
 
     async def _drain_stderr(self) -> None:
         """把插件 stderr 当日志（带 plugin_id 前缀）。"""
@@ -187,34 +243,60 @@ class PluginProcess:
                          line.decode("utf-8", errors="replace").rstrip())
 
     async def stop(self) -> None:
-        """优雅停止：shutdown 通知 → terminate → kill。"""
+        """优雅停止：shutdown 通知 → 关 stdin → 取消并 await 读任务 → terminate → kill。
+
+        每一步都有超时保护，绝不无限等待。旧实现的最后一处 ``await process.wait()``
+        无超时，且 cancel 读任务后未 await —— StreamReader transport 不释放，导致
+        ``process.wait()`` 在 SIGKILL 后仍不返回，整套测试套件 hang。
+        """
         self._alive = False
         if self._process is None:
             return
 
-        # 尝试发 shutdown 通知（不强制等响应）
+        # 1) 尽力发 shutdown（不强制等响应）
         try:
             await asyncio.wait_for(self.call("shutdown", {}), timeout=3.0)
-        except (RuntimeError, asyncio.TimeoutError):
+        except (RuntimeError, asyncio.TimeoutError, asyncio.CancelledError):
             pass
 
-        # 失败所有未完成请求
+        # 2) 失败所有未完成请求
         for fut in list(self._pending.values()):
             if not fut.done():
                 fut.set_exception(RuntimeError("plugin stopping"))
         self._pending.clear()
 
-        if self._reader_task:
-            self._reader_task.cancel()
-        if self._stderr_task:
-            self._stderr_task.cancel()
+        # 3) 关闭 stdin：让插件阻塞中的 readline 收到 EOF 自然退出
+        stdin = self._process.stdin
+        if stdin is not None and not stdin.is_closing():
+            with suppress(BrokenPipeError, RuntimeError):
+                stdin.close()
 
+        # 4) 取消读任务并 await 它们——否则 StreamReader transport 不释放，
+        #    process.wait() 会因管道未关闭而死锁（asyncio 子进程经典坑）。
+        for task in (self._reader_task, self._stderr_task):
+            if task is not None and not task.done():
+                task.cancel()
+        for task in (self._reader_task, self._stderr_task):
+            if task is None:
+                continue
+            with suppress(asyncio.CancelledError, Exception):
+                await asyncio.wait_for(task, timeout=1.0)
+        self._reader_task = None
+        self._stderr_task = None
+
+        # 5) terminate → 等 2s → kill → 再等 2s；任何一环超时都不再阻塞
+        # 注意：不把 self._process 置 None——保留 Process 对象供调用方检查 returncode
+        # （握手失败清理测试依赖此契约）；进程已被 wait 回收，非僵尸。call() 靠
+        # stdin.is_closing() 防御已停止的进程，无需靠 _process is None 判断。
+        proc = self._process
         try:
-            self._process.terminate()
-        except ProcessLookupError:
+            proc.terminate()
+        except (ProcessLookupError, OSError):
             return
         try:
-            await asyncio.wait_for(self._process.wait(), timeout=2.0)
+            await asyncio.wait_for(proc.wait(), timeout=2.0)
         except asyncio.TimeoutError:
-            self._process.kill()
-            await self._process.wait()
+            with suppress(ProcessLookupError, OSError):
+                proc.kill()
+            with suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(proc.wait(), timeout=2.0)

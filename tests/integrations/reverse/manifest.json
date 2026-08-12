@@ -1,0 +1,12 @@
+{
+    "id": "reverse",
+    "name": "Reverse RPC Test",
+    "version": "1.0.0",
+    "aether_api_version": "1",
+    "author": "Aether",
+    "description": "反向 RPC 死锁专项测试插件（handle 内调宿主）",
+    "entry": "plugin.py",
+    "capabilities": [],
+    "permissions": ["ha", "broadcast"],
+    "secrets": []
+}

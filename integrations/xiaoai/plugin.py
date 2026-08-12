@@ -1,4 +1,4 @@
-"""小爱音箱插件 —— Phase 1 直连 HA 实现。
+"""小爱音箱插件 —— 经反向 RPC 调宿主 HA（Phase 3）。
 
 通过 xiaomi_home 集成暴露的 notify 实体做 TTS：
   play_text notify 实体：notify.send_message(message=文字) → 小爱念字
@@ -7,12 +7,11 @@
 软件串行锁：Aether 自己的多次 speak 排队，不并发占用小爱。
 外部程序（米家/HA 自动化）对小爱的控制不在此锁范围。
 
-Phase 1 反向 RPC 未实现，插件进程内自建轻量 HA HTTP client 直连。
-Phase 3 会替换为反向 RPC 调 aether.ha.call_service。
+Phase 3：不再自建 HA HTTP client 直连，改经 self.host.ha.call_service 反向 RPC
+调宿主 ha_client（凭证不出宿主进程，权限由 manifest.permissions=["ha"] 声明）。
 """
 
 import asyncio
-import os
 import sys
 from typing import Any
 
@@ -20,37 +19,6 @@ from typing import Any
 from app.integration.sdk.plugin_base import IntegrationPlugin
 from app.integration.sdk.router_base import InboundRouter
 from app.integration.sdk.sink_base import OutputSink
-
-
-class HAHttpCaller:
-    """轻量 HA HTTP 调用器（插件进程内自用，Phase 1）。
-
-    Phase 3 会替换为反向 RPC 调 aether.ha.call_service。
-    """
-
-    def __init__(self, base_url: str, token: str) -> None:
-        self._base_url = base_url.rstrip("/")
-        self._token = token
-
-    async def call_service(
-        self, domain: str, service: str,
-        entity_id: str | None = None, data: dict | None = None,
-    ) -> dict:
-        import httpx
-        payload: dict[str, Any] = {}
-        if entity_id:
-            payload["entity_id"] = entity_id
-        if data:
-            payload.update(data)
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(
-                f"{self._base_url}/api/services/{domain}/{service}",
-                headers={"Authorization": f"Bearer {self._token}",
-                         "Content-Type": "application/json"},
-                json=payload,
-            )
-            resp.raise_for_status()
-            return {"ok": True, "status": resp.status_code}
 
 
 class XiaoAiSink(OutputSink):
@@ -161,13 +129,9 @@ class XiaoAiPlugin(IntegrationPlugin):
             "default", "media_player.xiaoai_pro")
         execute_mode = schema.get("execute_mode", {}).get("default", "speak")
 
-        # HA 凭证从环境变量（由宿主按 manifest secrets 声明统一注入）
-        ha_url = os.environ.get("AETHER_HA_URL", "")
-        ha_token = os.environ.get("AETHER_HA_TOKEN", "")
-        if ha_url and ha_token:
-            self.ha_caller = HAHttpCaller(ha_url, ha_token)
-        else:
-            self.ha_caller = None  # 无凭证时 sink 调用会失败，但不崩 setup
+        # Phase 3：HA 调用经反向 RPC 走宿主 ha_client（runtime 在 setup 前注入 host）。
+        # 凭证不再进插件进程；权限由 manifest permissions=["ha"] 声明，宿主校验。
+        self.ha_caller = self.host.ha
 
         self.sinks = [XiaoAiSink(self.ha_caller, entity_id, execute_mode)]
         self.routers = [XiaoAiRouter(self.ha_caller, entity_id)]

@@ -4,6 +4,7 @@ import asyncio
 import importlib.util
 import json
 import sys
+import types
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -23,18 +24,13 @@ def _manifest():
 
 
 def _make_plugin_with_mock_ha():
-    """构造 plugin + 注入 mock HA caller。"""
+    """构造 plugin + 注入 mock host（Phase 3：setup 从 self.host.ha 取调用器）。"""
     manifest = _manifest()
     plugin = XiaoAiPlugin()
-    plugin.setup(manifest)
-    plugin.ha_caller = AsyncMock()
-    plugin.ha_caller.call_service.return_value = {"ok": True}
-    # 重建 sink 用 mock caller（XiaoAiSink 已从 xiaoai_plugin 模块加载）
-    XiaoAiSink = _module.XiaoAiSink
-    schema = manifest["capabilities"][0]["config_schema"]
-    entity_id = schema["entity_id"]["default"]
-    execute_mode = schema["execute_mode"]["default"]
-    plugin.sinks = [XiaoAiSink(plugin.ha_caller, entity_id, execute_mode)]
+    # Phase 3：runtime 在 setup 前注入 host；此处用 SimpleNamespace 模拟 host.ha
+    plugin.host = types.SimpleNamespace(ha=AsyncMock())
+    plugin.host.ha.call_service.return_value = {"ok": True}
+    plugin.setup(manifest)  # setup 内 self.ha_caller = self.host.ha → 即上面的 mock
     return plugin
 
 

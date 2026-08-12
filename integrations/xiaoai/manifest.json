@@ -4,7 +4,7 @@
     "version": "1.0.0",
     "aether_api_version": "1",
     "author": "Aether",
-    "description": "小爱 TTS 广播（Phase 1: 直连 HA intelligent_speaker）",
+    "description": "小爱 TTS 广播（Phase 3: 反向 RPC 调宿主 HA）",
     "entry": "plugin.py",
     "capabilities": [
         {
@@ -33,8 +33,8 @@
             "config_schema": {}
         }
     ],
-    "permissions": [],
-    "secrets": ["ha_url", "ha_token"],
+    "permissions": ["ha"],
+    "secrets": [],
     "ui_contributions": [
         {
             "slot": "chat_top_bar",
