@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed, watch, onMounted } from 'vue'
 import { apiGet } from '../utils/api'
+import { LS_THEME } from '../utils/constants'
 import BaseToggle from '../components/BaseToggle.vue'
 import FlowSelect from '../components/FlowSelect.vue'
 import { getProvinces, getPrefectures, getCounties } from 'china-region'
@@ -100,7 +101,7 @@ const preferences = ref({
 
 function applyTheme(dark) {
   document.documentElement.classList.toggle('light-mode', !dark)
-  localStorage.setItem('aether-theme', dark ? 'dark' : 'light')
+  localStorage.setItem(LS_THEME, dark ? 'dark' : 'light')
 }
 
 onMounted(() => {

@@ -35,7 +35,8 @@ vi.mock('vue-router', () => ({
 // Mock useAuth
 vi.mock('../../src/composables/useAuth', () => ({
   useAuth: () => ({
-    token: { value: 'test-jwt-token' }
+    token: { value: 'test-jwt-token' },
+    user: { value: { username: 'testuser' } }
   })
 }))
 
@@ -70,14 +71,6 @@ describe('ChatView', () => {
   it('renders messages area', () => {
     const wrapper = mount(ChatView)
     expect(wrapper.find('.chat-messages').exists()).toBe(true)
-  })
-
-  it('shows greeting when flag is set', async () => {
-    sessionStorage.setItem('aether-show-greeting', '1')
-    const wrapper = mount(ChatView)
-    await vi.dynamicImportSettled()
-    // Greeting should have been triggered
-    expect(sessionStorage.getItem('aether-show-greeting')).toBeNull()
   })
 
   it('connects WebSocket with JWT token', async () => {

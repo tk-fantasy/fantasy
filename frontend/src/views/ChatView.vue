@@ -1,7 +1,7 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { SS_CHAT_SESSION } from '../utils/constants'
+import { getChatSessionId, setChatSessionId, clearChatSession } from '../utils/storage'
 import { toolIcon, summarizeToolCall, summarizeToolResult, parseToolResult } from '../utils/toolNames'
 import { useVoiceInput } from '../composables/useVoiceInput'
 import { useCamera } from '../composables/useCamera'
@@ -9,6 +9,7 @@ import { useLlmStatus, ROLE_LABELS } from '../composables/useLlmStatus'
 import { usePtz } from '../composables/usePtz'
 import { useCameraPreview } from '../composables/useCameraPreview'
 import { useGreeting } from '../composables/useGreeting'
+import { useAuth } from '../composables/useAuth'
 import { apiGet, apiPost } from '../utils/api'
 import PluginSlot from '../components/integration/PluginSlot.vue'
 
@@ -64,8 +65,10 @@ let currentStreamingMsg = null
 let ws = null
 let reconnectTimer = null
 
-const SESSION_STORAGE_KEY = SS_CHAT_SESSION
-const { showGreeting, greetingText, showGreetingMessage } = useGreeting()
+const { user } = useAuth()
+// 当前用户名：聊天会话按用户命名空间隔离（见 utils/storage.js），组件生命周期内稳定
+const currentUsername = () => user.value?.username
+const { showGreeting, greetingText } = useGreeting()
 
 // Slash command autocomplete
 const showSlashMenu = ref(false)
@@ -534,7 +537,7 @@ async function doNewSession() {
     const json = await res.json()
     sessionId.value = json.data?.id
     if (sessionId.value) {
-      sessionStorage.setItem(SESSION_STORAGE_KEY, sessionId.value)
+      setChatSessionId(currentUsername(), sessionId.value)
     }
     messages.value = []
     pendingToolCalls.value = []
@@ -552,7 +555,7 @@ async function loadSessionHistory(sid) {
     const res = await fetch(`/api/sessions/${sid}`)
     if (res.status === 404) {
       // Session no longer exists (e.g. DB reset) — clear stale ID, create fresh
-      sessionStorage.removeItem(SESSION_STORAGE_KEY)
+      clearChatSession(currentUsername())
       sessionId.value = null
       return
     }
@@ -585,24 +588,17 @@ onMounted(async () => {
   // 静态读取 chat 模型名（composable 封装，不耗测试 API）
   await loadChatModelName()
 
-  // 只有从 Landing 进入时才显示问候
-  const shouldShowGreeting = sessionStorage.getItem('aether-show-greeting')
-  if (shouldShowGreeting) {
-    sessionStorage.removeItem('aether-show-greeting')
-    showGreetingMessage()
-  }
-
   // 1. 先检查 URL 参数
   const urlParams = new URLSearchParams(window.location.search)
   const urlSessionId = urlParams.get('session')
 
   // 2. 再检查 sessionStorage
-  const savedSessionId = sessionStorage.getItem(SESSION_STORAGE_KEY)
+  const savedSessionId = getChatSessionId(currentUsername())
 
   // 3. 优先使用 URL 参数，其次 sessionStorage，最后创建新的
   if (urlSessionId) {
     sessionId.value = urlSessionId
-    sessionStorage.setItem(SESSION_STORAGE_KEY, urlSessionId)
+    setChatSessionId(currentUsername(), urlSessionId)
     await loadSessionHistory(urlSessionId)
   } else if (savedSessionId) {
     sessionId.value = savedSessionId
@@ -615,7 +611,7 @@ onMounted(async () => {
       const json = await res.json()
       sessionId.value = json.data?.id
       if (sessionId.value) {
-        sessionStorage.setItem(SESSION_STORAGE_KEY, sessionId.value)
+        setChatSessionId(currentUsername(), sessionId.value)
       }
     } catch (e) {
       console.error('Failed to create session:', e)

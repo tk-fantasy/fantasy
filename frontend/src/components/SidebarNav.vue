@@ -3,7 +3,7 @@ import { computed, ref, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuth } from '../composables/useAuth'
 import { useSwitchUser } from '../composables/useSwitchUser'
-import { SS_CHAT_SESSION } from '../utils/constants'
+import { resetUserScopedState } from '../utils/storage'
 
 const route = useRoute()
 const router = useRouter()
@@ -34,8 +34,8 @@ async function loadHomeInfo() {
 
 // 登出
 function handleLogout() {
-  // 清空当前会话 ID，下一个用户进来是空白页面
-  sessionStorage.removeItem(SS_CHAT_SESSION)
+  // 清空当前用户的 user-scoped 存储状态（聊天会话等），下一个用户进来是空白页面
+  resetUserScopedState(user.value?.username)
   logout()
   router.push('/login')
 }

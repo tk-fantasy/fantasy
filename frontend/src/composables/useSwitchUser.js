@@ -4,10 +4,10 @@
  * 方案 A：切换到其它用户需输入目标用户的密码确认。
  *
  * 依赖 useAuth 的 user / isAuthenticated（判断当前登录态）和 router
- * （未登录时跳登录页）。切换成功后清掉当前会话 ID 并整页刷新加载新用户配置。
+ * （未登录时跳登录页）。切换成功后整页刷新加载新用户配置（会话按用户命名空间隔离，无需清）。
  */
 import { ref } from 'vue'
-import { LS_USER, SS_CHAT_SESSION } from '../utils/constants'
+import { LS_USER } from '../utils/constants'
 
 export function useSwitchUser(user, isAuthenticated, router) {
   const users = ref([])
@@ -71,8 +71,7 @@ export function useSwitchUser(user, isAuthenticated, router) {
         if (json.data.user) {
           localStorage.setItem(LS_USER, JSON.stringify(json.data.user))
         }
-        // 清空 sessionStorage 中的会话 ID（不同用户的对话隔离）
-        sessionStorage.removeItem(SS_CHAT_SESSION)
+        // 命名空间隔离：各用户会话键独立，无需清（reload 后 ChatView 读新用户的键）
         // 切换成功后刷新页面以加载新用户的配置
         window.location.reload()
       } else {

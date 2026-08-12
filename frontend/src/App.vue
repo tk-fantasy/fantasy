@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { useRoute } from 'vue-router'
 import SidebarNav from './components/SidebarNav.vue'
 import WeatherWidget from './components/WeatherWidget.vue'
+import { LS_THEME } from './utils/constants'
 
 const route = useRoute()
 const isLanding = computed(() => route.name === 'Landing')
@@ -12,7 +13,7 @@ const CHROME_HIDDEN_ROUTES = ['Landing', 'Loading', 'Login', 'Setup']
 const showChrome = computed(() => !CHROME_HIDDEN_ROUTES.includes(route.name))
 const hideWeather = computed(() => !showChrome.value || route.name === 'KGraph')
 
-const saved = localStorage.getItem('aether-theme')
+const saved = localStorage.getItem(LS_THEME)
 if (saved === 'light') {
   document.documentElement.classList.add('light-mode')
 }

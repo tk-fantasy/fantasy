@@ -22,15 +22,16 @@ import Graph3D from '../components/Graph3D.vue'
 import SearchPanel from '../components/SearchPanel.vue'
 import NodeDetail from '../components/NodeDetail.vue'
 import { useGraph } from '../composables/useGraph.js'
+import { LS_SG_MAX_LINKS } from '../utils/constants'
 
 const graphRef = ref(null)
 const { graphData, loading, selectedNode, highlightNodes, highlightLinks, loadGraph, onNodeClick, onFocusNode } = useGraph()
 
-const maxLinks = ref(parseInt(localStorage.getItem('sg_max_links'), 10) || 150)
+const maxLinks = ref(parseInt(localStorage.getItem(LS_SG_MAX_LINKS), 10) || 150)
 
 function onMaxLinksChange() {
   if (maxLinks.value && maxLinks.value >= 10) {
-    localStorage.setItem('sg_max_links', String(maxLinks.value))
+    localStorage.setItem(LS_SG_MAX_LINKS, String(maxLinks.value))
   }
 }
 function reloadGraph() {

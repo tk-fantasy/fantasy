@@ -1,5 +1,6 @@
 import { ref } from 'vue'
 import { apiGet } from '../utils/api'
+import { LS_SG_MAX_LINKS } from '../utils/constants'
 import { getNodeColor } from '../utils/nodeColors.js'
 
 export function useGraph() {
@@ -17,7 +18,7 @@ export function useGraph() {
       const graph = result?.graph
       if (graph && graph.nodes?.length) {
         // 按 weight 降序截断，避免连线过密；上限从 localStorage 读，默认 150
-        const maxLinks = parseInt(localStorage.getItem('sg_max_links'), 10) || 150
+        const maxLinks = parseInt(localStorage.getItem(LS_SG_MAX_LINKS), 10) || 150
         const links = graph.links || []
         if (links.length > maxLinks) {
           links.sort((a, b) => (b.weight || 0) - (a.weight || 0))
