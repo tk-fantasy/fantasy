@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import io
-import json
 import logging
 import os
 import sys
@@ -33,10 +32,11 @@ from .agents.dispatcher import Dispatcher
 from .bootstrap import initialize_services
 from .container import AppContainer, get_container, init_container
 from .core import ApiResponse, CameraStateModel, Database, HealthData
-from .core.config import get_config, update_config_section
+from .core.config import get_config
 from .core.rate_limit import global_limiter
 from .core.tracing import RequestIdFilter, new_request_id, set_request_id
 from .mcp.web_tools import close_http_client as close_web_http_client
+from .migrations import load_vision_focuses, migrate_global_llm_keys, migrate_home_info
 from .services.health_check import HealthChecker
 from .services.metrics_service import MetricsService
 from .services.scheduler_service import SchedulerService
@@ -336,56 +336,10 @@ async def lifespan(_: FastAPI):
     await rule_registry_service.load_from_db()
     await session_store.load_from_db()
 
-    # 加载全局 LLM keys：优先 config.json（全局共享、跨重启持久化）；
-    # 仅当 config.json 的 llm_keys 为空时，fallback 到"第一个有 llm_keys 的用户 DB"，
-    # 并一次性迁移到 config.json（兼容历史部署：老版本把全局 key 只存用户 DB）。
-    try:
-        db = Database.get()
-        config_keys = get_config("llm_keys", []) or []
-        if config_keys:
-            logger.info("Loaded %d global LLM keys from config.json", len(config_keys))
-        else:
-            # config.json 无 key：fallback 到第一个有 llm_keys 的用户 DB，并迁移到 config.json
-            all_users = await db.user_list_all()
-            migrated = False
-            for user in all_users:
-                llm_keys_json = await db.user_setting_get(user["id"], "llm_keys")
-                if not llm_keys_json:
-                    continue
-                llm_keys = json.loads(llm_keys_json)
-                if not llm_keys:
-                    continue
-                from .core.config import (
-                    update_memory_config,
-                    save_global_llm_keys,
-                    update_config_section,
-                )
-                update_memory_config("llm_keys", llm_keys)
-                # 同步 providers（老版本把第一个用户的 providers 当全局用，迁移时一并持久化）
-                providers_json = await db.user_setting_get(user["id"], "providers")
-                migrated_providers: dict = {}
-                if providers_json:
-                    providers = json.loads(providers_json)
-                    if providers:
-                        update_memory_config("providers", providers)
-                        migrated_providers = providers
-                # 一次性迁移到 config.json 持久化（llm_keys 数组 + providers dict）
-                try:
-                    save_global_llm_keys(llm_keys)
-                    if migrated_providers:
-                        update_config_section("providers", migrated_providers)
-                    migrated = True
-                    logger.info(
-                        "Migrated %d LLM keys + providers from user '%s' DB to config.json",
-                        len(llm_keys), user["username"],
-                    )
-                except Exception:
-                    logger.warning("Failed to persist migrated llm_keys to config.json", exc_info=True)
-                break
-            if not migrated:
-                logger.info("No LLM keys found in config.json or any user DB")
-    except Exception as e:
-        logger.warning("Failed to load global LLM keys: %s", e)
+    # 启动期一次性历史数据迁移（详见 app/migrations.py）：DB 是兼容性 fallback，
+    # config.json 是新真源。单块失败只 warning，不阻塞启动。
+    db = Database.get()
+    await migrate_global_llm_keys(db)
 
     # 启动自愈：全局 llm_keys 非空但某些角色 key 无效（空/占位符）时，
     # 从 per-user DB 找第一个有该角色有效明文 api_key 的用户条目恢复。
@@ -406,61 +360,9 @@ async def lifespan(_: FastAPI):
     except Exception as e:
         logger.warning("Failed to heal global LLM keys from user DB: %s", e)
 
-    # 一次性迁移 home_info：历史代码把家庭地址按 per-user 存进了 DB（user_settings.home_info），
-    # 但 weather_service.get_weather() 读的是全局 config.json 的 home 段，两边不通导致天气组件空白。
-    # 此处把已存在 DB 里的 home_info 镜像到 config.json 的 home 段（仅当 config 没有完整 home 时）。
-    # 跟上面 LLM keys 的迁移模式一致：DB 仍是兼容性 fallback，config.json 是新真源。
-    # 注意：本函数体内 LLM keys 迁移块有局部 `from .core.config import update_config_section`，
-    # 会让 Python 把 update_config_section 当成本函数的局部变量；只能走模块全限定名绕开。
-    try:
-        from . import core as _core  # noqa: WPS433 — 绕开局部 import 作用域陷阱
-        db = Database.get()
-        home_config = get_config("home", {}) or {}
-        home_complete = bool(home_config.get("city") or home_config.get("district"))
-        if not home_complete:
-            all_users = await db.user_list_all()
-            for user in all_users:
-                home_info_json = await db.user_setting_get(user["id"], "home_info")
-                if not home_info_json:
-                    continue
-                try:
-                    home_data = json.loads(home_info_json)
-                except (json.JSONDecodeError, TypeError):
-                    continue
-                if not (home_data.get("city") or home_data.get("district")):
-                    continue
-                _core.config.update_config_section("home", {
-                    "home_name": home_data.get("home_name", ""),
-                    "owner_name": home_data.get("owner_name", ""),
-                    "province": home_data.get("province", ""),
-                    "city": home_data.get("city", ""),
-                    "district": home_data.get("district", ""),
-                })
-                logger.info(
-                    "Migrated home_info from user '%s' DB to config.json (city=%s)",
-                    user["username"], home_data.get("city"),
-                )
-                break
-    except Exception as e:
-        logger.warning("Failed to migrate home_info from user DB to config.json: %s", e)
+    await migrate_home_info(db)
 
-    # 加载视觉关注指令（支持新多条格式 + 旧单条迁移）
-    db = Database.get()
-    saved_focuses = await db.kv_get("vision_focuses")
-    if saved_focuses:
-        try:
-            focuses = json.loads(saved_focuses)
-            vision_service.load_focuses(focuses)
-            logger.info("Loaded %d vision_focuses from database", len(focuses))
-        except (ValueError, TypeError):
-            logger.warning("Failed to parse vision_focuses from database")
-    else:
-        # 迁移旧 vision_focus
-        saved_focus = await db.kv_get("vision_focus")
-        if saved_focus:
-            vision_service.add_focus(saved_focus)
-            await db.kv_set("vision_focuses", json.dumps(vision_service.get_vision_focuses()))
-            logger.info("Migrated old vision_focus to new format: %s", saved_focus[:50])
+    await load_vision_focuses(db, vision_service)
 
     # 设置 HA 设备目录提供者
     rule_service.set_ha_catalog_provider(_get_ha_device_catalog)
@@ -506,20 +408,20 @@ async def lifespan(_: FastAPI):
     if integration_enabled:
         from pathlib import Path as _Path
         from app.integration.integration_layer import IntegrationLayer
-        from app.integration.manifest_loader import load_manifests
         from app.integration.config_helper import get_broadcast_enabled
         _plugin_dir_cfg = get_config("integration.plugin_dir", "integrations")
         # plugin_dir 相对于项目根解析（容器内工作目录 /aether）
         _plugin_dir = str(_Path("/aether") / _plugin_dir_cfg)
-        # 先加载 manifest，用于按 secrets 声明统一注入凭证（解耦具体插件名）
-        _manifests = load_manifests(_plugin_dir, api_version=get_config("integration.api_version", "1"))
+        # host_deps：暴露宿主能力给插件反向调用（Phase 3 方向 2）。
+        # 凭证不再注入子进程环境变量——插件经 host.ha.call_service 反向 RPC 操作设备。
         integration_layer = IntegrationLayer(
             plugin_dir=_plugin_dir,
             api_version=get_config("integration.api_version", "1"),
             rpc_timeout=float(get_config("integration.default_rpc_timeout", 30.0)),
             max_restarts=int(get_config("integration.max_restarts", 3)),
-            env_per_plugin=_build_plugin_env(manifests=_manifests, ha_client=ha_client),
             broadcast_enabled=get_broadcast_enabled(),
+            host_deps={"ha_client": ha_client, "ha_service": ha_service,
+                       "llm_chat_client": llm_chat_client},
         )
         try:
             await integration_layer.start()
@@ -687,11 +589,27 @@ async def lifespan(_: FastAPI):
     from .clients.llm_base_client import close_shared_client
     await close_shared_client()
     await Database.close()
+    _reset_global_state()
     logger.info("Application shutdown")
 
 
 # Dispatcher 全局引用
 dispatcher: Dispatcher | None = None
+
+
+def _reset_global_state() -> None:
+    """清回 lifespan 期间注入的进程级全局运行时对象。
+
+    shutdown 末尾调用，避免进程内重启（uvicorn --reload / 测试复用进程）时
+    ``dispatcher`` 等仍指向已关闭的旧对象（僵尸）。agent 的 httpx 客户端已在此前
+    由 ``dispatcher.close_all_agent_clients()`` 回收，这里只解除引用。
+    """
+    global dispatcher, langgraph_agent  # noqa: PLW0603
+    dispatcher = None
+    langgraph_agent = None
+    _services["langgraph_agent"] = None
+    _services.pop("langchain_tools", None)
+    _container.dispatcher = None
 
 
 # ============ 应用实例 ============
@@ -717,6 +635,7 @@ from .routes.sg_routes import router as sg_router
 from .routes.integration_routes import router as integration_router
 from .routes.ws_routes import router as ws_router
 from .routes.automation_routes import router as automation_router
+from .routes.simulator_routes import router as simulator_router
 app.include_router(llm_key_router, prefix="/api")
 app.include_router(global_config_router, prefix="/api")
 app.include_router(home_router, prefix="/api")
@@ -735,6 +654,7 @@ app.include_router(ptz_router, prefix="/api")
 app.include_router(discovery_router, prefix="/api")  # ONVIF 摄像头发现：/api/discovery/*
 app.include_router(camera_router, prefix="/api")     # Task 6:多摄像头统一入口 /api/cameras/* + /api/ha/areas
 app.include_router(automation_router, prefix="/api")  # 自动化：/api/automation/*
+app.include_router(simulator_router, prefix="/api")  # 虚拟设备开关：/api/simulator/*
 app.include_router(setup_router)  # 无 prefix，包含 / 和 /favicon.ico
 app.include_router(doc_router)  # 路径已包含 /api 前缀或无
 app.include_router(sg_router, prefix="/api")  # 语义图：/api/sg/*
@@ -862,35 +782,6 @@ async def global_rate_limit(request: Request, call_next):
 
 
 # ============ 系统状态路由 ============
-
-
-def _build_plugin_env(manifests, ha_client) -> dict[str, dict[str, str]]:
-    """按 manifest 的 secrets 声明，统一为每个插件构造环境变量注入表。
-
-    解耦：宿主不认识具体插件名（不再硬编码 xiaoai），只按声明的凭证类型映射。
-    声明 "ha_url"/"ha_token" 的插件会拿到 AETHER_HA_URL/AETHER_HA_TOKEN。
-    Phase 3 切换反向 RPC 后，凭证不再进插件进程，此函数可移除。
-    """
-    env_table: dict[str, dict[str, str]] = {}
-    if ha_client is None or not manifests:
-        return env_table
-    ha_url = getattr(ha_client, "_base_url", "") or ""
-    ha_token = getattr(ha_client, "_token", "") or ""
-    # 凭证类型 → 环境变量名映射（统一的解耦契约）
-    secret_map = {
-        "ha_url": ("AETHER_HA_URL", ha_url),
-        "ha_token": ("AETHER_HA_TOKEN", ha_token),
-    }
-    for manifest in manifests:
-        env: dict[str, str] = {"PYTHONPATH": "/aether"}
-        for secret_kind in getattr(manifest, "secrets", []) or []:
-            if secret_kind in secret_map:
-                env_name, value = secret_map[secret_kind]
-                if value:
-                    env[env_name] = value
-        # 只要有任何凭证注入或插件无凭证需求，都登记（保证 PYTHONPATH）
-        env_table[manifest.id] = env
-    return env_table
 
 
 def _build_dispatch_fn(dispatcher):
