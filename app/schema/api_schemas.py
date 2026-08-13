@@ -302,6 +302,23 @@ class EntityOperableRequest(BaseModel):
         return str(v).strip() if isinstance(v, str) else str(v)
 
 
+class ActionMapRequest(BaseModel):
+    """设置实体动作语义映射的请求体。
+
+    mappings 形如 {"turn_on": {"target": "turn_off", "description": "继电器反转..."}}。
+    target 必须属于该域（domain）的可用 services；target==源 service 无意义（被过滤丢弃）。
+    空 mappings = 删除该实体的全部映射。写入后立即刷新 catalog 缓存。
+    """
+
+    entity_id: str = Field(..., description="HA 实体 ID")
+    mappings: dict = Field(default_factory=dict, description="{svc: {target, description}}")
+
+    @field_validator("entity_id", mode="before")
+    @classmethod
+    def _strip_entity_id(cls, v: object) -> str:
+        return str(v).strip() if isinstance(v, str) else str(v)
+
+
 # --------------- Chat ---------------
 
 class ChatRequest(BaseModel):

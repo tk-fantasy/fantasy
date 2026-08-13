@@ -12,7 +12,7 @@ from ..clients.ha_client import HomeAssistantClient
 from ..core.api_models import ApiResponse
 from ..core.config import get_config, update_config_section
 from ..core.exceptions import AppException
-from ..schema.api_schemas import HAConfigRequest, HAServiceCallRequest, ModelTestRequest, UniqueSettingsRequest, EntityAliasRequest, EntityNoteRequest, EntityOperableRequest
+from ..schema.api_schemas import HAConfigRequest, HAServiceCallRequest, ModelTestRequest, UniqueSettingsRequest, EntityAliasRequest, EntityNoteRequest, EntityOperableRequest, ActionMapRequest
 from ..services.ha_service import HAService
 from ..services.control_probe import call_with_probe
 
@@ -180,6 +180,99 @@ async def set_entity_operable(
         except Exception:  # noqa: BLE001
             logger.warning("catalog refresh after operable change failed", exc_info=True)
     return ApiResponse(data={"entity_id": entity_id, "operable": payload.operable})
+
+
+@router.get("/ha/action-maps")
+async def get_action_maps() -> ApiResponse[dict]:
+    """获取全部已配置的动作语义映射 {entity_id: {mappings: {...}}}。"""
+    import json
+    from ..core.database import Database
+    db = Database.get()
+    raw = await db.prefs_get_by_scope("entity_action_map")
+    maps: dict[str, dict] = {}
+    for eid, val in raw.items():
+        try:
+            obj = json.loads(val) if isinstance(val, str) else val
+            if isinstance(obj, dict) and obj.get("mappings"):
+                maps[eid] = obj
+        except (ValueError, TypeError):
+            logger.warning("action-maps 解析失败 entity=%s", eid, exc_info=True)
+    return ApiResponse(data={"maps": maps})
+
+
+@router.put("/ha/action-maps")
+async def set_action_map(
+    payload: ActionMapRequest, container: AppContainer = Depends(get_container)
+) -> ApiResponse[dict]:
+    """设置/更新一个实体的动作映射。空 mappings = 删除。
+
+    校验：每个 target 必须属于该域 services 且 ≠ 源 service。
+    写入后清缓存并触发 catalog 刷新。
+    """
+    import json
+    from ..core.database import Database
+    from ..services.semantic_map import invalidate_cache
+
+    entity_id = payload.entity_id
+    if not entity_id:
+        raise AppException("缺少 entity_id", code="missing_params", http_status=400)
+
+    db = Database.get()
+    if not payload.mappings:
+        await db.emoji_pref_delete("entity_action_map", entity_id)
+    else:
+        # 校验 target 合法性
+        domain = entity_id.split(".")[0]
+        svc_defs = await container.ha_service.get_service_defs(container.ha_client, domains={domain})
+        domain_svcs = svc_defs.get(domain) or {}
+        valid_svcs = set(domain_svcs.keys()) if isinstance(domain_svcs, dict) else set(domain_svcs)
+        if not valid_svcs:
+            raise AppException(
+                f"域 {domain} 的服务列表获取失败，无法校验映射",
+                code="ha_error", http_status=502,
+            )
+        cleaned: dict[str, dict] = {}
+        for svc, entry in payload.mappings.items():
+            if not isinstance(entry, dict):
+                continue
+            target = entry.get("target", "")
+            if not target or target == svc:
+                continue
+            if target not in valid_svcs:
+                raise AppException(
+                    f"service '{target}' 不属于域 {domain}（可用: {sorted(valid_svcs)}）",
+                    code="invalid_target", http_status=400,
+                )
+            cleaned[svc] = {"target": target, "description": entry.get("description", "")}
+        if not cleaned:
+            await db.emoji_pref_delete("entity_action_map", entity_id)
+        else:
+            await db.emoji_pref_upsert(
+                "entity_action_map", entity_id, json.dumps({"mappings": cleaned})
+            )
+    invalidate_cache()
+    refresh_fn = getattr(container, "catalog_refresh_fn", None)
+    if refresh_fn is not None:
+        try:
+            asyncio.create_task(refresh_fn())
+        except Exception:  # noqa: BLE001
+            logger.warning("catalog refresh after action-map save failed", exc_info=True)
+    return ApiResponse(data={"entity_id": entity_id, "mappings": payload.mappings})
+
+
+@router.get("/ha/entity-services")
+async def get_entity_services(container: AppContainer = Depends(get_container)) -> ApiResponse[dict]:
+    """返回按域分组的可用服务列表（供前端拉取可配置的 action）。
+
+    复用 ha_service.get_service_defs，剥离成 {domain: [svc_name, ...]}。
+    """
+    try:
+        svc_defs = await container.ha_service.get_service_defs(container.ha_client)
+        services = {domain: list(svcs.keys()) for domain, svcs in svc_defs.items()}
+        return ApiResponse(data={"services": services})
+    except Exception as e:
+        logger.exception("entity-services failed")
+        raise AppException(f"服务列表获取失败: {e}", code="ha_error", http_status=502)
 
 
 @router.get("/ha/services")
