@@ -42,3 +42,14 @@ class TestBuildSystemPrompt:
         prompt = await build_system_prompt()
         assert isinstance(prompt, str)
         assert len(prompt) > 100
+
+
+@pytest.mark.asyncio
+async def test_system_prompt_includes_operable_constraint():
+    """注入 device_catalog 时，system prompt 含白名单权限约束文案。"""
+    from app.services.prompt_service import build_system_prompt
+    prompt = await build_system_prompt(
+        device_catalog="# 童锁\n- lock.tong_suo (类型:lock, 状态:locked) 名称:童锁 ⛔AI禁操作"
+    )
+    assert "⛔" in prompt
+    assert "多候选" in prompt or "优先" in prompt
