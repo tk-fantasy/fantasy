@@ -253,6 +253,8 @@ class HAService:
         返回结构见 docs/.../device-grouped-entity-display-design.md。
         """
         states = await self._get_states_cached()
+        states_by_id = {s["entity_id"]: s for s in states}
+        suppress = self._virtual_suppress_set(states_by_id)
         reg = await self._get_full_registry()
         area_map = reg["area_map"]
         device_info_map = reg["device_info_map"]
@@ -263,6 +265,8 @@ class HAService:
         by_id: dict[str, dict] = {}
         for state in states:
             entity_id = state["entity_id"]
+            if entity_id in suppress:
+                continue
             domain = entity_id.split(".")[0]
             if domain not in self._DEVICE_DOMAINS:
                 continue

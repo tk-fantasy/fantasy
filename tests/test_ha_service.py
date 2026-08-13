@@ -203,3 +203,53 @@ class TestVirtualSuppress:
         result = await svc.get_all_devices()
         ids = [d["entity_id"] for d in result]
         assert set(ids) == set(sim_ids)  # 一个都不隐藏
+
+    @pytest.mark.asyncio
+    async def test_grouped_devices_excluded_when_all_offline(self, monkeypatch):
+        """get_all_devices_grouped：模拟器全 offline 时，分组视图也不含模拟器。"""
+        sim_ids = ["light.chuang_tou_deng", "cover.ke_ting_chuang_lian"]
+        monkeypatch.setattr(
+            "app.services.ha_service.get_config",
+            lambda path, default=None: sim_ids if path == "simulator.entity_ids" else default,
+        )
+        devices = [
+            {"entity_id": "light.chuang_tou_deng", "state": "unavailable", "attributes": {"friendly_name": "床头灯"}},
+            {"entity_id": "cover.ke_ting_chuang_lian", "state": "unavailable", "attributes": {"friendly_name": "窗帘"}},
+        ]
+        svc, _ = _make_service(devices)
+        # grouped 用 _get_full_registry → _refresh_registry；把缓存置新鲜避免 WS
+        svc._area_map = {"bedroom": "卧室"}
+        svc._entity_area_map = {eid: "bedroom" for eid in sim_ids}
+        svc._device_info_map = {}
+        svc._entity_device_map = {}
+        svc._registry_cache_at = 9999999999
+
+        result = await svc.get_all_devices_grouped()
+        all_entity_ids = [
+            e["entity_id"] for dev in result.get("devices", []) for e in dev.get("entities", [])
+        ]
+        assert all_entity_ids == []  # 全隐藏
+
+    @pytest.mark.asyncio
+    async def test_grouped_devices_kept_when_partial_online(self, monkeypatch):
+        sim_ids = ["light.chuang_tou_deng", "cover.ke_ting_chuang_lian"]
+        monkeypatch.setattr(
+            "app.services.ha_service.get_config",
+            lambda path, default=None: sim_ids if path == "simulator.entity_ids" else default,
+        )
+        devices = [
+            {"entity_id": "light.chuang_tou_deng", "state": "on", "attributes": {"friendly_name": "床头灯"}},
+            {"entity_id": "cover.ke_ting_chuang_lian", "state": "unavailable", "attributes": {"friendly_name": "窗帘"}},
+        ]
+        svc, _ = _make_service(devices)
+        svc._area_map = {"bedroom": "卧室"}
+        svc._entity_area_map = {eid: "bedroom" for eid in sim_ids}
+        svc._device_info_map = {}
+        svc._entity_device_map = {}
+        svc._registry_cache_at = 9999999999
+
+        result = await svc.get_all_devices_grouped()
+        all_entity_ids = [
+            e["entity_id"] for dev in result.get("devices", []) for e in dev.get("entities", [])
+        ]
+        assert set(all_entity_ids) == set(sim_ids)  # 一个都不隐藏
