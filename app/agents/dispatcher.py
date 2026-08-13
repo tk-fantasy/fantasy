@@ -197,6 +197,7 @@ class Dispatcher:
         agent: Any,  # LangGraph CompiledStateGraph
         ha_catalog_provider: Any = None,
         ha_controls_provider: Any = None,
+        catalog_refresh_fn: Any = None,  # controls 缓存空时同步刷新（确保备注不缺位）
         clients: tuple[Any, Any] | None = None,  # 全局 agent 的 (sync, async) httpx 客户端
         vision_service: Any = None,
         ha_service: Any = None,
@@ -214,6 +215,7 @@ class Dispatcher:
         self._camera_manager = camera_manager
         self._ha_catalog_provider = ha_catalog_provider
         self._ha_controls_provider = ha_controls_provider
+        self._catalog_refresh_fn = catalog_refresh_fn
         self._vision_service = vision_service
         self._ha_service = ha_service
         self._validator = validator or ValidatorAgent()
@@ -429,6 +431,15 @@ class Dispatcher:
         if self._ha_controls_provider is not None:
             try:
                 device_controls = self._ha_controls_provider()
+                # controls 为空（后台刷新循环启动时序失败/未就绪）时，
+                # 退回 catalog 会丢失备注→LLM 按直觉调错 service。
+                # 同步触发一次刷新，确保备注/controls 不缺位。
+                if not device_controls and self._catalog_refresh_fn is not None:
+                    try:
+                        await self._catalog_refresh_fn()
+                        device_controls = self._ha_controls_provider() or ""
+                    except Exception:
+                        logger.warning("On-demand catalog refresh failed", exc_info=True)
             except Exception:
                 logger.exception("Failed to build HA device controls")
 

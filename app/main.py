@@ -449,6 +449,7 @@ async def lifespan(_: FastAPI):
         agent=langgraph_agent,
         ha_catalog_provider=_get_ha_device_catalog,
         ha_controls_provider=_get_ha_device_controls,
+        catalog_refresh_fn=_refresh_ha_catalog,  # controls 空时同步刷新,确保备注不缺位
         vision_service=vision_service,
         ha_service=ha_service,
         validator=ValidatorAgent(max_retries=1),
