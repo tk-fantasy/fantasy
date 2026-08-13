@@ -121,9 +121,17 @@ def _register_ha_get_entities(deps: ToolDeps) -> None:
                 notes_map = await Database.get().prefs_get_by_scope("entity_note")
             except Exception:  # noqa: BLE001
                 logger.warning("get_entities: 备注读取失败", exc_info=True)
+            # 用户「AI 可操作」黑名单：让 LLM 在 get_entities 返回里看到权限
+            operable_disabled: dict[str, str] = {}
+            try:
+                from .core.database import Database
+                operable_disabled = await Database.get().prefs_get_by_scope("entity_operable")
+            except Exception:  # noqa: BLE001
+                logger.warning("get_entities: operable 读取失败", exc_info=True)
             for device in devices:
                 device["_controls"] = resolve_controls(device, raw_svc_defs)
                 device["note"] = notes_map.get(device["entity_id"], "")
+                device["ai_operable"] = device["entity_id"] not in operable_disabled
             # 给 grouped devices 的子实体也补 _controls（复用扁平实体的计算结果）
             ctrl_by_eid = {d["entity_id"]: d.get("_controls", {}) for d in devices}
             grouped_devices = grouped.get("devices", [])
