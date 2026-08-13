@@ -159,3 +159,47 @@ class TestVirtualSuppress:
         # states 里只有 2 个，且都 unavailable
         states = {eid: {"entity_id": eid, "state": "unavailable", "attributes": {}} for eid in only_two}
         assert svc._virtual_suppress_set(states) == set(only_two)
+
+    @pytest.mark.asyncio
+    async def test_flat_devices_excluded_when_all_offline(self, monkeypatch):
+        """get_all_devices：模拟器全 offline 时，flat 列表不含模拟器实体。"""
+        sim_ids = ["light.chuang_tou_deng", "climate.zhong_yang_kong_diao"]
+        real_id = "light.real_bed"
+        monkeypatch.setattr(
+            "app.services.ha_service.get_config",
+            lambda path, default=None: sim_ids if path == "simulator.entity_ids" else default,
+        )
+        devices = [
+            {"entity_id": "light.chuang_tou_deng", "state": "unavailable", "attributes": {}},
+            {"entity_id": "climate.zhong_yang_kong_diao", "state": "unavailable", "attributes": {}},
+            {"entity_id": "light.real_bed", "state": "on", "attributes": {}},
+        ]
+        svc, _ = _make_service(devices)
+        svc._area_map = {"bedroom": "Bedroom"}
+        svc._entity_area_map = {eid: "bedroom" for eid in sim_ids + [real_id]}
+        svc._area_cache_at = 9999999999
+
+        result = await svc.get_all_devices()
+        ids = [d["entity_id"] for d in result]
+        assert ids == ["light.real_bed"]  # 模拟器两个被隐藏，真实设备保留
+
+    @pytest.mark.asyncio
+    async def test_flat_devices_kept_when_partial_online(self, monkeypatch):
+        """get_all_devices：模拟器有 1 个在线时，全部保留。"""
+        sim_ids = ["light.chuang_tou_deng", "climate.zhong_yang_kong_diao"]
+        monkeypatch.setattr(
+            "app.services.ha_service.get_config",
+            lambda path, default=None: sim_ids if path == "simulator.entity_ids" else default,
+        )
+        devices = [
+            {"entity_id": "light.chuang_tou_deng", "state": "on", "attributes": {}},
+            {"entity_id": "climate.zhong_yang_kong_diao", "state": "unavailable", "attributes": {}},
+        ]
+        svc, _ = _make_service(devices)
+        svc._area_map = {"bedroom": "Bedroom"}
+        svc._entity_area_map = {eid: "bedroom" for eid in sim_ids}
+        svc._area_cache_at = 9999999999
+
+        result = await svc.get_all_devices()
+        ids = [d["entity_id"] for d in result]
+        assert set(ids) == set(sim_ids)  # 一个都不隐藏

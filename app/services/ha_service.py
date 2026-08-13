@@ -215,11 +215,15 @@ class HAService:
         + area_id 非空（只显示已分配区域的设备，未分配的不显示）。
         """
         states = await self._get_states_cached()
+        states_by_id = {s["entity_id"]: s for s in states}
+        suppress = self._virtual_suppress_set(states_by_id)
         area_map, entity_area_map = await self._get_area_maps_cached()
         alias_map = await self._get_alias_map()
         devices = []
         for state in states:
             entity_id = state["entity_id"]
+            if entity_id in suppress:
+                continue
             domain = entity_id.split(".")[0]
             if domain not in self._DEVICE_DOMAINS:
                 continue
