@@ -283,6 +283,26 @@ def _register_ha_call_service(deps: ToolDeps) -> None:
                         }
                 except Exception:
                     logger.warning("call_service: entity_id 校验失败，放行", exc_info=True)
+            # 授权校验：用户可在设备页把危险设备（童锁/门锁）标为禁止 AI 操作。
+            # 读 entity_operable 黑名单，命中则拒绝。DB 异常时放行（避免锁死全屋）。
+            if entity_id:
+                try:
+                    from .core.database import Database
+                    disabled = await Database.get().prefs_get_by_scope("entity_operable")
+                    eid_list_op = [e.strip() for e in str(entity_id).split(",") if e.strip()]
+                    blocked = [e for e in eid_list_op if e in disabled]
+                    if blocked:
+                        names = "、".join(blocked)
+                        logger.info("call_service 拒绝未授权 entity_id: %s", blocked)
+                        return {
+                            "success": False,
+                            "error": (
+                                f"设备「{names}」被用户设为禁止 AI 操作。请勿尝试调用，"
+                                "如实告知用户需手动操作或在设备页解除限制。"
+                            ),
+                        }
+                except Exception:
+                    logger.warning("call_service: 授权校验失败，放行", exc_info=True)
             # query→entity 语义校验：复用 match_devices 判断用户指令命中的设备，
             # 若命中设备但目标 entity_id 不在命中范围内 → 拒绝（防止语义近邻顶替，
             # 如「打开加湿器」却操作带除湿模式的空调）。
