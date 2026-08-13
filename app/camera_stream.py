@@ -627,7 +627,9 @@ class CameraStream:
                         self._open_fail_count += 1
                         if (
                             self._discovery_service is not None
-                            and bool(get_config("vision.discovery_enabled", False))
+                            # 读该路 cameras 行的 discovery_enabled(非全局 config),
+                            # 否则多路时只有全局开关能控、单路开关失效。
+                            and bool(self._config.get("discovery_enabled", 1))
                             and self._open_fail_count >= self._discovery_trigger_threshold
                             and (time.time() - self._last_discovery_at) >= self._discovery_min_interval
                         ):
@@ -642,7 +644,10 @@ class CameraStream:
                                 # discovery 是 async,投到主循环跑
                                 if self._loop and not self._loop.is_closed():
                                     fut = asyncio.run_coroutine_threadsafe(
-                                        self._discovery_service.find_and_apply(),
+                                        # 必须传 camera_id,否则走 legacy 分支读全局
+                                        # vision.device_mac,多路会张冠李戴、单路靠
+                                        # 全局 MAC 兜底;传 id 才读该路 cameras 行。
+                                        self._discovery_service.find_and_apply(self.camera_id),
                                         self._loop,
                                     )
                                     fut.result(timeout=60)  # 等发现完成(上限 60s)

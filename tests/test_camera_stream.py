@@ -8,7 +8,8 @@
 """
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+import asyncio
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -114,3 +115,60 @@ class TestCameraStateHasId:
         s = CameraStream("cam_test01", _config(), vision_service=MagicMock())
         st = s.get_state()
         assert st["camera_id"] == "cam_test01"
+
+
+class TestWorkerDiscoveryTrigger:
+    """worker 掉线触发 ONVIF discovery:传 camera_id(Bug 3a)+ 读该路 discovery_enabled(Bug 1)。
+
+    之前 worker 调 find_and_apply() 漏传 camera_id → 走 legacy 分支读全局 MAC;
+    且触发闸门读全局 vision.discovery_enabled 而非该路 cameras 行开关。两者都导致
+    断电后自动重连找不到/不触发,只有手动"重新发现"按钮能成。
+    """
+
+    @pytest.mark.asyncio
+    async def test_worker_triggers_discovery_with_camera_id(self, monkeypatch):
+        """开流连续失败 → 触发 discovery,且 find_and_apply 传了本路 camera_id。"""
+        discovery = MagicMock()
+        discovery.find_and_apply = AsyncMock(return_value="192.168.1.50")
+        s = CameraStream(
+            "cam_test01", _config({"discovery_enabled": 1}),
+            vision_service=MagicMock(), discovery_service=discovery,
+        )
+        s.set_event_loop(asyncio.get_running_loop())
+        s._discovery_trigger_threshold = 1   # 一次失败即触发,加速测试
+
+        fake_cap = MagicMock()
+        fake_cap.isOpened.return_value = False
+        monkeypatch.setattr(CameraStream, "_open_camera", lambda self_: fake_cap)
+        monkeypatch.setattr("app.camera_stream.time.sleep", lambda *a, **k: None)
+
+        s.start()
+        await asyncio.sleep(0.5)   # 让 worker 跑 + loop 处理投递的 find_and_apply
+        s.stop()
+
+        discovery.find_and_apply.assert_awaited_once()
+        assert discovery.find_and_apply.await_args.args == ("cam_test01",)
+
+    @pytest.mark.asyncio
+    async def test_worker_skips_discovery_when_per_camera_disabled(self, monkeypatch):
+        """该路 discovery_enabled=0(conftest 全局注入为 True)→ 不触发,
+        反证 worker 读的是该路开关而非全局 config。"""
+        discovery = MagicMock()
+        discovery.find_and_apply = AsyncMock()
+        s = CameraStream(
+            "cam_test01", _config({"discovery_enabled": 0}),
+            vision_service=MagicMock(), discovery_service=discovery,
+        )
+        s.set_event_loop(asyncio.get_running_loop())
+        s._discovery_trigger_threshold = 1
+
+        fake_cap = MagicMock()
+        fake_cap.isOpened.return_value = False
+        monkeypatch.setattr(CameraStream, "_open_camera", lambda self_: fake_cap)
+        monkeypatch.setattr("app.camera_stream.time.sleep", lambda *a, **k: None)
+
+        s.start()
+        await asyncio.sleep(0.3)
+        s.stop()
+
+        discovery.find_and_apply.assert_not_awaited()

@@ -234,3 +234,105 @@ class TestOnAutomationTriggerBridge:
         mgr._on_automation_trigger("cam_b")
         await asyncio.sleep(0.05)
         assert called == ["cam_a", "cam_b"]
+
+
+class TestOnCameraIpChanged:
+    """discovery 回新 IP → 重建该路 stream(让 worker 用最新 rtsp_url)。
+
+    Bug 3b:之前只打日志不重建,worker 缓存了构造时 rtsp_url、IP 变更后不回读 DB,
+    导致 discovery 即使找回新 IP 写入 DB,worker 仍死磕旧 IP 连不上。
+    """
+
+    @pytest.mark.asyncio
+    async def test_rebuild_stream_pops_old_and_respawns_with_latest_row(self, monkeypatch):
+        """_rebuild_stream:停旧 stream、按最新 DB 行(含新 rtsp_url)重 spawn。"""
+        mgr = CameraManager.__new__(CameraManager)
+        old_stream = _make_stream("cam_a")
+        mgr._streams = {"cam_a": old_stream}
+        mgr._db = MagicMock()
+        mgr._db.cameras_get = AsyncMock(return_value={
+            "id": "cam_a", "enabled": 1, "rtsp_url": "rtsp://192.168.1.99/stream",
+        })
+
+        spawned: list[dict] = []
+
+        async def fake_spawn(row):
+            s = _make_stream(row["id"])
+            mgr._streams[row["id"]] = s
+            spawned.append(row)
+            s.start()
+            return s
+        monkeypatch.setattr(mgr, "_spawn", fake_spawn)
+
+        row = await mgr._rebuild_stream("cam_a")
+        # 旧 stream 被停掉
+        old_stream.stop.assert_called_once()
+        # spawn 收到的是最新 DB 行(含新 IP 的 URL)
+        assert spawned[0]["rtsp_url"] == "rtsp://192.168.1.99/stream"
+        # 返回最新行
+        assert row["rtsp_url"] == "rtsp://192.168.1.99/stream"
+
+    @pytest.mark.asyncio
+    async def test_rebuild_stream_skips_disabled_camera(self, monkeypatch):
+        """enabled=0 的路只清旧 stream、不重 spawn。"""
+        mgr = CameraManager.__new__(CameraManager)
+        mgr._streams = {"cam_a": _make_stream("cam_a")}
+        mgr._db = MagicMock()
+        mgr._db.cameras_get = AsyncMock(return_value={"id": "cam_a", "enabled": 0})
+        monkeypatch.setattr(mgr, "_spawn", AsyncMock())
+
+        await mgr._rebuild_stream("cam_a")
+        mgr._spawn.assert_not_called()
+        assert "cam_a" not in mgr._streams   # 旧 stream 被 pop,无新 spawn 补回
+
+    @pytest.mark.asyncio
+    async def test_on_camera_ip_changed_schedules_rebuild(self, monkeypatch):
+        """sync 回调用 run_coroutine_threadsafe 投递重建协程到 loop。"""
+        mgr = CameraManager.__new__(CameraManager)
+        mgr._loop = asyncio.get_event_loop()
+        mgr._streams = {"cam_a": _make_stream("cam_a")}
+
+        rebuilt: list[str] = []
+
+        async def fake_rebuild(cid):
+            rebuilt.append(cid)
+        monkeypatch.setattr(mgr, "_rebuild_stream", fake_rebuild)
+
+        # worker/discovery 线程同步调
+        mgr._on_camera_ip_changed("cam_a", "192.168.1.99")
+        # 给投递的协程一点时间跑
+        await asyncio.sleep(0.05)
+        assert rebuilt == ["cam_a"]
+
+    def test_on_camera_ip_changed_handles_missing_loop(self, caplog):
+        """loop 不可用时不抛、只 warn。"""
+        mgr = CameraManager.__new__(CameraManager)
+        mgr._loop = None
+        with caplog.at_level("WARNING"):
+            mgr._on_camera_ip_changed("cam_a", "1.2.3.4")
+        assert "event loop unavailable" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_update_camera_delegates_to_rebuild(self, monkeypatch):
+        """补空白:update_camera 改完 DB 后复用 _rebuild_stream 重建。"""
+        mgr = CameraManager.__new__(CameraManager)
+        old_stream = _make_stream("cam_a")
+        mgr._streams = {"cam_a": old_stream}
+        mgr._db = MagicMock()
+        mgr._db.cameras_update = AsyncMock(return_value=True)
+        mgr._db.cameras_get = AsyncMock(return_value={
+            "id": "cam_a", "enabled": 1, "rtsp_url": "rtsp://new/stream",
+        })
+
+        async def fake_spawn(row):
+            s = _make_stream(row["id"])
+            mgr._streams[row["id"]] = s
+            s.start()
+            return s
+        monkeypatch.setattr(mgr, "_spawn", fake_spawn)
+
+        result = await mgr.update_camera("cam_a", {"rtsp_url": "rtsp://new/stream"})
+        mgr._db.cameras_update.assert_called_once_with("cam_a", {"rtsp_url": "rtsp://new/stream"})
+        old_stream.stop.assert_called_once()
+        mgr._db.cameras_get.assert_called_once_with("cam_a")
+        assert result["rtsp_url"] == "rtsp://new/stream"

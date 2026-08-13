@@ -138,7 +138,18 @@ class CameraManager:
 
     async def update_camera(self, camera_id: str, fields: dict) -> dict:
         await self._db.cameras_update(camera_id, fields)
-        # 简单策略:重建该路(参数变了)
+        # 参数变了,重建该路让新配置生效
+        row = await self._rebuild_stream(camera_id)
+        return row  # type: ignore[return-value]
+
+    async def _rebuild_stream(self, camera_id: str) -> dict | None:
+        """重建该路 stream(读最新 DB 行):pop 旧 stream → stop → 按 enabled 重 spawn。
+
+        复用于两处:
+        - update_camera:配置变更后让新参数生效。
+        - _on_camera_ip_changed:discovery 找回新 IP 写入 DB 后,让 worker 用最新
+          rtsp_url。worker 在构造时缓存 rtsp_url、不回读 DB,必须重建才能切到新 IP。
+        """
         old = self._streams.pop(camera_id, None)
         if old:
             try:
@@ -344,7 +355,17 @@ class CameraManager:
             return await self._vision_service.evaluate_condition(frames, prompt)
 
     def _on_camera_ip_changed(self, camera_id: str, new_ip: str) -> None:
-        """discovery 回 IP:记日志。worker 掉线重连已自带(指数退避),
-        IP 变更后下次 read 自然连新 IP;ptz per-camera 重连由 Task 5 PtzRegistry 处理。
+        """discovery 回新 IP:重建该路 stream 让 worker 用最新 rtsp_url。
+
+        之前只打日志(误以为 worker 会自然连新 IP),但 worker 在构造时缓存了
+        rtsp_url、IP 变更后不回读 DB,必须重建 stream 才能让新 URL 生效。此回调
+        由 async apply_found_ip 在 loop 线程上 sync 调用,用 run_coroutine_threadsafe
+        调度重建协程(fire-and-forget,无需等结果)。PTZ per-camera 重连由 PtzRegistry
+        懒重连处理。
         """
-        logger.info("camera %s ip changed to %s, worker will reconnect", camera_id, new_ip)
+        logger.info("camera %s ip changed to %s, rebuilding stream", camera_id, new_ip)
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            logger.warning("cannot rebuild stream %s: event loop unavailable", camera_id)
+            return
+        asyncio.run_coroutine_threadsafe(self._rebuild_stream(camera_id), loop)
