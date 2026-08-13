@@ -88,6 +88,7 @@ const SLASH_COMMANDS = [
   { cmd: '/sessions', desc: '浏览并切换历史会话', action: 'nav', url: '/sessions' },
   { cmd: '/doc', desc: '打开RAG文档助手', action: 'nav', url: '/doc' },
   { cmd: '/sg', desc: '构建与管理语义图', action: 'nav', url: '/sg' },
+  { cmd: '/semantics', desc: '设备语义映射(继电器反转等)', action: 'nav', url: '/semantics' },
   { cmd: '/monitor', desc: '查看系统监控', action: 'nav', url: '/monitor' },
   { cmd: '/plugin', desc: '插件管理', action: 'nav', url: '/plugin' },
 ]
