@@ -6,6 +6,7 @@ import time
 from typing import Any
 
 from ..clients.ha_client import HomeAssistantClient
+from ..core.config import get_config
 
 logger = logging.getLogger(__name__)
 
@@ -188,6 +189,24 @@ class HAService:
         "sensor", "binary_sensor", "lock", "media_player", "vacuum",
         "valve", "water_heater", "siren", "alarm_control_panel",
     })
+
+    def _virtual_suppress_set(self, states_by_id: dict[str, dict]) -> set[str]:
+        """返回应隐藏的模拟器实体集合。
+
+        规则：配置白名单(simulator.entity_ids)中当前存在的实体若【全部】
+        unavailable/unknown → 返回全部；否则返回空集。
+        匹配「全部离线才隐藏」语义。白名单为空则特性关闭（kill switch）。
+        """
+        whitelist = set(get_config("simulator.entity_ids", []) or [])
+        if not whitelist:
+            return set()
+        present = [eid for eid in whitelist if eid in states_by_id]
+        if present and all(
+            states_by_id[eid].get("state") in ("unavailable", "unknown")
+            for eid in present
+        ):
+            return set(present)
+        return set()
 
     async def get_all_devices(self) -> list[dict[str, Any]]:
         """获取所有设备（含区域信息）。

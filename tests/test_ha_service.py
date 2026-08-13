@@ -101,3 +101,61 @@ class TestInvalidateStatesCache:
         svc.invalidate_states_cache()
         await svc._get_states_cached()
         assert client.get_states.call_count == 2
+
+
+class TestVirtualSuppress:
+    """模拟器设备「全部离线才隐藏」过滤规则。"""
+
+    SIM_IDS = [
+        "light.chuang_tou_deng", "climate.zhong_yang_kong_diao",
+        "cover.ke_ting_chuang_lian", "sensor.ke_ting_wen_du",
+    ]
+
+    def _states_by_id(self, overrides: dict[str, str]) -> dict[str, dict]:
+        """构造 states_by_id：默认全部 on，overrides 覆盖指定 entity 的 state。"""
+        return {
+            eid: {"entity_id": eid, "state": overrides.get(eid, "on"), "attributes": {}}
+            for eid in self.SIM_IDS
+        }
+
+    def test_all_unavailable_suppresses_all(self, monkeypatch):
+        """白名单全 unavailable → 全部隐藏。"""
+        monkeypatch.setattr(
+            "app.services.ha_service.get_config",
+            lambda path, default=None: self.SIM_IDS if path == "simulator.entity_ids" else default,
+        )
+        svc, _ = _make_service([])
+        states = self._states_by_id({eid: "unavailable" for eid in self.SIM_IDS})
+        assert svc._virtual_suppress_set(states) == set(self.SIM_IDS)
+
+    def test_partial_online_suppresses_none(self, monkeypatch):
+        """有 1 个在线 → 一个都不隐藏。"""
+        monkeypatch.setattr(
+            "app.services.ha_service.get_config",
+            lambda path, default=None: self.SIM_IDS if path == "simulator.entity_ids" else default,
+        )
+        svc, _ = _make_service([])
+        states = self._states_by_id({"light.chuang_tou_deng": "on"})  # 其余 unavailable
+        assert svc._virtual_suppress_set(states) == set()
+
+    def test_empty_whitelist_suppresses_none(self, monkeypatch):
+        """白名单为空 → 不隐藏任何设备（特性关闭）。"""
+        monkeypatch.setattr(
+            "app.services.ha_service.get_config",
+            lambda path, default=None: [] if path == "simulator.entity_ids" else default,
+        )
+        svc, _ = _make_service([])
+        states = self._states_by_id({eid: "unavailable" for eid in self.SIM_IDS})
+        assert svc._virtual_suppress_set(states) == set()
+
+    def test_unregistered_entity_ignored(self, monkeypatch):
+        """白名单实体不在 states（未注册）→ 忽略它；其余全 unavailable 仍触发。"""
+        only_two = ["light.chuang_tou_deng", "climate.zhong_yang_kong_diao"]
+        monkeypatch.setattr(
+            "app.services.ha_service.get_config",
+            lambda path, default=None: self.SIM_IDS if path == "simulator.entity_ids" else default,
+        )
+        svc, _ = _make_service([])
+        # states 里只有 2 个，且都 unavailable
+        states = {eid: {"entity_id": eid, "state": "unavailable", "attributes": {}} for eid in only_two}
+        assert svc._virtual_suppress_set(states) == set(only_two)
