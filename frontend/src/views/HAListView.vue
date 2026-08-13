@@ -26,8 +26,10 @@ const { emojiPrefs, showEmojiPicker, loadEmojiPrefs, openEmojiPicker, onEmojiSel
 const {
   entityAliases, editingName, nameInput,
   entityNotes, noteInput, editingNote,
+  entityOperable,
   loadEntityAliases, startEditName, saveName, resetName,
   loadEntityNotes, startEditNote, saveNote, resetNote,
+  loadEntityOperable, toggleOperable,
 } = useEntityMeta(selectedEntity, selectedDevice)
 
 // ========================
@@ -652,6 +654,7 @@ onMounted(() => {
   loadEmojiPrefs()
   loadEntityAliases()
   loadEntityNotes()
+  loadEntityOperable()
 })
 </script>
 
@@ -749,6 +752,12 @@ onMounted(() => {
                     <span class="entity-icon" :style="{ color: getDomainIcon(ent.entity_id).color }">{{ getDomainIcon(ent.entity_id).icon }}</span>
                     <span class="entity-name">{{ ent.name || ent.entity_id }}</span>
                     <span class="entity-state">{{ getCardPrimary(ent) }}</span>
+                    <span
+                      class="ai-operable-badge"
+                      :class="{ allowed: entityOperable[ent.entity_id] === undefined, disabled: entityOperable[ent.entity_id] !== undefined }"
+                      @click.stop="toggleOperable(ent.entity_id)"
+                      :title="entityOperable[ent.entity_id] === undefined ? '允许 AI 操作，点击禁止' : '已禁止 AI 操作，点击恢复'"
+                    >{{ entityOperable[ent.entity_id] === undefined ? 'AI 可操作' : '禁止 AI' }}</span>
                     <BaseToggle v-if="isToggleable(ent)" :modelValue="isOn(ent)" @click.stop @update:modelValue="toggleDevice(ent)" />
                   </div>
                 </div>
@@ -1339,6 +1348,27 @@ onMounted(() => {
   white-space: nowrap;
 }
 .entity-row.on .entity-state { color: var(--color-text-secondary); }
+
+/* AI 可操作权限徽章（绿=允许 / 红=禁止） */
+.ai-operable-badge {
+  font-size: var(--text-xs, 11px);
+  font-weight: var(--weight-medium, 500);
+  padding: 2px 8px;
+  border-radius: var(--radius-full, 999px);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  transition: opacity var(--duration-fast, 0.15s);
+}
+.ai-operable-badge.allowed {
+  color: var(--color-success, #2ecc71);
+  background: var(--color-success-bg, rgba(46,204,113,0.15));
+}
+.ai-operable-badge.disabled {
+  color: #fff;
+  background: var(--color-danger, #e74c3c);
+}
+.ai-operable-badge:hover { opacity: 0.8; }
 
 /* 实体别名编辑 */
 .name-row { align-items: center; }
