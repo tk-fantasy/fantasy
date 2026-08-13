@@ -26,7 +26,7 @@ services:
       timeout: 5s
       retries: 6
       start_period: 10s
-    restart: "no"
+    restart: unless-stopped
 
   homeassistant:
     container_name: aether-ha
@@ -57,6 +57,9 @@ services:
     volumes:
       # 配置文件（首次从 config.example.json 复制，运行时写入持久化到宿主）
       - ./config.json:/aether/config.json
+      # Docker socket：供「高级配置 → 虚拟设备」开关停止/启动 simulator + mosquitto 容器。
+      # 注意：这赋予 aether 容器宿主 Docker 管理权限，仅限本机可信部署；无需该功能可删掉此行。
+      - /var/run/docker.sock:/var/run/docker.sock
       # 运行时数据：SQLite 库、JWT 密钥、emoji 索引
       # 用 named volume 而非 bind mount —— Windows bind mount 不支持 SQLite WAL 共享内存
       - aether-data:/aether/app/data
@@ -84,7 +87,7 @@ services:
     depends_on:
       mqtt:
         condition: service_healthy
-    restart: "no"
+    restart: unless-stopped
 
 volumes:
   aether-data:
