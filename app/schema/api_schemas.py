@@ -285,6 +285,23 @@ class EntityNoteRequest(BaseModel):
         return str(v).strip() if isinstance(v, str) else str(v)
 
 
+class EntityOperableRequest(BaseModel):
+    """设置实体「AI 可操作」权限的请求体。
+
+    operable=False → 写入 entity_operable 黑名单（禁止 AI 操作）；
+    operable=True  → 删除记录（恢复默认可操作）。
+    完全可逆，可反复切换。仅影响 Aether 侧，不同步 HA。
+    """
+
+    entity_id: str = Field(..., description="HA 实体 ID")
+    operable: bool = Field(..., description="True=允许 AI 操作（恢复），False=禁止 AI 操作")
+
+    @field_validator("entity_id", mode="before")
+    @classmethod
+    def _strip_str(cls, v: object) -> str:
+        return str(v).strip() if isinstance(v, str) else str(v)
+
+
 # --------------- Chat ---------------
 
 class ChatRequest(BaseModel):

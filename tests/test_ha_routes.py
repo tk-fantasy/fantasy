@@ -246,3 +246,47 @@ class TestEntityNotesRoute:
         container = _mock_container(ha_service=MagicMock())
         with pytest.raises(AppException):
             await set_entity_note(EntityNoteRequest(entity_id="", note="x"), container=container)
+
+
+class TestEntityOperableRoute:
+    """测试 GET/PUT /ha/entity-operable 路由。"""
+
+    @pytest.mark.asyncio
+    async def test_get_entity_operable(self, tmp_path, monkeypatch):
+        """GET 返回黑名单。"""
+        from app.core.database import Database
+        Database._instance = None
+        Database._db = None
+        monkeypatch.setattr("app.core.database.DB_PATH", tmp_path / "t.db")
+        await Database.init()
+        await Database.get().emoji_pref_upsert("entity_operable", "lock.tong_suo", "0")
+        from app.routes.ha_routes import get_entity_operable
+        result = await get_entity_operable()
+        assert result.code == "ok"
+        assert result.data["disabled"] == {"lock.tong_suo": "0"}
+
+    @pytest.mark.asyncio
+    async def test_put_disable_then_enable(self, tmp_path, monkeypatch):
+        """PUT operable=False 写黑名单，True 恢复（可逆）。"""
+        from app.core.database import Database
+        Database._instance = None
+        Database._db = None
+        monkeypatch.setattr("app.core.database.DB_PATH", tmp_path / "t.db")
+        await Database.init()
+        from app.schema.api_schemas import EntityOperableRequest
+        from app.routes.ha_routes import set_entity_operable
+        container = _mock_container(catalog_refresh_fn=None)
+        # 禁用
+        await set_entity_operable(
+            EntityOperableRequest(entity_id="lock.tong_suo", operable=False),
+            container=container,
+        )
+        disabled = await Database.get().prefs_get_by_scope("entity_operable")
+        assert disabled == {"lock.tong_suo": "0"}
+        # 恢复
+        await set_entity_operable(
+            EntityOperableRequest(entity_id="lock.tong_suo", operable=True),
+            container=container,
+        )
+        disabled = await Database.get().prefs_get_by_scope("entity_operable")
+        assert disabled == {}

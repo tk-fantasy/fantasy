@@ -12,7 +12,7 @@ from ..clients.ha_client import HomeAssistantClient
 from ..core.api_models import ApiResponse
 from ..core.config import get_config, update_config_section
 from ..core.exceptions import AppException
-from ..schema.api_schemas import HAConfigRequest, HAServiceCallRequest, ModelTestRequest, UniqueSettingsRequest, EntityAliasRequest, EntityNoteRequest
+from ..schema.api_schemas import HAConfigRequest, HAServiceCallRequest, ModelTestRequest, UniqueSettingsRequest, EntityAliasRequest, EntityNoteRequest, EntityOperableRequest
 from ..services.ha_service import HAService
 from ..services.control_probe import call_with_probe
 
@@ -140,6 +140,46 @@ async def set_entity_note(
         except Exception:  # noqa: BLE001
             logger.warning("catalog refresh after note save failed", exc_info=True)
     return ApiResponse(data={"entity_id": entity_id, "note": note})
+
+
+@router.get("/ha/entity-operable")
+async def get_entity_operable() -> ApiResponse[dict]:
+    """获取被用户禁止 AI 操作的实体集合（黑名单，{entity_id: "0"}）。"""
+    from ..core.database import Database
+    db = Database.get()
+    disabled = await db.prefs_get_by_scope("entity_operable")
+    return ApiResponse(data={"disabled": disabled})
+
+
+@router.put("/ha/entity-operable")
+async def set_entity_operable(
+    payload: EntityOperableRequest, container: AppContainer = Depends(get_container)
+) -> ApiResponse[dict]:
+    """设置/取消实体的「AI 可操作」权限。完全可逆。
+
+    operable=False 写入黑名单（禁止），True 删除记录（恢复可操作）。
+    写入后立即刷新 catalog，让 system prompt 不等 60 秒就反映新权限。
+    """
+    from ..core.database import Database
+    entity_id = payload.entity_id
+    if not entity_id:
+        raise AppException("缺少 entity_id", code="missing_params", http_status=400)
+
+    db = Database.get()
+    if payload.operable:
+        # 恢复可操作：删除黑名单记录
+        await db.emoji_pref_delete("entity_operable", entity_id)
+    else:
+        # 禁止 AI 操作：写入黑名单
+        await db.emoji_pref_upsert("entity_operable", entity_id, "0")
+    # 立即刷新 catalog（与 set_entity_note 同做法）
+    refresh_fn = getattr(container, "catalog_refresh_fn", None)
+    if refresh_fn is not None:
+        try:
+            asyncio.create_task(refresh_fn())
+        except Exception:  # noqa: BLE001
+            logger.warning("catalog refresh after operable change failed", exc_info=True)
+    return ApiResponse(data={"entity_id": entity_id, "operable": payload.operable})
 
 
 @router.get("/ha/services")
