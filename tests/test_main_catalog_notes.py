@@ -98,3 +98,41 @@ async def test_refresh_catalog_no_notes_no_change(tmp_path):
     assert "备注" not in controls_ref[0]
     # 但设备可控项仍正常生成
     assert "床头灯" in controls_ref[0]
+
+
+@pytest.mark.asyncio
+async def test_refresh_catalog_marks_disabled_and_skips_controls(tmp_path):
+    """禁用实体行尾标 ⛔，且不出现在 controls 明细里。"""
+    from app.core.database import Database
+    Database._instance = None
+    Database._db = None
+    with patch("app.core.database.DB_PATH", tmp_path / "t.db"):
+        await Database.init()
+    await Database.get().emoji_pref_upsert("entity_operable", "lock.tong_suo", "0")
+
+    fake_dev = {
+        "entity_id": "lock.tong_suo", "state": "locked", "domain": "lock",
+        "attributes": {"friendly_name": "童锁"},
+    }
+    mock_ha_service = MagicMock()
+    mock_ha_service.get_all_devices_grouped = AsyncMock(return_value={"devices": [
+        {"name": "童锁", "model": None, "area_name": None, "entities": [fake_dev]},
+    ]})
+    mock_ha_service.get_all_devices = AsyncMock(return_value=[fake_dev])
+    mock_ha_service.get_service_defs = AsyncMock(return_value={
+        "lock": {"lock": {"fields": ["entity_id"]}, "unlock": {"fields": ["entity_id"]}},
+    })
+    mock_ha_client = MagicMock()
+
+    with patch("app.main.ha_service", mock_ha_service), \
+         patch("app.main.ha_client", mock_ha_client), \
+         patch("app.services.entity_controls.resolve_controls", return_value={"lock": {}, "unlock": {}}):
+        await __import__("app.main", fromlist=["_refresh_ha_catalog"])._refresh_ha_catalog()
+
+    from app.main import _ha_catalog_cache_ref, _ha_controls_cache_ref
+    catalog = _ha_catalog_cache_ref[0]
+    controls = _ha_controls_cache_ref[0]
+    assert "⛔AI禁操作" in catalog
+    assert "lock.tong_suo" in catalog
+    # controls 明细不含禁用项
+    assert "lock.tong_suo" not in controls

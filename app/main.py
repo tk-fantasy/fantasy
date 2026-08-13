@@ -245,6 +245,12 @@ async def _refresh_ha_catalog() -> None:
             notes_map = await Database.get().prefs_get_by_scope("entity_note")
         except Exception:  # noqa: BLE001
             logger.warning("Failed to load entity notes for catalog")
+        operable_disabled: dict[str, str] = {}
+        try:
+            from .core.database import Database
+            operable_disabled = await Database.get().prefs_get_by_scope("entity_operable")
+        except Exception:  # noqa: BLE001
+            logger.warning("Failed to load entity_operable for catalog")
         for dev in grouped.get("devices", []):
             dev_name = dev.get("name", "")
             area_name = dev.get("area_name")
@@ -274,14 +280,17 @@ async def _refresh_ha_catalog() -> None:
             # 父设备名，避免子实体 friendly_name 噪声
             for e in controllable:
                 eid = e["entity_id"]
+                marker = " ⛔AI禁操作" if eid in operable_disabled else ""
                 lines.append(
-                    f"- {eid} (类型:{e['domain']}, 状态:{e['state']}) 名称:{dev_name}"
+                    f"- {eid} (类型:{e['domain']}, 状态:{e['state']}) 名称:{dev_name}{marker}"
                 )
             # controls（中文可控项，供 call_service）
             # 按物理设备聚合，标题统一用设备名（dev_name）
             if raw_svc_defs:
                 dev_controls_lines = [f"{dev_name}:"]
                 for e in controllable:
+                    if e["entity_id"] in operable_disabled:
+                        continue
                     flat = next((d for d in devices if d["entity_id"] == e["entity_id"]), None)
                     if flat:
                         controls = resolve_controls(flat, raw_svc_defs)
