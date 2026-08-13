@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import FlowSelect from '../components/FlowSelect.vue'
 import AdvancedModal from '../components/AdvancedModal.vue'
+import BaseToggle from '../components/BaseToggle.vue'
 import { apiGet, apiPost } from '../utils/api'
 
 // ===== Modal 管理 =====
@@ -609,6 +610,38 @@ async function pollDocRebuild() {
   }
 }
 
+// ===== 虚拟设备（模拟器 + MQTT）开关 =====
+const simulator = ref({ available: false, running: false, simulator: {}, mqtt: {} })
+const simulatorBusy = ref(false)
+const simulatorError = ref('')
+
+async function loadSimulatorStatus() {
+  try {
+    const res = await fetch('/api/simulator/status')
+    const json = await res.json()
+    simulator.value = { available: false, running: false, simulator: {}, mqtt: {}, ...(json.data || json) }
+  } catch (e) {
+    console.error('Failed to load simulator status:', e)
+  }
+}
+
+async function toggleSimulator() {
+  simulatorBusy.value = true
+  simulatorError.value = ''
+  try {
+    const action = simulator.value.running ? 'stop' : 'start'
+    const data = await apiPost(`/api/simulator/${action}`, {})
+    if (data && data.ok === false) {
+      simulatorError.value = '操作失败，请检查 docker 服务状态'
+    }
+    await loadSimulatorStatus()
+  } catch (e) {
+    simulatorError.value = '操作失败：' + (e?.message || String(e))
+  } finally {
+    simulatorBusy.value = false
+  }
+}
+
 // ===== 卡片摘要 =====
 const weatherSummary = computed(() => weatherConfig.value.host || '未配置')
 const exaSummary = computed(() => webSearchConfig.value.exa?.api_key ? '已配置' : '匿名')
@@ -624,6 +657,7 @@ const automationSummary = computed(() =>
 
 onMounted(() => {
   loadAll()
+  loadSimulatorStatus()
   // 加载文档重建状态
   fetch('/api/doc/rebuild/status').then(r => r.json()).then(j => {
     docRebuildStatus.value = j.data || j
@@ -704,6 +738,33 @@ onUnmounted(() => {
           </div>
         </div>
       </div>
+
+      <!-- 虚拟设备（模拟器 + MQTT） -->
+      <section class="setting-section">
+        <h2 class="section-title">
+          <span class="section-icon">&#128268;</span>
+          虚拟设备
+        </h2>
+        <div class="setting-card">
+          <div class="setting-row">
+            <div class="setting-label">
+              <span class="label-text">模拟器 + MQTT broker</span>
+              <span class="label-desc">
+                关闭后虚拟设备（灯/空调/窗帘等）全部下线，
+                <template v-if="simulator.available">当前：{{ simulator.running ? '运行中' : '已关闭' }}</template>
+                <template v-else>（需 Docker 部署并挂载 docker.sock）</template>
+              </span>
+            </div>
+            <BaseToggle
+              v-if="simulator.available"
+              :modelValue="simulator.running"
+              :disabled="simulatorBusy"
+              @update:modelValue="toggleSimulator"
+            />
+          </div>
+          <div v-if="simulatorError" class="rebuild-message">{{ simulatorError }}</div>
+        </div>
+      </section>
 
       <!-- Emoji 索引重建 -->
       <section class="setting-section">
