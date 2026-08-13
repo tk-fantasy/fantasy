@@ -18,6 +18,8 @@ export function useEntityMeta(selectedEntity, selectedDevice) {
   const noteInput = ref('')
   const editingNote = ref(false)
 
+  const entityOperable = ref({})        // {entity_id: "0"} — 被禁用 AI 操作的实体集合
+
   // ======================== 别名 ========================
 
   async function loadEntityAliases() {
@@ -76,6 +78,39 @@ export function useEntityMeta(selectedEntity, selectedDevice) {
     }
   }
 
+  // ======================== AI 可操作权限 ========================
+
+  async function loadEntityOperable() {
+    try {
+      const res = await fetch('/api/ha/entity-operable', { credentials: 'include' })
+      const json = await res.json()
+      entityOperable.value = json.data?.disabled || {}
+    } catch (e) {
+      console.error('Failed to load entity operable:', e)
+    }
+  }
+
+  async function toggleOperable(entityId) {
+    // 当前禁用（在集合里）→ 切到允许；当前允许 → 切到禁用
+    const isDisabled = entityOperable.value[entityId] !== undefined
+    const operable = isDisabled // true=恢复允许，false=禁用
+    try {
+      await fetch('/api/ha/entity-operable', {
+        method: 'PUT',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ entity_id: entityId, operable }),
+      })
+      if (operable) {
+        delete entityOperable.value[entityId]
+      } else {
+        entityOperable.value[entityId] = '0'
+      }
+    } catch (e) {
+      console.error('Failed to toggle operable:', e)
+    }
+  }
+
   function startEditNote() {
     if (!selectedEntity.value) return
     noteInput.value = entityNotes.value[selectedEntity.value.entity_id] || ''
@@ -123,6 +158,7 @@ export function useEntityMeta(selectedEntity, selectedDevice) {
     entityNotes,
     noteInput,
     editingNote,
+    entityOperable,
     loadEntityAliases,
     startEditName,
     saveName,
@@ -131,5 +167,7 @@ export function useEntityMeta(selectedEntity, selectedDevice) {
     startEditNote,
     saveNote,
     resetNote,
+    loadEntityOperable,
+    toggleOperable,
   }
 }
