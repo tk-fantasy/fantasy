@@ -278,12 +278,23 @@ async def _refresh_ha_catalog() -> None:
             lines.append(header)
             # 可控实体：entity_id 必须保留（call_service 要用），但「名称:」统一用
             # 父设备名，避免子实体 friendly_name 噪声
+            from .services.semantic_map import flip_state_value
             for e in controllable:
                 eid = e["entity_id"]
                 marker = " ⛔AI禁操作" if eid in operable_disabled else ""
+                # 语义映射：对称翻转对设备预翻转 state（catalog 行 + resolve_controls 都用翻转后的）
+                display_state = e["state"]
+                try:
+                    display_state = await flip_state_value(eid, str(display_state))
+                except Exception:  # noqa: BLE001
+                    pass
                 lines.append(
-                    f"- {eid} (类型:{e['domain']}, 状态:{e['state']}) 名称:{dev_name}{marker}"
+                    f"- {eid} (类型:{e['domain']}, 状态:{display_state}) 名称:{dev_name}{marker}"
                 )
+                # 把翻转后的 state 写回 flat entity，resolve_controls 的 current 也跟着对
+                if display_state != e["state"]:
+                    if flat := next((d for d in devices if d["entity_id"] == eid), None):
+                        flat["state"] = display_state
             # controls（中文可控项，供 call_service）
             # 按物理设备聚合，标题统一用设备名（dev_name）
             if raw_svc_defs:

@@ -128,10 +128,18 @@ def _register_ha_get_entities(deps: ToolDeps) -> None:
                 operable_disabled = await Database.get().prefs_get_by_scope("entity_operable")
             except Exception:  # noqa: BLE001
                 logger.warning("get_entities: operable 读取失败", exc_info=True)
+            # 语义映射：对称翻转对设备预翻转 state（让 AI 查询时认知正确）
+            from .services.semantic_map import flip_state_value
             for device in devices:
                 device["_controls"] = resolve_controls(device, raw_svc_defs)
                 device["note"] = notes_map.get(device["entity_id"], "")
                 device["ai_operable"] = device["entity_id"] not in operable_disabled
+                try:
+                    device["state"] = await flip_state_value(
+                        device["entity_id"], str(device.get("state", ""))
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.warning("get_entities: state 翻转失败", exc_info=True)
             # 给 grouped devices 的子实体也补 _controls（复用扁平实体的计算结果）
             ctrl_by_eid = {d["entity_id"]: d.get("_controls", {}) for d in devices}
             grouped_devices = grouped.get("devices", [])
@@ -215,6 +223,12 @@ def _register_ha_get_device_manual(deps: ToolDeps) -> None:
                     missing.append(eid)
                     continue
                 found.append(eid)
+                # 语义映射：对称翻转对设备预翻转 state（controls current 跟着对）
+                try:
+                    from .services.semantic_map import flip_state_value
+                    dev = {**dev, "state": await flip_state_value(eid, str(dev.get("state", "")))}
+                except Exception:  # noqa: BLE001
+                    logger.warning("get_device_manual: state 翻转失败", exc_info=True)
                 controls = resolve_controls(dev, raw_svc_defs)
                 blocks.append(
                     controls_to_text(dev, controls, note=notes_map.get(eid))
