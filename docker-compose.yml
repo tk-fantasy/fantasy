@@ -41,7 +41,7 @@ services:
     depends_on:
       mqtt:
         condition: service_healthy
-    restart: "no"
+    restart: unless-stopped
 
   aether:
     container_name: aether
@@ -74,7 +74,7 @@ services:
         condition: service_started
       simulator:
         condition: service_started
-    restart: "no"
+    restart: unless-stopped
 
   simulator:
     # 虚拟设备模拟器：通过 MQTT 往 HA 报告灯/空调/窗帘等设备状态
