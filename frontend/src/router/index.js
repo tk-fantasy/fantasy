@@ -85,6 +85,11 @@ const routes = [
     component: () => import('../views/AdvancedView.vue'),
   },
   {
+    path: '/semantics',
+    name: 'Semantics',
+    component: () => import('../views/SemanticsView.vue'),
+  },
+  {
     path: '/monitor',
     name: 'Monitor',
     component: () => import('../views/MonitorView.vue'),
