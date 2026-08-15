@@ -120,3 +120,92 @@ async def test_call_service_db_error_passes_through(tmp_path, monkeypatch):
         )
     assert captured["service"] == "turn_on"
     assert result["success"] is True
+
+
+async def _seed_gate_mapping(monkeypatch, tmp_path, *eids):
+    from app.core.database import Database
+    monkeypatch.setattr("app.core.database.DB_PATH", tmp_path / "t.db")
+    await Database.init()
+    payload = json.dumps({"mappings": {
+        "turn_on": {"target": "turn_off", "description": "继电器反转：开门断电"},
+        "turn_off": {"target": "turn_on", "description": "继电器反转：关门通电"}}})
+    for eid in eids:
+        await Database.get().emoji_pref_upsert("entity_action_map", eid, payload)
+    from app.services.semantic_map import invalidate_cache
+    invalidate_cache()
+
+
+@pytest.mark.asyncio
+async def test_call_service_toggle_flips_state(tmp_path, monkeypatch):
+    """对称翻转对设备上调 toggle（不在 mappings、service 不变）→ new_state 仍需翻转。
+
+    物理 off=开门：AI 调 toggle 后物理 state 仍 off，若不翻转 AI 会看到 off 说反话。
+    """
+    await _seed_gate_mapping(monkeypatch, tmp_path, "switch.gate")
+    states = [{"entity_id": "switch.gate", "state": "off", "attributes": {}}]
+    tool = _build_deps(states)
+    session = MagicMock()
+    session.current_query = "开关门"
+    captured = {}
+    async def fake_call(hc, domain, service, eid, data):
+        captured["service"] = service
+        return {}
+    with patch("app.tools.call_with_probe", new=fake_call):
+        result = await tool.handler(
+            {"domain": "switch", "service": "toggle", "entity_id": "switch.gate"}, session
+        )
+    assert captured["service"] == "toggle"
+    assert result["success"] is True
+    # toggle 未被映射 → 不带 semantic_mapping，但 state 仍翻转（物理 off → AI 看到 on）
+    assert "semantic_mapping" not in result
+    assert result["new_state"]["state"] == "on"
+
+
+@pytest.mark.asyncio
+async def test_call_service_batch_consensus_mapping(tmp_path, monkeypatch):
+    """批量 entity_id：全部实体对同一 service 有相同映射（共识）才替换 service。"""
+    await _seed_gate_mapping(monkeypatch, tmp_path, "switch.gate", "switch.gate2")
+    states = [
+        {"entity_id": "switch.gate", "state": "off", "attributes": {}},
+        {"entity_id": "switch.gate2", "state": "off", "attributes": {}},
+    ]
+    tool = _build_deps(states)
+    session = MagicMock()
+    session.current_query = "开两个门"
+    captured = {}
+    async def fake_call(hc, domain, service, eid, data):
+        captured["service"] = service
+        return {}
+    with patch("app.tools.call_with_probe", new=fake_call):
+        result = await tool.handler(
+            {"domain": "switch", "service": "turn_on",
+             "entity_id": "switch.gate,switch.gate2"}, session
+        )
+    assert captured["service"] == "turn_off"
+    assert result["semantic_mapping"]["executed"] == "turn_off"
+    # new_state 取第一个实体并翻转
+    assert result["new_state"]["state"] == "on"
+
+
+@pytest.mark.asyncio
+async def test_call_service_batch_no_consensus_passes_through(tmp_path, monkeypatch):
+    """批量混入未映射实体 → 放行原 service（按单实体映射替换会误伤未映射设备）。"""
+    await _seed_gate_mapping(monkeypatch, tmp_path, "switch.gate")
+    states = [
+        {"entity_id": "switch.gate", "state": "off", "attributes": {}},
+        {"entity_id": "light.bed", "state": "off", "attributes": {}},
+    ]
+    tool = _build_deps(states)
+    session = MagicMock()
+    session.current_query = "全开"
+    captured = {}
+    async def fake_call(hc, domain, service, eid, data):
+        captured["service"] = service
+        return {}
+    with patch("app.tools.call_with_probe", new=fake_call):
+        result = await tool.handler(
+            {"domain": "switch", "service": "turn_on",
+             "entity_id": "switch.gate,light.bed"}, session
+        )
+    assert captured["service"] == "turn_on"
+    assert "semantic_mapping" not in result

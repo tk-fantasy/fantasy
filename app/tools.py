@@ -356,29 +356,43 @@ def _register_ha_call_service(deps: ToolDeps) -> None:
                     logger.warning("call_service: 语义校验失败，放行", exc_info=True)
             # 语义映射过滤：无条件替换 service（不依赖意图判断，避免双重错误）。
             # AI 凭直觉调用，过滤器无条件纠正，结果反馈事后解释。
+            # 批量 entity_id：仅当全部实体对同一 service 映射到相同 target（共识）
+            # 才替换 —— 混合设备批量控制下按单实体映射替换会误伤未映射设备。
             original_service = service
             mapped_description = None
-            if entity_id:
+            eid_list = [e.strip() for e in str(entity_id).split(",") if e.strip()] if entity_id else []
+            if eid_list:
                 try:
                     from .services.semantic_map import get_action_map
-                    action_map = await get_action_map(str(entity_id).split(",")[0].strip())
-                    if action_map:
-                        entry = action_map.get("mappings", {}).get(service)
-                        if entry and entry.get("target") and entry["target"] != service:
-                            service = entry["target"]
-                            mapped_description = entry.get("description", "")
-                            logger.info("call_service 语义映射: %s.%s → %s",
-                                        entity_id, original_service, service)
+                    targets = []
+                    for e in eid_list:
+                        am = await get_action_map(e)
+                        entry = (am or {}).get("mappings", {}).get(service)
+                        targets.append(entry.get("target") if isinstance(entry, dict) else None)
+                    if targets[0] and targets[0] != service and all(t == targets[0] for t in targets):
+                        service = targets[0]
+                        mapped_description = ""
+                        am0 = await get_action_map(eid_list[0])
+                        entry0 = am0.get("mappings", {}).get(original_service)
+                        if isinstance(entry0, dict):
+                            mapped_description = entry0.get("description", "")
+                        logger.info("call_service 语义映射: %s.%s → %s",
+                                    entity_id, original_service, service)
                 except Exception:  # noqa: BLE001
                     logger.warning("call_service: 语义映射查询失败，放行原 service", exc_info=True)
             result = await call_with_probe(ha_client, domain, service, entity_id, data)
             new_state = None
-            if entity_id:
+            new_state_eid = None
+            if eid_list:
                 try:
                     states = await ha_client.get_states()
-                    for s in states:
-                        if s.get("entity_id") == entity_id:
+                    states_by_id = {s.get("entity_id"): s for s in states}
+                    # 批量时取第一个有状态的实体作代表
+                    for e in eid_list:
+                        if e in states_by_id:
+                            s = states_by_id[e]
                             new_state = {"state": s.get("state"), "attributes": s.get("attributes", {})}
+                            new_state_eid = e
                             break
                 except Exception:
                     pass
@@ -390,13 +404,14 @@ def _register_ha_call_service(deps: ToolDeps) -> None:
                     "executed": service,
                     "description": mapped_description or "该设备配置了语义映射",
                 }
-                # 对称翻转对 → state 隐含跟随翻转（避免 AI 看到相反状态说反话）
-                if new_state and new_state.get("state") in ("on", "off"):
-                    try:
-                        from .services.semantic_map import apply_state_flip
-                        ret["new_state"] = apply_state_flip(new_state, entity_id)
-                    except Exception:  # noqa: BLE001
-                        logger.warning("call_service: state 翻转失败，放行原 state", exc_info=True)
+            # 对称翻转对 → state 无条件隐含翻转（toggle 等未映射动作同样生效，
+            # 避免 AI 看到物理原始值说反话）。非翻转设备 apply_state_flip 原样返回。
+            if new_state and new_state.get("state") in ("on", "off") and new_state_eid:
+                try:
+                    from .services.semantic_map import apply_state_flip
+                    ret["new_state"] = apply_state_flip(new_state, new_state_eid)
+                except Exception:  # noqa: BLE001
+                    logger.warning("call_service: state 翻转失败，放行原 state", exc_info=True)
             return ret
         except Exception as e:
             logger.exception("HA call_service failed")
