@@ -27,7 +27,9 @@ const contributions = ref([])
 
 const activeComponents = computed(() => {
   // 找出贡献到本 slot 的 custom_component
-  const matched = contributions.value.filter(
+  // API 异常形状（非数组）时按无贡献处理，避免 .filter 抛错炸掉渲染
+  const list = Array.isArray(contributions.value) ? contributions.value : []
+  const matched = list.filter(
     c => c.slot === props.slot && c.type === 'custom_component'
   )
   const result = []

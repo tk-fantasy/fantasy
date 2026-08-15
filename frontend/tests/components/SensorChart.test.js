@@ -1,5 +1,22 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
+
+// echarts 桩：jsdom 没有 canvas，echarts.init 会抛错导致 onMounted 中断、
+// loadHistory 永不执行（组件卡在 loading）。init 返回 no-op 实例即可走通数据流。
+vi.mock('echarts/core', () => ({
+  use: vi.fn(),
+  init: vi.fn(() => ({ setOption: vi.fn(), resize: vi.fn(), dispose: vi.fn() })),
+  graphic: { LinearGradient: class {} },
+}))
+vi.mock('echarts/charts', () => ({ LineChart: {} }))
+vi.mock('echarts/components', () => ({
+  GridComponent: {},
+  TooltipComponent: {},
+  DataZoomComponent: {},
+  MarkLineComponent: {},
+}))
+vi.mock('echarts/renderers', () => ({ CanvasRenderer: {} }))
+
 import SensorChart from '../../src/components/SensorChart.vue'
 
 // 构造 HA history 响应：[[{state, last_updated}, ...]]
@@ -33,9 +50,9 @@ describe('SensorChart', () => {
     )
     const wrapper = mount(SensorChart, { props: { entityId: 'sensor.temp', unit: '°C' } })
     await flushPromises()
-    expect(wrapper.find('.chart-svg').exists()).toBe(true)
-    expect(wrapper.find('.chart-line').exists()).toBe(true)
-    // 当前值取最后一个点
+    // 有数据 → loading 结束、canvas 容器存在、当前值取最后一个点
+    expect(wrapper.find('.chart-status').exists()).toBe(false)
+    expect(wrapper.find('.chart-canvas').exists()).toBe(true)
     expect(wrapper.find('.chart-current').text()).toContain('25')
   })
 
@@ -74,7 +91,8 @@ describe('SensorChart', () => {
     )
     const wrapper = mount(SensorChart, { props: { entityId: 'sensor.temp', unit: '°C' } })
     await flushPromises()
-    // 只有 2 个有效点 → 不够画线（需 >=2），刚好 2 个能画
-    expect(wrapper.find('.chart-svg').exists()).toBe(true)
+    // unknown/unavailable 被过滤，剩 22/24 两点（>=2 判定有数据），当前值 24
+    expect(wrapper.find('.chart-status').exists()).toBe(false)
+    expect(wrapper.find('.chart-current').text()).toContain('24')
   })
 })

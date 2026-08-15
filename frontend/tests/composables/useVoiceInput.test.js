@@ -1,7 +1,24 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+
+// navigator.mediaDevices 桩必须先于组件 import 安装：
+// useVoiceInput 的 voiceAvailable 在模块加载时固化（jsdom 默认无 mediaDevices →
+// 恒 false，toggle 提前 return），而 static import 先于本文件顶层语句执行，
+// 普通顶层赋值会晚于组件求值 —— 只能用 vi.hoisted 提前到 import 之前。
+vi.hoisted(() => {
+  Object.defineProperty(global.navigator, 'mediaDevices', {
+    value: {
+      getUserMedia: vi.fn(() =>
+        Promise.resolve({ getTracks: () => [{ stop: () => {} }] })
+      ),
+    },
+    configurable: true,
+  })
+})
+
 import { useVoiceInput } from '../../src/composables/useVoiceInput'
 
 // MediaRecorder 恒桩：jsdom 没有真实实现，业务逻辑只依赖 state/ondataavailable/onstop
+// （toggle 运行时才读取 global.MediaRecorder，顶层赋值即可）
 class MockMediaRecorder {
   constructor(stream, opts) {
     this.stream = stream
@@ -18,13 +35,8 @@ class MockMediaRecorder {
 global.MediaRecorder = MockMediaRecorder
 MockMediaRecorder.isTypeSupported = () => true
 
-// getUserMedia 恒桩
 const getTracks = () => [{ stop: vi.fn() }]
 let mockStream = { getTracks }
-Object.defineProperty(global.navigator, 'mediaDevices', {
-  value: { getUserMedia: vi.fn(() => Promise.resolve(mockStream)) },
-  configurable: true,
-})
 
 global.fetch = vi.fn()
 
