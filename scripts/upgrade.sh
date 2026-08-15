@@ -64,12 +64,15 @@ BACKUP="$BACKUP_DIR/pre-upgrade-$TS.tar.gz"
 log "备份到 $BACKUP"
 # 实际的 data 卷名：查 compose 管理的卷（目录名前缀可能不同）
 DATA_VOLUME=$(docker volume ls --format '{{.Name}}' | grep -E 'aether-data$' | head -1 || true)
-tar czf "$BACKUP" config.json .env 2>/dev/null || tar czf "$BACKUP" config.json || true
+# gzip 包不能 append：先打裸 tar，追加卷数据后再压缩
+RAW="$BACKUP_DIR/pre-upgrade-$TS.tar"
+tar cf "$RAW" config.json .env 2>/dev/null || tar cf "$RAW" config.json || true
 if [ -n "$DATA_VOLUME" ]; then
-  docker run --rm -v "$DATA_VOLUME":/data -v "$(pwd)/$BACKUP":/backup.tar.gz alpine \
-    sh -c "apk add --no-cache -q tar >/dev/null 2>&1 || true; tar rf /backup.tar.gz -C /data ."
+  docker run --rm -v "$DATA_VOLUME":/data -v "$(pwd)/$RAW":/backup.tar alpine \
+    sh -c "tar rf /backup.tar -C /data --transform 's,^\.,data,' ."
 fi
-[ -f "$BACKUP" ] || die "备份失败，中止（宁可不动也不能丢数据）"
+[ -f "$RAW" ] || die "备份失败，中止（宁可不动也不能丢数据）"
+gzip -9 "$RAW"
 
 # 记录当前镜像 tag，回滚用
 OLD_TAG=$(grep -E '^\s*image:\s*aether-app:' docker-compose.yml | head -1 | sed 's/.*aether-app:\([^[:space:]]*\).*/\1/' || true)
