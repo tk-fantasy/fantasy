@@ -1,0 +1,5 @@
+{
+  "version": "1.0.0",
+  "min_compatible": "1.0.0",
+  "notes": "初始版本化基线。version 由 scripts/build-update-pack.py 打包时读取；min_compatible 低于它的旧配置升级时 upgrade.sh 会拒绝并提示。"
+}

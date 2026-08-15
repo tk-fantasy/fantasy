@@ -82,8 +82,11 @@ def sanitize_config(cfg: dict[str, Any], section: str = "") -> dict[str, Any]:
 
 
 def collect_system_info() -> dict[str, Any]:
+    from ..core.version import get_version
+
     info: dict[str, Any] = {
         "collected_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "app_version": get_version(),
         "platform": platform.platform(),
         "python": platform.python_version(),
         "machine": platform.machine(),

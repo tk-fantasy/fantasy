@@ -35,6 +35,7 @@ from .core import ApiResponse, CameraStateModel, Database, HealthData
 from .core.config import get_config
 from .core.rate_limit import global_limiter
 from .core.tracing import RequestIdFilter, new_request_id, set_request_id
+from .core.version import get_version
 from .mcp.web_tools import close_http_client as close_web_http_client
 from .migrations import load_vision_focuses, migrate_global_llm_keys, migrate_home_info
 from .services.health_check import HealthChecker
@@ -956,6 +957,7 @@ async def health() -> ApiResponse[HealthData]:
             log_file=str(LOG_FILE),
             ha_available=health_status["ha_available"],
             llm_available=health_status["llm_available"],
+            version=get_version(),
         )
     )
 

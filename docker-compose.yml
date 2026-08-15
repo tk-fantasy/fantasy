@@ -2,6 +2,7 @@
 #
 # 启动：docker compose up -d --build
 # 停止：docker compose down
+# 注：HA 配置里的 IP 由计划任务 \Aether\SyncHaIp 自动同步（每 10 分钟），无需手动改。
 # 访问：http://localhost:8010
 #
 # 首次启动前：
@@ -46,6 +47,8 @@ services:
   aether:
     container_name: aether
     build: .
+    # 版本化镜像 tag（离线升级链路用：build-update-pack.py 打包 / upgrade.sh 切换）
+    image: aether-app:1.0.0
     ports:
       - "8010:8010"   # 主服务（API + WebSocket + 前端 SPA）
       - "8011:8011"   # 冷启动进度端口（加载页轮询）

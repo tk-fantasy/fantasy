@@ -43,5 +43,6 @@ class HealthData(BaseModel):
     log_file: str
     ha_available: bool = False
     llm_available: bool = False
+    version: str = "0.0.0-dev"  # version.json 语义化版本（09 清单条目 2）
 
 
