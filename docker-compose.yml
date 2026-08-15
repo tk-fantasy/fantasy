@@ -21,8 +21,14 @@ services:
     # entrypoint：首次启动自动生成 passwd（passwd 被 .gitignore 排除，
     # 新用户 clone 后没有，mosquitto 会启动失败）
     entrypoint: ["/bin/sh", "/mosquitto/init.sh"]
+    # 凭证从宿主 .env 注入（未配置时默认 aether/aether，见 init.sh）
+    environment:
+      MQTT_USER: ${MQTT_USER:-aether}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:-aether}
     healthcheck:
-      test: ["CMD-SHELL", "mosquitto_sub -h 127.0.0.1 -p 1884 -u aether -P aether -t '__healthcheck__' -C 1 -W 3 || exit 0"]
+      # QoS1 发布：收到 broker PUBACK 才算健康（真探活）。
+      # 旧写法订阅无消息 topic 再 `|| exit 0` 兜底，恒返回 0，形同虚设。
+      test: ["CMD-SHELL", "mosquitto_pub -h 127.0.0.1 -p 1884 -u $${MQTT_USER} -P $${MQTT_PASSWORD} -t '__healthcheck__' -m ok -q 1"]
       interval: 5s
       timeout: 5s
       retries: 6
@@ -84,7 +90,11 @@ services:
     container_name: aether-simulator
     image: python:3.11-slim
     working_dir: /sim
-    command: ["sh", "-c", "pip install --no-cache-dir -q -i https://pypi.tuna.tsinghua.edu.cn/simple paho-mqtt && python ha_simulator.py --docker"]
+    # 钉死版本：ha_simulator 用 paho-mqtt 2.x API（CallbackAPIVersion.VERSION2）
+    command: ["sh", "-c", "pip install --no-cache-dir -q -i https://pypi.tuna.tsinghua.edu.cn/simple paho-mqtt==2.1.0 && python ha_simulator.py --docker"]
+    environment:
+      MQTT_USER: ${MQTT_USER:-aether}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:-aether}
     volumes:
       - ./ha_config/ha_simulator.py:/sim/ha_simulator.py:ro
     depends_on:

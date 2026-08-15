@@ -21,8 +21,10 @@ config_file = Path(__file__).parent / ".storage" / "core.config_entries"
 # MQTT broker 配置（与 docker-compose.yml 的 mosquitto 服务一致）
 MQTT_BROKER = "mqtt"          # compose 服务名（容器内可解析）
 MQTT_PORT = 1884              # mosquitto 容器内监听端口（宿主映射 1884→1884）
-MQTT_USERNAME = "aether"
-MQTT_PASSWORD = "aether"
+import os
+
+MQTT_USERNAME = os.environ.get("MQTT_USER", "aether")
+MQTT_PASSWORD = os.environ.get("MQTT_PASSWORD", "aether")
 
 
 def _iso_now() -> str:

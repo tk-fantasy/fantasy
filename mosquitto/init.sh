@@ -3,17 +3,19 @@
 #
 # passwd 文件被 .gitignore 排除（含哈希密码，不该进版本库），新用户 clone 后
 # 没有 passwd 文件，mosquitto 启动会报 "Unable to open pwfile" 退出。本脚本
-# 检测 passwd 不存在时用 mosquitto_passwd 生成（凭证固定 aether/aether，与
-# ha_simulator.py / add_mqtt_config.py 用的凭证一致）。
+# 检测 passwd 不存在时用 mosquitto_passwd 生成。
 #
-# 已存在 passwd（如用户自己改过密码）则跳过，幂等。
+# 凭证经环境变量注入（compose 从宿主 .env 读取 MQTT_USER/MQTT_PASSWORD，
+# 未配置时默认 aether/aether），与 ha_simulator.py / add_mqtt_config.py 的
+# 读取逻辑一致。已存在 passwd（如用户自己改过密码）则跳过，幂等——改密码
+# 请用 mosquitto_passwd 重新生成后重启容器，而不是删 passwd 回默认值。
 
 PASSWD_FILE="/mosquitto/config/passwd"
-MQTT_USER="aether"
-MQTT_PASS="aether"
+MQTT_USER="${MQTT_USER:-aether}"
+MQTT_PASS="${MQTT_PASSWORD:-aether}"
 
 if [ ! -f "$PASSWD_FILE" ]; then
-    echo "[init] passwd 文件不存在，生成默认凭证 $MQTT_USER/$MQTT_PASS"
+    echo "[init] passwd 文件不存在，生成默认凭证 $MQTT_USER/******"
     # -b: 命令行传密码（非交互）；-c: 创建新文件
     mosquitto_passwd -b -c "$PASSWD_FILE" "$MQTT_USER" "$MQTT_PASS"
     chmod 644 "$PASSWD_FILE"

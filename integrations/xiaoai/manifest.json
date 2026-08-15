@@ -16,7 +16,7 @@
                     "type": "string",
                     "required": true,
                     "label": "小爱实体ID",
-                    "default": "media_player.xiaomi_cn_2166464483_lx06"
+                    "default": "media_player.xiaoai_pro"
                 },
                 "execute_mode": {
                     "type": "enum",
