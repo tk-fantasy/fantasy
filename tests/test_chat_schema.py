@@ -6,7 +6,6 @@ from app.schema.chat_schema import (
     Event,
     Header,
     Instruction,
-    Internal,
     Nlp,
     Template,
 )
@@ -65,10 +64,3 @@ class TestInstructionBuild:
         assert inst.header.namespace == "Dialog"
         assert inst.payload["success"] is True
 
-    def test_internal_dispatcher(self):
-        inst = Instruction.build_instruction(
-            Internal.Dispatcher(current_query="hi", need_storage_history=True),
-            "r1", "s1"
-        )
-        assert inst.header.namespace == "Internal"
-        assert inst.payload["current_query"] == "hi"

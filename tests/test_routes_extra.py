@@ -269,30 +269,6 @@ class TestIsAllowedExternalMcp:
             assert _is_allowed_external_mcp("any", "any") is False
 
 
-class TestAgentsStatus:
-    @pytest.mark.asyncio
-    async def test_not_started(self):
-        from app.routes import mcp_routes
-
-        container = _mock_container()
-        container.automation_agent_ref = [None]
-        result = await mcp_routes.agents_status(container=container)
-        assert result.data["status"] == "not_started"
-
-    @pytest.mark.asyncio
-    async def test_running(self):
-        from app.routes import mcp_routes
-
-        agent = MagicMock()
-        agent._running = True
-        agent._eval_interval = 10.0
-        agent._eval_count = 5
-        container = _mock_container()
-        container.automation_agent_ref = [agent]
-
-        result = await mcp_routes.agents_status(container=container)
-        assert result.data["automation"]["running"] is True
-        assert result.data["automation"]["eval_count"] == 5
 
 
 # ===================== scheduler_routes =====================

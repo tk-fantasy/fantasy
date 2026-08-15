@@ -38,8 +38,7 @@ def match_devices(query: str, devices: list[dict[str, Any]]) -> list[dict[str, A
       query="客厅吊灯"   → 命中 name 含「客厅吊灯」的（唯一）
       query="客厅"       → 命中 area_name 含「客厅」的所有客厅设备（多匹配）
 
-    供 _query_matches_controls（系统提示词注入判定）使用，保证「灯亮度80」
-    这类带数值/属性/动词的 query 能正确匹配设备名、可控项得以注入 system prompt，
+    保证「灯亮度80」这类带数值/属性/动词的 query 能正确匹配设备名，
     避免 LLM 因拿不到正确 service/param 而编造 HA 不存在的服务（如 light.set_level）。
 
     Args:

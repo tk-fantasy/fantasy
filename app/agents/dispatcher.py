@@ -10,7 +10,7 @@ from langchain_core.messages import HumanMessage
 
 from .langgraph_agent import session_to_langchain_messages, run_agent_streaming, tool_call_signature, load_model_config_for_user, build_chat_agent
 from .validator_agent import ValidatorAgent
-from ..schema.chat_schema import Dialog, Event, Instruction, Internal, Template, UI
+from ..schema.chat_schema import Dialog, Event, Instruction, Template, UI
 from ..services.priority_service import interactive_priority
 from ..services.prompt_service import build_system_prompt
 from ..services.session_store import SessionStore
@@ -614,13 +614,6 @@ class Dispatcher:
                     len(ctx["system_prompt"]),
                     "present" if ctx["device_catalog"] else "empty")
 
-        # Dispatcher 信号
-        await emit(
-            Instruction.build_instruction(
-                Internal.Dispatcher(current_query=query, need_storage_history=True),
-                request_id, session_id,
-            )
-        )
         # thinking 状态：仅 WS
         if stream_tokens:
             await emit(

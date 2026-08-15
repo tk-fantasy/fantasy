@@ -101,25 +101,6 @@ async def disconnect_mcp_server(name: str, container: AppContainer = Depends(get
     return ApiResponse(data={"disconnected": True, "name": name})
 
 
-@router.get("/agents/status")
-async def agents_status(container: AppContainer = Depends(get_container)) -> ApiResponse[dict]:
-    automation_agent_ref = container.automation_agent_ref
-    if automation_agent_ref[0] is None:
-        return ApiResponse(data={"status": "not_started"})
-    agent = automation_agent_ref[0]
-    return ApiResponse(
-        data={
-            "automation": {
-                "running": agent._running,
-                "min_trigger_interval": float(get_config("vision.min_infer_interval_seconds", 3.0)),
-                "silent_enabled": agent._silent_enabled,
-                "silent_interval": agent._silent_interval,
-                "eval_count": agent._eval_count,
-            },
-        }
-    )
-
-
 @router.get("/video_feed")
 async def video_feed(request: Request, container: AppContainer = Depends(get_container)) -> StreamingResponse:
     """视频流端点，需要 JWT 认证。"""

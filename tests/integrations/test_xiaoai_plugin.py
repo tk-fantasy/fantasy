@@ -73,7 +73,9 @@ def test_play_text_entity_derived_from_media_player():
     plugin = _make_plugin_with_mock_ha()
     sink = plugin.sinks[0]
     entity = sink._play_text_entity()
-    assert entity == "notify.xiaomi_cn_2166464483_lx06_play_text_a_5_1"
+    # 期望值从 manifest 默认 media_player 推导（而非硬编码设备 SN）
+    mp_default = _manifest()["capabilities"][0]["config_schema"]["entity_id"]["default"]
+    assert entity == f"notify.{mp_default.split('.', 1)[-1]}_play_text_a_5_1"
 
 
 def test_concurrent_speaks_are_serialized_by_lock():

@@ -41,10 +41,8 @@ async def current_time_handler(parameters: dict, session) -> dict:
 
 async def describe_state_handler(_: dict, session) -> dict:
     visual_state = (session.latest_visual_state if session else None)
-    latest_tool_result = (session.latest_tool_result if session else None)
     return {
         "visual_state": visual_state,
-        "latest_tool_result": latest_tool_result,
     }
 
 

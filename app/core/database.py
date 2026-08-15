@@ -419,15 +419,6 @@ class Database:
             async with self._db.execute("SELECT id, data FROM sessions") as cursor:
                 return [json.loads(r[1]) async for r in cursor]
 
-    async def sessions_get(self, session_id: str) -> dict | None:
-        async with self._db.execute(
-            "SELECT id, data FROM sessions WHERE id = ?", (session_id,)
-        ) as cursor:
-            row = await cursor.fetchone()
-            if row is None:
-                return None
-            return json.loads(row[1])
-
     async def sessions_upsert(self, session_id: str, data: dict, user_id: str = "") -> None:
         now = int(time.time() * 1000)
         async with self._write_lock:
@@ -472,12 +463,6 @@ class Database:
                 (key, value, now),
             )
             await self._db.commit()
-
-    async def kv_delete(self, key: str) -> bool:
-        async with self._write_lock:
-            cursor = await self._db.execute("DELETE FROM kv WHERE key = ?", (key,))
-            await self._db.commit()
-            return cursor.rowcount > 0
 
     # ============ Emoji Preferences 操作 ============
 
@@ -553,12 +538,6 @@ class Database:
             if row:
                 return {"id": row[0], "username": row[1], "display_name": row[2], "created_at": row[3]}
             return None
-
-    async def user_count(self) -> int:
-        """获取用户总数。"""
-        async with self._db.execute("SELECT COUNT(*) FROM users") as cursor:
-            row = await cursor.fetchone()
-            return row[0] if row else 0
 
     # ============ User Settings 操作 ============
 

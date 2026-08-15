@@ -68,16 +68,11 @@ class TestDatabase:
         session_data = {"data": "test"}
         await db.sessions_upsert("s1", session_data)
         await asyncio.sleep(0.1)
-        result = await db.sessions_get("s1")
-        assert result is not None
-
-        all_sessions = await db.sessions_all()
-        assert len(all_sessions) == 1
+        assert len(await db.sessions_all()) == 1
 
         await db.sessions_delete("s1")
         await asyncio.sleep(0.1)
-        result = await db.sessions_get("s1")
-        assert result is None
+        assert len(await db.sessions_all()) == 0
 
     @pytest.mark.asyncio
     async def test_close(self, tmp_path: Path):

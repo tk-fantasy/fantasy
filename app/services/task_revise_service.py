@@ -6,6 +6,8 @@ explain_task：plan 模式，回答关于当前定时任务的提问（只读，
 """
 from __future__ import annotations
 
+from ..utils.json_extractor import extract_json_object as _extract_json
+
 import json
 import logging
 import re
@@ -49,19 +51,6 @@ payload 有三种 kind：
 只输出 JSON 对象本身。"""
 
 
-def _extract_json(text: str) -> dict[str, Any]:
-    """从模型输出里抠出 JSON 对象（容忍前后多余文本/代码块标记）。"""
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-    m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
-    if m:
-        return json.loads(m.group(1))
-    m = re.search(r"\{.*\}", text, re.DOTALL)
-    if m:
-        return json.loads(m.group(0))
-    raise ValueError(f"无法从模型输出解析 JSON: {text[:200]}")
 
 
 async def revise_task(current_task: dict, instruction: str) -> dict:

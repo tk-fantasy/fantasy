@@ -82,7 +82,6 @@ class Nlp:
         NAMESPACE: ClassVar[str] = "Nlp"
         NAME: ClassVar[str] = "Request"
         query: str = Field(...)
-        mcp_list: list[str] = Field(default_factory=list)
 
 
 # ── 指令（服务端 → 客户端）──
@@ -129,14 +128,6 @@ class Dialog:
         NAME: ClassVar[str] = "Finish"
         success: bool
         message: str = ""
-
-
-class Internal:
-    class Dispatcher(InstructionPayload):
-        NAMESPACE: ClassVar[str] = "Internal"
-        NAME: ClassVar[str] = "Dispatcher"
-        current_query: str | None = None
-        need_storage_history: bool | None = None
 
 
 class UI:

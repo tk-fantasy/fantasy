@@ -36,7 +36,6 @@ class SessionState:
     model_messages: list[dict[str, Any]] = field(default_factory=list)
     summaries: list[dict[str, Any]] = field(default_factory=list)
     latest_visual_state: dict[str, Any] = field(default_factory=dict)
-    latest_tool_result: dict[str, Any] | None = None
     created_at: int = field(default_factory=_now_ms)
     updated_at: int = field(default_factory=_now_ms)
 
@@ -314,7 +313,6 @@ class SessionStore:
             "model_messages": session.model_messages,
             "summaries": session.summaries,
             "latest_visual_state": session.latest_visual_state,
-            "latest_tool_result": session.latest_tool_result,
             "created_at": session.created_at,
             "updated_at": session.updated_at,
         }
@@ -329,7 +327,6 @@ class SessionStore:
             model_messages=data.get("model_messages", []),
             summaries=data.get("summaries", []),
             latest_visual_state=data.get("latest_visual_state", {}),
-            latest_tool_result=data.get("latest_tool_result"),
             created_at=data.get("created_at", _now_ms()),
             updated_at=data.get("updated_at", data.get("created_at", _now_ms())),
         )

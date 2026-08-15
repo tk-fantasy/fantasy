@@ -72,3 +72,25 @@ def extract_json_from_content(content: str) -> str:
             pass
 
     return content
+
+
+def extract_json_object(text: str) -> dict:
+    """从模型输出解析出 JSON 对象（dict）。
+
+    三层尝试（与原 schedule_parser/task_revise 内联实现逐字一致，收敛至此）：
+    1. 直接解析整段
+    2. 抠 ```json ... ``` 代码块
+    3. 抠贪婪 { ... }
+    全部失败抛 ValueError。
+    """
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+    if m:
+        return json.loads(m.group(1))
+    m = re.search(r"\{.*\}", text, re.DOTALL)
+    if m:
+        return json.loads(m.group(0))
+    raise ValueError(f"无法从模型输出解析 JSON: {text[:200]}")

@@ -4,7 +4,6 @@ import logging
 from datetime import datetime, timezone, timedelta
 
 from ..core.config import WEEKDAY_NAMES, get_config
-from ..utils.text_match import match_devices
 
 logger = logging.getLogger(__name__)
 
@@ -124,31 +123,6 @@ GUIDELINES = (
     "- 设备名唯一，用户提到设备名直接匹配，不要追问房间。\n"
     "- 回答简短，调完工具用自然语言简洁总结，不要沉默或只丢工具结果。\n"
 )
-
-
-def _query_matches_controls(query: str | None, controls_text: str) -> bool:
-    """动态：query 与 controls_text 中任一设备名匹配 → 注入可控项；无匹配 → 空。
-
-    必须复用 match_devices 的剥离+子串匹配逻辑，而不是 fuzzy_match 的 2-gram——
-    否则「帮我把灯的亮度调整到80」剥离前后的 2-gram 都不在「床头灯」里，判定为
-    不匹配 → 可控项不注入 system prompt → LLM 不知道正确 service/param，编造出
-    light.set_level 这类 HA 根本没有的服务。
-    """
-    if not query or not controls_text:
-        return False
-    # 从 controls_text 提取设备名行（如 "床头灯 (light.chuang_tou_deng)"）
-    devices: list[dict] = []
-    for line in controls_text.split("\n"):
-        idx = line.find(" (")
-        if idx > 0:
-            name = line[:idx].strip()
-            eid = line[idx + 2: line.rfind(")")] if ")" in line else ""
-            if name and eid:
-                devices.append({"name": name, "entity_id": eid, "area_name": ""})
-    if not devices:
-        return False
-    # 任一设备命中即注入
-    return bool(match_devices(query, devices))
 
 
 async def build_system_prompt(

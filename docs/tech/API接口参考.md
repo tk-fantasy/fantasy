@@ -366,7 +366,6 @@ JWT 细节：access 24h / refresh 7d，HS256，`JWT_SECRET` 环境变量（自�
 | POST | `/api/mcp/servers` | JWT | `MCPConnectRequest` | 运行时连接新 server（白名单校验） |
 | DELETE | `/api/mcp/servers/{name}` | JWT | 无 | 断开指定 server |
 | GET | `/api/automation/status` | JWT | 无 | 自动化 Agent 状态（运行中/静默评估/dhash 阈值/冷却/评估计数） |
-| GET | `/api/agents/status` | JWT | 无 | 旧兼容端点（只含 running/silent/eval_count 子集） |
 
 ```jsonc
 // MCPConnectRequest

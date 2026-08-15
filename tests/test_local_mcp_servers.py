@@ -40,19 +40,15 @@ class TestDescribeStateHandler:
     async def test_no_session(self):
         result = await describe_state_handler({}, None)
         assert "visual_state" in result
-        assert "latest_tool_result" in result
         assert result["visual_state"] is None
-        assert result["latest_tool_result"] is None
 
     @pytest.mark.asyncio
     async def test_with_session_data(self):
         session = MagicMock()
         session.latest_visual_state = {"action": "idle", "feedback": "平静"}
-        session.latest_tool_result = {"tool": "test", "result": "ok"}
-        
+
         result = await describe_state_handler({}, session)
         assert result["visual_state"] == {"action": "idle", "feedback": "平静"}
-        assert result["latest_tool_result"] == {"tool": "test", "result": "ok"}
 
 
 class TestVerifyConditionHandler:

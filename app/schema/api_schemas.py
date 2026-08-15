@@ -22,10 +22,6 @@ class AuthLoginRequest(BaseModel):
     password: str = Field(min_length=1)
 
 
-class AuthRefreshRequest(BaseModel):
-    """POST /auth/refresh 请求体。"""
-    refresh_token: str = ""
-
 
 # --------------- Home Info ---------------
 
