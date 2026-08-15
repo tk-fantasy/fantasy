@@ -657,6 +657,7 @@ from .routes.integration_routes import router as integration_router
 from .routes.ws_routes import router as ws_router
 from .routes.automation_routes import router as automation_router
 from .routes.simulator_routes import router as simulator_router
+from .routes.egress_routes import router as egress_router
 app.include_router(llm_key_router, prefix="/api")
 app.include_router(global_config_router, prefix="/api")
 app.include_router(home_router, prefix="/api")
@@ -680,6 +681,7 @@ app.include_router(setup_router)  # 无 prefix，包含 / 和 /favicon.ico
 app.include_router(doc_router)  # 路径已包含 /api 前缀或无
 app.include_router(sg_router, prefix="/api")  # 语义图：/api/sg/*
 app.include_router(integration_router, prefix="/api")  # 集成插件平台：/api/integrations/*
+app.include_router(egress_router, prefix="/api")  # 数据出网策略：/api/egress/*
 app.include_router(ws_router)  # WebSocket 路由，无 prefix
 
 # CORS

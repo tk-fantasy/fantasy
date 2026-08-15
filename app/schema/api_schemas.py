@@ -130,6 +130,19 @@ class GlobalLLMSettingsRequest(BaseModel):
     password: str = ""
 
 
+# --------------- 数据出网策略（09 清单条目 4） ---------------
+
+class EgressPolicyRequest(BaseModel):
+    """POST /egress — 切换出网模式。"""
+    mode: str = Field(min_length=1)  # cloud | hybrid | local，服务层校验合法值
+
+
+class EgressConfirmRequest(BaseModel):
+    """POST /egress/confirm — 引导页声明确认。"""
+    mode: str = Field(min_length=1)
+    acknowledged: bool = False
+
+
 # --------------- 高级配置 ---------------
 
 class ExaConfig(BaseModel):

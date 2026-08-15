@@ -10,6 +10,7 @@ import { usePtz } from '../composables/usePtz'
 import { useCameraPreview } from '../composables/useCameraPreview'
 import { useGreeting } from '../composables/useGreeting'
 import { useAuth } from '../composables/useAuth'
+import { useEgressMode } from '../composables/useEgressMode'
 import { apiGet, apiPost } from '../utils/api'
 import PluginSlot from '../components/integration/PluginSlot.vue'
 
@@ -17,6 +18,9 @@ const router = useRouter()
 
 // LLM 模型状态（composable 统一封装：模型名静态读 + 悬停懒加载连通性测试）
 const { chatModelName, llmStatus, llmStatusLoading, showLlmPopover, onStatusHover, loadChatModelName } = useLlmStatus()
+
+// 数据出网模式徽标（09 清单条目 4：cloud/hybrid/local）
+const { egressMode, egressLabel, egressWarnings, loadEgressMode } = useEgressMode()
 
 // Task 12:多路摄像头列表 + 当前选中路(D4 AI 预览单例)
 const { cameras, loadCameras } = useCamera()
@@ -589,6 +593,9 @@ onMounted(async () => {
   // 静态读取 chat 模型名（composable 封装，不耗测试 API）
   await loadChatModelName()
 
+  // 数据出网模式徽标（失败静默，不阻塞聊天）
+  loadEgressMode()
+
   // 1. 先检查 URL 参数
   const urlParams = new URLSearchParams(window.location.search)
   const urlSessionId = urlParams.get('session')
@@ -756,6 +763,12 @@ onUnmounted(() => {
       >
         <span class="ws-dot" :class="{ connected: wsConnected }"></span>
         <span>{{ wsConnected ? '已连接' : '未连接' }}{{ chatModelName && wsConnected ? ' · ' + chatModelName : '' }}</span>
+        <span
+          v-if="egressMode"
+          class="egress-badge"
+          :class="egressMode"
+          :title="egressWarnings.length ? egressWarnings.join('\n') : `当前数据出网模式：${egressLabel}`"
+        >{{ egressLabel }}</span>
 
         <!-- 模型连通性浮层（悬停展开，懒加载测试） -->
         <Transition name="llm-popover">
@@ -1357,12 +1370,33 @@ onUnmounted(() => {
   color: var(--color-text-muted);
 }
 
+/* 数据出网模式徽标（09 清单条目 4）：纯内网=绿色实底，混合/云端=描边 */
+.egress-badge {
+  padding: 1px var(--space-6);
+  border-radius: var(--radius-full);
+  font-size: 10px;
+  line-height: 16px;
+  border: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  cursor: default;
+  white-space: nowrap;
+}
+
+.egress-badge.local {
+  border-color: var(--color-success);
+  color: var(--color-success);
+}
+
+.egress-badge.hybrid {
+  border-color: var(--color-warning);
+  color: var(--color-warning);
+}
+
 .ws-dot {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--color-danger);
-}
+  background: var(--color-danger);}
 
 .ws-dot.connected {
   background: var(--color-success);
