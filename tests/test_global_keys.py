@@ -17,6 +17,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 
+def _fake_request(host: str = "192.168.1.10"):
+    """构造带 client 信息的伪 Request（verify 路由限流取 request.client.host 用）。"""
+    req = MagicMock()
+    req.client.host = host
+    return req
+
+
 # ==================== save_global_llm_keys ====================
 
 class TestSaveGlobalLlmKeys:
@@ -225,7 +232,8 @@ class TestSecondaryPassword:
         with patch("app.services.llm_key_service.get_secondary_password_hash", return_value=h), \
              patch("app.services.llm_key_service.verify_password", return_value=True):
             result = await verify_global_password(
-                SecondaryPasswordVerifyRequest(password="correct-pw")
+                SecondaryPasswordVerifyRequest(password="correct-pw"),
+                request=_fake_request(),
             )
         assert result.data["verified"] is True
 
@@ -240,9 +248,41 @@ class TestSecondaryPassword:
         with patch("app.services.llm_key_service.get_secondary_password_hash", return_value=h):
             with pytest.raises(AppException) as exc:
                 await verify_global_password(
-                    SecondaryPasswordVerifyRequest(password="wrong-pw")
+                    SecondaryPasswordVerifyRequest(password="wrong-pw"),
+                    request=_fake_request(),
                 )
             assert exc.value.http_status == 403
+
+    @pytest.mark.asyncio
+    async def test_verify_rate_limited_after_5_attempts(self):
+        """verify 接口 5 次/分钟/IP：第 6 次 429（防在线爆破）。"""
+        from app.routes import global_config_routes as gcr
+        from app.routes.global_config_routes import verify_global_password
+        from app.schema.api_schemas import SecondaryPasswordVerifyRequest
+        from app.core.exceptions import AppException
+
+        # 换新 limiter，避免模块级状态被其他测试污染
+        gcr._verify_limiter = __import__(
+            "app.core.rate_limit", fromlist=["RateLimiter"]
+        ).RateLimiter(max_requests=5, window_seconds=60)
+
+        with patch("app.services.llm_key_service.verify_secondary_password"):
+            for _ in range(5):
+                await verify_global_password(
+                    SecondaryPasswordVerifyRequest(password="x" * 8),
+                    request=_fake_request("192.168.1.99"),
+                )
+            with pytest.raises(AppException) as exc:
+                await verify_global_password(
+                    SecondaryPasswordVerifyRequest(password="x" * 8),
+                    request=_fake_request("192.168.1.99"),
+                )
+            assert exc.value.http_status == 429
+            # 不同 IP 不受影响
+            await verify_global_password(
+                SecondaryPasswordVerifyRequest(password="x" * 8),
+                request=_fake_request("192.168.1.100"),
+            )
 
     @pytest.mark.asyncio
     async def test_verify_password_not_set_returns_403(self):

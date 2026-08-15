@@ -14,26 +14,40 @@ from app.core.database import Database
 
 router = APIRouter()
 
+# 凭证不回传前端：密码列从 GET 响应剥除，只回 has_* 标志
+# （编辑表单密码留空=不改，PUT 不传密码字段即沿用旧值，流程不受影响）
+_PASSWORD_FIELDS = ("rtsp_password", "ptz_password")
+
+
+def _mask_camera(row: dict) -> dict:
+    out = dict(row)
+    for f in _PASSWORD_FIELDS:
+        if f in out:
+            out[f"has_{f}"] = bool(out.pop(f))
+    return out
+
 
 # —— CRUD ——
 @router.get("/cameras")
 async def list_cameras():
-    """摄像头列表(完整行)。前端管理页用。
+    """摄像头列表。前端管理页用。
 
-    返回 cameras 表完整行(含 display_enabled/enabled/source_type/rtsp_url 等
-    前端卡片与编辑弹窗所需字段)+ 运行时 online。CameraManager.list_cameras()
-    只返 4 字段(id/name/area/online,给 MCP 工具轻量注入用),refetch 后
-    display_enabled 等字段丢失会导致开关乐观更新被覆盖回退,故路由用完整版。
+    返回 cameras 表行(含 display_enabled/enabled/source_type/rtsp_url 等
+    前端卡片与编辑弹窗所需字段)+ 运行时 online；rtsp_password/ptz_password
+    不回传，换 has_rtsp_password/has_ptz_password 标志。CameraManager.
+    list_cameras() 只返 4 字段(id/name/area/online,给 MCP 工具轻量注入用),
+    refetch 后 display_enabled 等字段丢失会导致开关乐观更新被覆盖回退,故路由用完整版。
     """
     c = get_container()
-    return ApiResponse(data=await c.camera_manager.cameras_all())
+    rows = await c.camera_manager.cameras_all()
+    return ApiResponse(data=[_mask_camera(r) for r in rows])
 
 
 @router.post("/cameras")
 async def create_camera(body: dict):
     c = get_container()
     created = await c.camera_manager.create_camera(body)
-    return ApiResponse(data=created)
+    return ApiResponse(data=_mask_camera(created))
 
 
 @router.get("/cameras/{camera_id}")
@@ -43,7 +57,7 @@ async def get_camera(camera_id: str):
     row = await Database.get().cameras_get(camera_id)
     if row is None:
         raise HTTPException(status_code=404, detail="摄像头不存在")
-    return ApiResponse(data={**row, "state": st})
+    return ApiResponse(data=_mask_camera({**row, "state": st}))
 
 
 @router.put("/cameras/{camera_id}")

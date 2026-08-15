@@ -58,14 +58,6 @@ export default defineConfig({
         target: 'ws://localhost:9010',
         ws: true,
       },
-      '/search': {
-        target: 'http://localhost:9010',
-        changeOrigin: true,
-      },
-      '/doc/content': {
-        target: 'http://localhost:9010',
-        changeOrigin: true,
-      },
     },
   },
 })

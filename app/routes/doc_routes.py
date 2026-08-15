@@ -67,15 +67,22 @@ async def doc_chat(request: Request, container: AppContainer = Depends(get_conta
                 if chunk.choices[0].delta.content:
                     token = chunk.choices[0].delta.content
                     yield f"data: {json.dumps({'token': token})}\n\n"
-        except Exception as e:
-            yield f"data: {json.dumps({'token': f'[错误] {str(e)}'})}\n\n"
+        except Exception:
+            # 异常原文可能含上游 base_url 等内部信息，只回固定文案，细节进服务端日志
+            logger.exception("doc_chat: LLM 流式调用失败")
+            yield f"data: {json.dumps({'token': '[错误] 模型调用失败，请稍后重试或检查模型配置'})}\n\n"
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 
 
-@router.get("/doc/content")
+@router.get("/api/doc/content")
 def doc_content(doc_id: str = ""):
+    """按 doc_id 精确返回 docs/ 下 markdown 内容（知识图谱节点详情用）。
+
+    必须挂 /api 前缀：api_token_guard 中间件只保护 /api/* 路径，
+    挂在外面会变成免认证的文档读取口。
+    """
     if not doc_id:
         raise AppException("doc_id is required", code="doc_id_required", http_status=400)
     # docs 目录基于项目根（app/ 的父目录），不依赖 app.main 全局变量

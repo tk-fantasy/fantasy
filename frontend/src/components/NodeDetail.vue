@@ -68,7 +68,7 @@ watch(() => props.node?.id, (nid) => { mdHtml.value = ''; contentError.value = '
 async function fetchContent(id) {
   contentLoading.value = true; contentError.value = ''
   try {
-    const res = await fetch(`/doc/content?doc_id=${encodeURIComponent(id)}`, {
+    const res = await fetch(`/api/doc/content?doc_id=${encodeURIComponent(id)}`, {
       signal: AbortSignal.timeout(10000),
       headers: { 'Content-Type': 'application/json' },
     })

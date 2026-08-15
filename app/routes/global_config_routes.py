@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from urllib.parse import urlparse
 
 from ..container import AppContainer, get_container
@@ -20,6 +20,7 @@ from ..core.config import (
     write_secrets,
 )
 from ..core.exceptions import AppException
+from ..core.rate_limit import RateLimiter
 from ..schema.api_schemas import (
     GlobalLLMKeyRequest,
     GlobalLLMSettingsRequest,
@@ -32,6 +33,9 @@ from ..services.model_test_service import test_model_connection
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# 二级密码验证限流：全局 key 的门禁，不能无限速暴力破解（与登录同规格 5 次/分钟/IP）
+_verify_limiter = RateLimiter(max_requests=5, window_seconds=60)
 
 # 全局 key 热重载开关：True=改全局 chat key 后自动 rebuild agent；
 # 若 httpx 客户端误关导致在线请求断，改 False 退回"提示重启"。
@@ -65,8 +69,15 @@ async def set_global_password(
 @router.post("/global/password/verify")
 async def verify_global_password(
     payload: SecondaryPasswordVerifyRequest,
+    request: Request,
 ) -> ApiResponse[dict]:
     """验证二级密码。前端解锁全局配置面板用，无状态（每次写操作都要再带一次密码）。"""
+    client_ip = request.client.host if request.client else "unknown"
+    if not _verify_limiter.check(client_ip):
+        logger.warning("Secondary password verify rate limited: %s", client_ip)
+        raise AppException(
+            "尝试过于频繁，请稍后再试", code="rate_limited", http_status=429
+        )
     llm_key_service.verify_secondary_password(payload.password)
     return ApiResponse(data={"verified": True})
 

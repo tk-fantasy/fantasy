@@ -192,10 +192,12 @@ async def _ws_verify_token(websocket: WebSocket) -> str | None:
         except Exception:
             pass  # JWT 验证失败，继续尝试 APP_TOKEN
 
-    # 向后兼容：检查 APP_TOKEN
+    # 向后兼容：检查 APP_TOKEN（compare_digest 防时序侧信道）
     if APP_TOKEN:
+        import secrets
+
         provided = websocket.headers.get("X-API-Token") or websocket.query_params.get("app_token")
-        if provided == APP_TOKEN:
+        if provided and secrets.compare_digest(provided, APP_TOKEN):
             return ""  # APP_TOKEN 验证成功，返回空 user_id
 
     # 都没有通过验证
@@ -767,10 +769,12 @@ async def api_token_guard(request, call_next):
                 # 否则路由本身的异常会被误吞成 401。
                 return await call_next(request)
 
-    # 向后兼容：检查 APP_TOKEN（仅 header）
+    # 向后兼容：检查 APP_TOKEN（仅 header，compare_digest 防时序侧信道）
     if APP_TOKEN:
+        import secrets
+
         provided = request.headers.get("X-API-Token")
-        if provided == APP_TOKEN:
+        if provided and secrets.compare_digest(provided, APP_TOKEN):
             return await call_next(request)
 
     return JSONResponse(

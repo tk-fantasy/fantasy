@@ -194,8 +194,10 @@ async def doc_chat_ws(websocket: WebSocket):
                         if chunk.choices[0].delta.content:
                             token_queue.put(("token", chunk.choices[0].delta.content))
                     token_queue.put(("done", None))
-                except Exception as e:
-                    token_queue.put(("error", str(e)))
+                except Exception:
+                    # 异常原文可能含上游 base_url 等内部信息，客户端只收固定文案
+                    logger.exception("Doc chat LLM stream failed")
+                    token_queue.put(("error", "模型调用失败，请稍后重试或检查模型配置"))
 
             _stream_executor.submit(_run_stream)
 
