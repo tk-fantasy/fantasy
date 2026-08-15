@@ -115,16 +115,18 @@ def _memory_info() -> tuple[Any, Any]:
         import ctypes.wintypes
 
         class MEMORYSTATUSEX(ctypes.Structure):
+            # MEMORYSTATUSEX：2 个 DWORD + 7 个 UINT64（共 64 字节），pad 必须是 5
             _fields_ = [
                 ("dwLength", ctypes.wintypes.DWORD),
                 ("dwMemoryLoad", ctypes.wintypes.DWORD),
                 ("ullTotalPhys", ctypes.c_uint64),
                 ("ullAvailPhys", ctypes.c_uint64),
-            ] + [(f"_pad{i}", ctypes.c_uint64) for i in range(6)]
+            ] + [("_pad", ctypes.c_uint64)] * 5
 
         stat = MEMORYSTATUSEX()
         stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
-        ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat))
+        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+            raise OSError("GlobalMemoryStatusEx failed")
         return stat.ullTotalPhys // 1024**2, stat.ullAvailPhys // 1024**2
     except Exception:
         return None, None
