@@ -23,10 +23,7 @@ Aether 用"密钥 + 角色"两层模型：
 
 ## 怎么到 `/models` 页
 
-侧边栏「模型」就是入口，也可以：
-
-1. 聊天框输入 `/models` 斜杠命令
-2. 浏览器访问 `http://localhost:5173/models`
+聊天框输入 `/models` 斜杠命令进入（侧边栏没有模型入口），也可以浏览器直接访问 `http://localhost:8010/models`。
 
 ## 添加一个 Key
 

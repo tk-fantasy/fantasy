@@ -1,8 +1,28 @@
 # 本地 Ollama 模型部署
 
-这篇讲怎么在你自己电脑上跑 AI 大模型。Aether 支持用 Ollama 在本地跑模型，对话全在本地处理，不联网、不泄隐私。
+这篇讲怎么在本地跑 AI 大模型。Aether 支持用 Ollama 在本地跑模型，对话全在本地处理，不联网、不泄隐私。
 
 > **核心一句话**：Ollama 在 Aether 里就是一个普通的 Key。在 `/models` 页加一个 type 为 `chat`/`vision`/`embed` 的 Key，Base URL 填 `http://127.0.0.1:11434/v1`，然后在 `/models` 页选中它。流程和配云端 API 完全一样。
+
+## 方式一：内置 Ollama 容器（推荐，零出网交付用）
+
+`docker-compose.yml` 自带一个可选的 `ollama` 服务（profile `local-llm`，默认不启动）：
+
+```bash
+# 启动内置 Ollama
+docker compose --profile local-llm up -d ollama
+
+# 拉模型（按需选，8B 级对话模型约 5GB）
+docker exec aether-ollama ollama pull qwen3:8b
+```
+
+然后在 `/models` 页添加 Key，**Base URL 填 `http://ollama:11434/v1`**（注意是容器服务名 `ollama`，不是 127.0.0.1——Aether 跑在容器网络里）。
+
+最后到「高级设置 → 数据出网模式」切到**纯内网**，即完成零出网配置：此模式下保存/测试公网模型端点会被硬拦截，断网环境全部功能可用。详见《数据流向说明》（`docs/tech/数据流向说明.md`）。
+
+## 方式二：本机安装 Ollama（开发/桌面机用）
+
+适合 Aether 跑在 Docker、Ollama 跑在宿主机（Windows/Mac 桌面机）的组合。
 
 ## 什么时候用本地模型
 

@@ -128,6 +128,11 @@ JWT 细节：access 24h / refresh 7d，HS256，`JWT_SECRET` 环境变量（自�
 | GET | `/api/ha/config` | JWT | 无 | HA 配置（token 脱敏） |
 | POST | `/api/ha/config` | JWT | `HAConfigRequest` | 保存 HA 配置 |
 | POST | `/api/ha/test` | JWT | 无 | 测试 HA 连接 |
+| GET | `/api/ha/entity-operable` | JWT | 无 | AI 操作黑名单（被禁止 AI 操作的实体 `{entity_id: "0"}`） |
+| PUT | `/api/ha/entity-operable` | JWT | `EntityOperableRequest` | 设置/恢复实体 AI 可操作权限，立即刷新 catalog |
+| GET | `/api/ha/action-maps` | JWT | 无 | 全部动作语义映射 `{entity_id: {mappings}}` |
+| PUT | `/api/ha/action-maps` | JWT | `ActionMapRequest` | 设置/更新实体映射（空 mappings=删除；target 须属该域且≠源 service） |
+| GET | `/api/ha/entity-services` | JWT | 无 | 按域分组的可用服务列表（供语义映射页拉取） |
 
 ```jsonc
 // HAServiceCallRequest
@@ -136,7 +141,17 @@ JWT 细节：access 24h / refresh 7d，HS256，`JWT_SECRET` 环境变量（自�
 { "url": "http://homeassistant:8123", "token": "长期访问令牌" }
 // EntityAliasRequest / EntityNoteRequest
 { "entity_id": "switch.door_relay", "alias": "大门开关" }   // alias/note 留空表示删除
+// EntityOperableRequest
+{ "entity_id": "lock.front_door", "operable": false }   // false=禁止 AI 操作；true=恢复
+// ActionMapRequest
+{ "entity_id": "switch.door_relay",
+  "mappings": {
+    "turn_on":  { "target": "turn_off", "description": "继电器反向：开=关门" },
+    "turn_off": { "target": "turn_on",  "description": "继电器反向：关=开门" }
+  } }
 ```
+
+> `entity_operable` 黑名单与 `entity_action_map` 映射都存 `emoji_preferences` 表（scope 隔离）。`call_service` 执行链：entity_id 存在性校验 → **operable 黑名单硬拦截** → query→entity 语义校验（防语义近邻顶替）→ **语义映射无条件替换 service**（批量需共识）→ state 隐含翻转（对称翻转对自动 on↔off 反转，`get_entities`/`get_device_manual`/catalog 同步翻转）。详见《03-设备控制/设备语义映射》《03-设备控制/AI设备操作权限》。
 
 > **没有 `/api/ha/devices`**——设备数据通过 `/api/ha/entities` 获取。HA 集成通过官方镜像 `homeassistant/home-assistant:stable` 运行，详见《MQTT设备接入协议》。备注（entity_note）与别名（entity_alias）都存 `emoji_preferences` 表按 scope 隔离，备注只影响 AI 认知（注入后台目录缓存/规则生成/工具返回），别名同步到 HA 并影响界面显示。
 
@@ -321,28 +336,18 @@ JWT 细节：access 24h / refresh 7d，HS256，`JWT_SECRET` 环境变量（自�
   "vision_use_img_count": 3, "frame_interval_ms": 2000 }
 ```
 
-### 9.1 旧单摄接口 /state, /video_feed, /ptz
+### 9.1 旧单摄接口 /state, /video_feed
 
 | 方法 | 路径 | 认证 | Body | 说明 |
 | --- | --- | --- | --- | --- |
 | GET | `/api/state` | JWT | 无 | 主摄像头状态 `CameraStateModel` |
 | GET | `/api/video_feed` | JWT | 无 | 主摄像头 MJPEG 视频流 |
-| GET | `/api/ptz/status` | JWT | 无 | 旧全局 PTZ 是否启用 + `step_ms` |
-| POST | `/api/ptz/move` | JWT | `PtzMoveRequest` | 开始持续转动（按住式） |
-| POST | `/api/ptz/stop` | JWT | 无 | 停止转动 |
-| POST | `/api/ptz/step` | JWT | `PtzStepRequest` | 步进（点按式，后端自动停转） |
-| GET | `/api/ptz/config` | JWT | 无 | PTZ 全局配置 |
-| POST | `/api/ptz/config` | JWT | `PtzConfigRequest` | 保存全局 PTZ 配置 |
-| POST | `/api/ptz/test` | JWT | 无 | 测试 ONVIF 连接 |
 
 ```jsonc
-// PtzMoveRequest / PtzStepRequest
-{ "direction": "up" }   // up / down / left / right
-
 // /api/state 返回 CameraStateModel（含 presence/action/infer_count 等）
 ```
 
-> 新前端已全部走 `/api/cameras/*`（含每路 PTZ）。`/api/video_feed` 在 handler 内显式校验 JWT（除了全局中间件）。PTZ 走 ONVIF（zeep，`asyncio.to_thread` 包同步调用）。详见《05-摄像头视觉/摄像头接入与配置》。
+> 旧全局 PTZ 路由（`/api/ptz/*`）已删除——云台配置收敛到 per-camera（`cameras` 表的 `ptz_*` 字段），控制走 `POST /api/cameras/{camera_id}/ptz/move|stop|step`。新前端已全部走 `/api/cameras/*`（含每路 PTZ）。`/api/video_feed` 在 handler 内显式校验 JWT（除了全局中间件）。PTZ 走 ONVIF（zeep，`asyncio.to_thread` 包同步调用）。详见《05-摄像头视觉/摄像头接入与配置》。
 
 ---
 
@@ -464,6 +469,18 @@ Exa 搜索 Key 在此页配置（**不是** `/models` 页），无环境变量�
 // UniqueSettingsRequest
 { "persona": "你是 Aether，一个温暖的家庭助手..." }
 ```
+
+### 虚拟设备开关 /simulator
+
+前提：aether 容器挂载了宿主 docker.sock（compose 已默认挂载）。socket 不可用时接口返回 `available: false`，前端隐藏开关。
+
+| 方法 | 路径 | 认证 | 说明 |
+|------|------|------|------|
+| GET | `/api/simulator/status` | JWT | simulator + mosquitto 容器运行状态 |
+| POST | `/api/simulator/stop` | JWT + 管理员 | 停止虚拟设备容器，并刷新设备视图（模拟器设备离线隐藏） |
+| POST | `/api/simulator/start` | JWT + 管理员 | 启动虚拟设备容器，并刷新设备视图 |
+
+> 停止后模拟器设备状态变 `unavailable`，设备列表按「全部实体离线才隐藏」规则过滤（演示设备整体消失，真实设备不受影响）。入口在「高级」页「虚拟设备」段。
 
 ### 系统健康 /health, /metrics, /setup
 

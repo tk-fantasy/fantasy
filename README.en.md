@@ -308,7 +308,7 @@ Full docs live under `docs/`, organized by feature (Chinese):
 
 - `docs/01-安装部署/` — environment prep, Docker deploy, HA connection, LLM keys, weather API, Tailscale remote, local Ollama
 - `docs/02-AI聊天/` — chat basics, persona customization, model roles, session management, slash commands
-- `docs/03-设备控制/` — natural-language control, device widgets, device panel
+- `docs/03-设备控制/` — natural-language control, device widgets, device panel, **device semantic mapping**, **AI operation permissions**
 - `docs/04-自动化规则/` — scheduled tasks, automation rules, rule maintenance, vision triggers
 - `docs/05-摄像头视觉/` — camera input, focus-item config, motion detection
 - `docs/06-集成扩展/` — Exa search, MQTT integration, external MCP
@@ -320,25 +320,26 @@ Full docs live under `docs/`, organized by feature (Chinese):
 
 ## UI navigation
 
-Three sidebar entries; other features are reachable via slash commands:
+Four sidebar entries; other features are reachable via slash commands:
 
 | Entry | Description |
 |-------|-------------|
 | **Butler** | Main chat. Type `/` to see all slash commands (devices, schedules, models, operations, etc.). |
 | **Cameras** | Multi-camera management: add RTSP/USB, PTZ pan-tilt, ONVIF discovery, per-camera focus items, single active AI preview. |
 | **Settings** | Household info, region, dark mode. |
+| **Advanced** | System-level config page: weather API, Exa search, vision params, HA connection, assistant persona, API Keys, virtual-device toggle, egress policy (click a card to edit in a modal), plus emoji-index rebuild and doc-vector rebuild. |
 
-**Common slash commands**:
+**Common slash commands** (16 in total — type `/` in chat to see all):
 
 | Command | Description |
 |---------|-------------|
-| `/devices` or `/halist` | Device panel |
-| `/schedules` | Scheduled tasks |
-| `/rules` | Automation rules |
+| `/halist` | Device panel |
+| `/scheduled` | Scheduled tasks |
+| `/task` | Automation rules |
 | `/models` | Model management |
-| `/advanced` | Advanced settings |
-| `/operations` | Operations center (diagnostics, upgrade, backup) |
-| `/semantics` | Semantic graph |
+| `/semantics` | Device semantic mapping |
+| `/operations` | Operations center (admin only) |
+| `/monitor` · `/plugin` · `/sessions` · `/doc` · `/sg` | Monitor · plugins · sessions · RAG docs · semantic graph |
 
 ---
 
