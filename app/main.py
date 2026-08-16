@@ -9,7 +9,7 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor as _ThreadPoolExecutor
 from contextlib import asynccontextmanager
-from logging.handlers import RotatingFileHandler
+from .core.log_rotate import CopyTruncateRotatingFileHandler
 from pathlib import Path
 
 # 启动进度上报：先于任何重依赖导入，起一个轻量进度端口（8011），
@@ -67,7 +67,10 @@ logging.basicConfig(
     handlers=[
         # 控制台日志走 stderr（日志不应污染 stdout；同时避免 pytest capture 冲突）
         logging.StreamHandler(stream=sys.stderr),
-        RotatingFileHandler(
+        # copy-truncate 轮转：logs/ bind-mount 到 Windows 宿主时 rename 会被
+        # 文件共享层拒绝（宿主持有句柄），标准 RotatingFileHandler 轮转失败后
+        # 文件日志停写。详见 app/core/log_rotate.py。
+        CopyTruncateRotatingFileHandler(
             LOG_FILE,
             maxBytes=10 * 1024 * 1024,  # 10MB
             backupCount=5,
