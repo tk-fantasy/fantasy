@@ -85,7 +85,7 @@ def verify_pack(pack_path: Path) -> dict:
 async def _docker(method: str, path: str, timeout: float = 300.0, **kw) -> httpx.Response:
     if not DOCKER_SOCK.exists():
         raise RuntimeError("docker.sock 不可用（需按部署文档挂载）")
-    transport = httpx.AsyncHTTPTransport(uds=str(DOCK_SOCK))
+    transport = httpx.AsyncHTTPTransport(uds=str(DOCKER_SOCK))
     async with httpx.AsyncClient(transport=transport, timeout=timeout) as client:
         return await client.request(method, f"http://localhost{path}", **kw)
 

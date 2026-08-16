@@ -71,8 +71,24 @@ async def resolve_repo_path() -> str:
 
 # ==================== 升级容器编排 ====================
 
+def _to_docker_path(p: str) -> str:
+    """宿主路径 → Docker 可接受的 bind mount 源形式。
+
+    Windows 下探测到的 label 是 "D:\\Aether" 反斜杠形式，Docker API 只认
+    "D:/Aether"（正斜杠）；Linux 路径原样返回。
+    """
+    return p.replace("\\", "/") if "\\" in p else p
+
+
 def _container_payload(mode: str, repo_path: str, token: str) -> dict:
-    """一次性升级容器的创建参数。/result 映射宿主 logs/（结果与日志落点）。"""
+    """一次性升级容器的创建参数。/result 映射宿主 logs/（结果与日志落点）。
+
+    注意 bind 源必须是宿主路径：本应用跑在 aether 容器里，BASE_DIR 是容器内
+    路径（/aether），不能直接当挂载源（Docker 会当宿主路径解析出空目录）。
+    logs 与仓库同在宿主仓库目录下，从 repo_path 推导。
+    """
+    repo_path = _to_docker_path(repo_path)
+    logs_path = f"{repo_path.rstrip('/')}/logs"
     return {
         "Image": UPDATER_IMAGE,
         "name": RUN_CONTAINER,
@@ -91,7 +107,7 @@ def _container_payload(mode: str, repo_path: str, token: str) -> dict:
             "Binds": [
                 f"{repo_path}:/repo",
                 "/var/run/docker.sock:/var/run/docker.sock",
-                f"{BASE_DIR / 'logs'}:/result",
+                f"{logs_path}:/result",
             ],
             "ExtraHosts": ["host.docker.internal:host-gateway"],
             "AutoRemove": False,   # 留尸体供排障；下次拉起前统一清理

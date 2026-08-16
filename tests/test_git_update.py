@@ -68,19 +68,24 @@ class TestResolveRepoPath:
 # ==================== 容器 payload ====================
 
 class TestContainerPayload:
-    def test_binds_env_and_gateway(self, monkeypatch):
-        fake_base = type("B", (), {"__truediv__": lambda s, p: f"/fake/base/{p}"})()
-        monkeypatch.setattr(gu, "BASE_DIR", fake_base)
+    def test_binds_env_and_gateway(self):
         p = gu._container_payload("apply", "/repo/path", "tok")
         binds = p["HostConfig"]["Binds"]
         assert "/repo/path:/repo" in binds
         assert "/var/run/docker.sock:/var/run/docker.sock" in binds
-        assert "/fake/base/logs:/result" in binds
+        assert "/repo/path/logs:/result" in binds   # 结果卷=宿主仓库下的 logs/
         assert p["HostConfig"]["ExtraHosts"] == ["host.docker.internal:host-gateway"]
         env = dict(e.split("=", 1) for e in p["Env"])
         assert env["MODE"] == "apply"
         assert env["GIT_TOKEN"] == "tok"
         assert env["RESULT_FILE"] == "/result/git-update-result.json"
+
+    def test_windows_backslash_path_normalized(self):
+        """Windows 探测出的反斜杠路径必须转正斜杠（Docker bind 源不接受 \\）。"""
+        p = gu._container_payload("check", "D:\\Aether", "t")
+        binds = p["HostConfig"]["Binds"]
+        assert "D:/Aether:/repo" in binds
+        assert "D:/Aether/logs:/result" in binds
 
     def test_check_mode(self):
         p = gu._container_payload("check", "/r", "t")
