@@ -55,20 +55,11 @@
       </div>
     </section>
 
-    <!-- 插件详情/配置弹窗 -->
-    <div v-if="detail" class="modal-mask" @click.self="closeDetail">
-      <div class="modal">
-        <div class="modal-header">
-          <div>
-            <h2 class="modal-title">{{ detail.name || detail.id }}
-              <span class="plugin-version">v{{ detail.version }}</span>
-            </h2>
-            <div class="plugin-id">{{ detail.id }}</div>
-          </div>
-          <button class="modal-close" @click="closeDetail">×</button>
-        </div>
-        <p class="modal-desc">{{ detail.description || '（无描述）' }}</p>
-        <div class="modal-meta">
+    <!-- 插件详情/配置弹窗（复用全局 AdvancedModal 外壳与表单样式体系） -->
+    <AdvancedModal v-if="detail" :title="(detail.name || detail.id) + '  v' + detail.version" @close="closeDetail">
+      <div class="modal-content">
+        <p class="plugin-desc">{{ detail.description || '（无描述）' }}</p>
+        <div class="plugin-meta" style="margin-bottom: 12px">
           <span class="badge" :class="{ alive: detail.alive, dead: !detail.alive }">
             {{ detail.alive ? '运行中' : (detail.enabled ? '未启动' : '已禁用') }}
           </span>
@@ -76,19 +67,23 @@
         </div>
 
         <!-- 配置表单（声明了 config_schema 的插件才有） -->
-        <div v-if="hasConfig(detail)" class="config-section">
-          <h3 class="config-title">配置</h3>
+        <template v-if="hasConfig(detail)">
           <div v-if="configLoading" class="config-loading">加载配置中…</div>
           <template v-else>
-            <div v-for="(field, key) in configSchema" :key="key" class="config-field">
-              <label class="field-label">
-                {{ field.label || key }}
-                <span v-if="field.required" class="required">*</span>
+            <div v-for="(field, key) in configSchema" :key="key" class="setting-row">
+              <label class="setting-label">
+                <span class="label-text">
+                  {{ field.label || key }}<span v-if="field.required" class="required-mark">*</span>
+                </span>
+                <span v-if="field.type === 'secret' && secretIsSet(key)" class="label-desc">
+                  已配置（{{ configValues[key]?.masked }}），留空保持不变
+                </span>
+                <span v-else-if="field.type === 'enum'" class="label-desc">{{ field.label || key }}</span>
               </label>
               <select
                 v-if="field.type === 'enum'"
                 v-model="configForm[key]"
-                class="field-input"
+                class="setting-input"
               >
                 <option v-for="opt in field.options" :key="opt" :value="opt">{{ opt }}</option>
               </select>
@@ -96,30 +91,27 @@
                 v-else
                 :type="field.type === 'secret' ? 'password' : 'text'"
                 v-model="configForm[key]"
-                class="field-input"
+                class="setting-input"
                 :placeholder="secretPlaceholder(key, field)"
                 autocomplete="new-password"
               />
-              <div v-if="field.type === 'secret' && secretIsSet(key)" class="field-hint">
-                已配置（{{ configValues[key]?.masked }}），留空保持不变
-              </div>
             </div>
             <div v-if="configError" class="config-error">{{ configError }}</div>
-            <div class="config-actions">
-              <button class="save-btn" :disabled="configSaving" @click="saveConfig">
+            <div class="save-bar">
+              <button class="btn-primary" :disabled="configSaving" @click="saveConfig">
                 {{ configSaving ? '保存中…' : '保存并生效' }}
               </button>
               <span v-if="configSaved" class="saved-hint">✓ 已保存</span>
             </div>
           </template>
-        </div>
+        </template>
         <div v-else class="config-none">此插件无可配置项</div>
 
-        <div class="modal-footer">
+        <div class="modal-footer-row">
           <button class="action-btn" @click="exportPlugin(detail)">导出插件包</button>
         </div>
       </div>
-    </div>
+    </AdvancedModal>
 
     <button class="back-btn" @click="$router.push('/chat')">返回聊天</button>
   </div>
@@ -128,6 +120,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { apiGet, apiPost } from '../utils/api'
+import AdvancedModal from '../components/AdvancedModal.vue'
 
 const loading = ref(true)
 const plugins = ref([])
@@ -450,123 +443,28 @@ onMounted(loadPlugins)
   cursor: pointer;
 }
 
-/* ============ 详情/配置弹窗 ============ */
-.modal-mask {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.55);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 100;
-}
-.modal {
-  width: min(520px, 92vw);
-  max-height: 84vh;
-  overflow-y: auto;
-  background: var(--color-surface, #1e1e2e);
-  border: 1px solid var(--color-border, #333);
-  border-radius: var(--radius-md, 10px);
-  padding: 20px;
-}
-.modal-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  margin-bottom: 8px;
-}
-.modal-title {
-  margin: 0;
-  font-size: 18px;
-}
-.modal-close {
-  background: none;
-  border: none;
-  color: var(--color-text-secondary, #888);
-  font-size: 22px;
-  cursor: pointer;
-  line-height: 1;
-}
-.modal-desc {
-  color: var(--color-text-secondary, #aaa);
-  font-size: var(--text-sm, 14px);
-  margin: 8px 0 12px;
-}
-.modal-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 16px;
-}
+/* ============ 详情/配置弹窗（外壳/表单样式复用全局 AdvancedModal 与 style.css） ============ */
 .config-badge {
   background: rgba(46, 204, 113, 0.15);
   color: var(--color-success, #2ecc71);
 }
-.config-section {
-  border-top: 1px solid var(--color-border, #333);
-  padding-top: 14px;
-}
-.config-title {
-  margin: 0 0 12px;
-  font-size: 15px;
+.required-mark {
+  color: #e74c3c;
+  margin-left: 2px;
 }
 .config-loading {
   color: var(--color-text-secondary, #888);
   padding: 12px 0;
-}
-.config-field {
-  margin-bottom: 12px;
-}
-.field-label {
-  display: block;
-  font-size: var(--text-sm, 14px);
-  margin-bottom: 4px;
-}
-.required {
-  color: #e74c3c;
-}
-.field-input {
-  width: 100%;
-  box-sizing: border-box;
-  padding: 8px 10px;
-  border: 1px solid var(--color-border, #444);
-  border-radius: var(--radius-sm, 6px);
-  background: var(--color-surface-hover, #2a2a3e);
-  color: var(--color-text, #eee);
-  font-size: var(--text-sm, 14px);
-}
-.field-hint {
-  margin-top: 4px;
-  font-size: var(--text-xs, 12px);
-  color: var(--color-text-secondary, #888);
 }
 .config-error {
   color: #e74c3c;
   font-size: var(--text-sm, 14px);
   margin: 8px 0;
 }
-.config-actions {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-top: 12px;
-}
-.save-btn {
-  padding: 8px 18px;
-  border: none;
-  border-radius: var(--radius-sm, 6px);
-  background: var(--color-primary, #4a9eff);
-  color: #fff;
-  cursor: pointer;
-  font-size: var(--text-sm, 14px);
-}
-.save-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
 .saved-hint {
   color: var(--color-success, #2ecc71);
   font-size: var(--text-sm, 14px);
+  align-self: center;
 }
 .config-none {
   border-top: 1px solid var(--color-border, #333);
@@ -574,11 +472,16 @@ onMounted(loadPlugins)
   color: var(--color-text-secondary, #888);
   font-size: var(--text-sm, 14px);
 }
-.modal-footer {
+.modal-footer-row {
   border-top: 1px solid var(--color-border, #333);
   margin-top: 16px;
   padding-top: 12px;
   display: flex;
   justify-content: flex-end;
+}
+.plugin-desc {
+  color: var(--color-text-secondary, #aaa);
+  font-size: var(--text-sm, 14px);
+  margin: 0 0 12px;
 }
 </style>
