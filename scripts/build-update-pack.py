@@ -86,8 +86,27 @@ def main() -> int:
             tf.add(tmp / name, arcname=name)
         tf.add(image_tar, arcname="images/aether.tar")
 
+    # 渠道清单：与升级包一起发布到更新源（OSS/GitHub Releases 等），
+    # 运维页「更新源」配置它的地址即可在线检查更新 + 一键升级
+    pack_sha = sha256_file(out)
+    channel = {
+        "version": version,
+        "min_compatible": manifest["min_compatible"],
+        "notes": args.notes,
+        "created_at": manifest["created_at"],
+        "pack": out.name,
+        "pack_sha256": pack_sha,
+        "size_bytes": out.stat().st_size,
+    }
+    channel_file = BASE_DIR / "update-channel.json"
+    channel_file.write_text(
+        json.dumps(channel, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
     print(f"\n完成: {out} ({out.stat().st_size / 1024 / 1024:.0f} MB)")
-    print(f"拷到树莓派后执行: tar xzf {out.name} && ./upgrade.sh {out.name}")
+    print(f"渠道清单: {channel_file}")
+    print("发布 = 把这两个文件传到更新源；树莓派侧无需任何操作。")
+    print(f"离线升级：tar xzf {out.name} && ./upgrade.sh {out.name}")
     return 0
 
 

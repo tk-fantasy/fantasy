@@ -216,6 +216,73 @@ function onFileChosen(ev) {
   xhr.send(fd)
 }
 
+// ============ 在线检查更新（更新源通道） ============
+const updateUrl = ref('')
+const updateUrlSaving = ref(false)
+const updateUrlSaved = ref(false)
+const updateChecking = ref(false)
+const updateInfo = ref(null)      // /api/ops/update/check 的返回
+const updateApplying = ref(false)
+
+async function loadUpdateSettings() {
+  try {
+    const d = await apiGet('/api/ops/update/settings')
+    updateUrl.value = d?.manifest_url || ''
+  } catch (e) {
+    console.error('Failed to load update settings:', e)
+  }
+}
+
+async function saveUpdateUrl() {
+  updateUrlSaving.value = true
+  updateUrlSaved.value = false
+  try {
+    const d = await apiPost('/api/ops/update/settings', { manifest_url: updateUrl.value.trim() })
+    updateUrl.value = d?.manifest_url || ''
+    updateInfo.value = null
+    updateUrlSaved.value = true
+    setTimeout(() => { updateUrlSaved.value = false }, 2000)
+  } catch (e) {
+    upgradeMessage.value = e?.message || '更新源保存失败'
+  } finally {
+    updateUrlSaving.value = false
+  }
+}
+
+async function checkUpdate() {
+  updateChecking.value = true
+  updateInfo.value = null
+  upgradeMessage.value = ''
+  try {
+    updateInfo.value = await apiGet('/api/ops/update/check')
+  } catch (e) {
+    upgradeMessage.value = e?.message || '检查更新失败'
+  } finally {
+    updateChecking.value = false
+  }
+}
+
+async function applyUpdate() {
+  const latest = updateInfo.value?.latest
+  if (!latest) return
+  if (!window.confirm(
+    `确定下载并升级到 v${latest.version}？\n` +
+    `大小约 ${fmtSize(latest.size_bytes) || '未知'}，完成后服务会自动重启，页面将自动刷新。`
+  )) return
+  updateApplying.value = true
+  upgradeMessage.value = ''
+  upgradeResult.value = null
+  try {
+    upgradeResult.value = await apiPost('/api/ops/update/apply', {})
+    waitingRestart.value = true
+    pollUntilBack()
+  } catch (e) {
+    upgradeMessage.value = e?.message || '在线升级失败（可改用上传升级包）'
+  } finally {
+    updateApplying.value = false
+  }
+}
+
 // ============ 操作审计 ============
 const auditRows = ref([])
 
@@ -260,6 +327,7 @@ onMounted(() => {
   loadBackups()
   loadVersion()
   loadAudit()
+  loadUpdateSettings()
 })
 </script>
 
@@ -407,6 +475,56 @@ onMounted(() => {
               {{ upgrading ? `上传中 ${uploadPercent}%` : '上传升级包' }}
             </button>
           </div>
+        </div>
+
+        <!-- 在线更新源：配置后可一键检查/升级，地址留空则只用手动上传 -->
+        <div class="setting-row update-source-row">
+          <div class="setting-label">
+            <span class="label-text">更新源（可选）</span>
+            <span class="label-desc">
+              任意静态 HTTP 地址，放 build-update-pack.py 产出的 update-channel.json 与升级包（OSS/COS/GitHub Releases 均可）。配置后可在线检查并一键升级。
+            </span>
+          </div>
+          <div class="update-source-controls">
+            <input
+              v-model="updateUrl"
+              type="text"
+              class="update-url-input"
+              placeholder="https://你的存储/update-channel.json"
+            />
+            <button class="btn-secondary" :disabled="updateUrlSaving" @click="saveUpdateUrl">
+              {{ updateUrlSaved ? '已保存' : '保存' }}
+            </button>
+            <button class="btn-primary" :disabled="updateChecking || !updateUrl.trim()" @click="checkUpdate">
+              {{ updateChecking ? '检查中…' : '检查更新' }}
+            </button>
+          </div>
+        </div>
+
+        <div v-if="updateInfo?.status === 'up_to_date'" class="op-message success">
+          已是最新版本 v{{ updateInfo.current }}。
+        </div>
+        <div v-else-if="updateInfo?.status === 'available'" class="update-available">
+          <div class="update-available-head">
+            <span>发现新版本 <b>v{{ updateInfo.latest.version }}</b>
+              <template v-if="updateInfo.latest.size_bytes">（约 {{ fmtSize(updateInfo.latest.size_bytes) }}）</template>
+            </span>
+            <button
+              class="btn-primary"
+              :disabled="updateApplying || waitingRestart || updateInfo.docker_socket === false"
+              @click="applyUpdate"
+            >{{ updateApplying ? '下载并升级中…' : '下载并升级' }}</button>
+          </div>
+          <p v-if="updateInfo.latest.notes" class="update-notes">{{ updateInfo.latest.notes }}</p>
+          <p v-if="updateInfo.docker_socket === false" class="update-notes warn">
+            docker.sock 未挂载，在线升级不可用：请按部署文档挂载，或下载升级包后用「上传升级包」。
+          </p>
+        </div>
+        <div v-else-if="updateInfo?.status === 'incompatible'" class="op-message error">
+          {{ updateInfo.message }}
+        </div>
+        <div v-else-if="updateInfo?.status === 'error'" class="op-message error">
+          {{ updateInfo.message }}
         </div>
 
         <div v-if="upgrading" class="upload-progress">
@@ -591,6 +709,61 @@ onMounted(() => {
   transition: width 0.3s;
 }
 .upload-text { font-size: var(--text-xs); color: var(--color-text-secondary); }
+
+/* 在线更新源 */
+.btn-secondary {
+  padding: var(--space-8) var(--space-16);
+  background: var(--color-bg);
+  color: var(--color-text-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.btn-secondary:hover:not(:disabled) { border-color: var(--color-border-hover); color: var(--color-text); }
+.btn-secondary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.update-source-row { align-items: flex-start; }
+.update-source-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  flex-wrap: wrap;
+}
+.update-url-input {
+  flex: 1;
+  min-width: 260px;
+  padding: var(--space-8) var(--space-10);
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  color: var(--color-text);
+  font-size: var(--text-sm);
+}
+.update-url-input:focus { outline: none; border-color: var(--color-primary); }
+
+.update-available {
+  margin-top: var(--space-12);
+  padding: var(--space-12);
+  background: var(--color-primary-light);
+  border: 1px solid var(--color-primary);
+  border-radius: var(--radius-md);
+}
+.update-available-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-12);
+  font-size: var(--text-sm);
+}
+.update-notes {
+  margin: var(--space-8) 0 0;
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+  line-height: 1.6;
+}
+.update-notes.warn { color: var(--color-warning); }
 
 /* 重启遮罩 */
 .restart-overlay {

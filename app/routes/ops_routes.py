@@ -11,6 +11,10 @@
 - GET  /api/ops/backups/{name}/validate  恢复前预检（内容清单）
 - POST /api/ops/backups/{name}/restore   恢复并自动重启（需 confirm=true）
 - POST /api/ops/upgrade          上传升级包（multipart），校验+load+自重启
+- GET  /api/ops/update/check     在线检查更新（对比配置的更新源）
+- GET  /api/ops/update/settings  读更新源地址（config.json update.manifest_url）
+- POST /api/ops/update/settings  写更新源地址（写审计）
+- POST /api/ops/update/apply     一键升级：下载更新源升级包 → 校验 → load → 自重启
 """
 from __future__ import annotations
 
@@ -23,8 +27,9 @@ from pydantic import BaseModel
 
 from ..core.api_models import ApiResponse
 from ..core.auth import get_current_user
+from ..core.exceptions import AppException
 from ..core.version import get_version
-from ..ops import audit, backup, diagnose, upgrade
+from ..ops import audit, backup, diagnose, update_channel, upgrade
 from ..ops.diag import build_diagnostic_package
 
 logger = logging.getLogger(__name__)
@@ -34,6 +39,10 @@ router = APIRouter()
 
 class RestoreRequest(BaseModel):
     confirm: bool = False
+
+
+class UpdateSettingsRequest(BaseModel):
+    manifest_url: str = ""
 
 
 @router.get("/ops/diagnostics")
@@ -105,6 +114,50 @@ async def upload_upgrade(
         raise HTTPException(status_code=400, detail=str(e)) from e
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+# ==================== 在线检查更新与一键升级 ====================
+
+@router.get("/ops/update/settings")
+async def get_update_settings(
+    current_user: dict = Depends(get_current_user),
+) -> ApiResponse[dict]:
+    return ApiResponse(data={"manifest_url": update_channel.get_manifest_url()})
+
+
+@router.post("/ops/update/settings")
+async def set_update_settings(
+    payload: UpdateSettingsRequest,
+    current_user: dict = Depends(get_current_user),
+) -> ApiResponse[dict]:
+    url = update_channel.set_manifest_url(payload.manifest_url)
+    audit.record(
+        current_user.get("username") or current_user["user_id"],
+        "update_settings",
+        {"manifest_url": url or "(清空)"},
+    )
+    return ApiResponse(data={"manifest_url": url})
+
+
+@router.get("/ops/update/check")
+async def check_update_route(
+    current_user: dict = Depends(get_current_user),
+) -> ApiResponse[dict]:
+    return ApiResponse(data=await update_channel.check_update())
+
+
+@router.post("/ops/update/apply")
+async def apply_update_from_channel(
+    current_user: dict = Depends(get_current_user),
+) -> ApiResponse[dict]:
+    """从配置的更新源下载升级包并升级。响应结构与上传升级一致（含 restarting）。"""
+    operator = current_user.get("username") or current_user["user_id"]
+    try:
+        result = await update_channel.download_and_apply(operator)
+    except AppException as e:
+        logger.warning("Channel upgrade rejected/failed: %s", e.message)
+        raise HTTPException(status_code=e.http_status or 400, detail=e.message) from e
+    return ApiResponse(data=result)
 
 
 # ==================== 备份与恢复 ====================
