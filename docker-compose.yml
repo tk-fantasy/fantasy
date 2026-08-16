@@ -53,8 +53,10 @@ services:
   aether:
     container_name: aether
     build: .
-    # 版本化镜像 tag（离线升级链路用：build-update-pack.py 打包 / upgrade.sh 切换）
-    image: aether-app:1.0.0
+    # 镜像固定 latest：离线升级（运维页上传 / upgrade.sh）load 后统一 tag 到 latest，
+    # 开发流 docker compose build 也天然打到 latest，两条路不打架。
+    # 当前实际版本看 version.json / /api/ops/version。
+    image: aether-app:latest
     ports:
       - "8010:8010"   # 主服务（API + WebSocket + 前端 SPA）
       - "8011:8011"   # 冷启动进度端口（加载页轮询）
@@ -74,6 +76,8 @@ services:
       - aether-data:/aether/app/data
       # 日志
       - ./logs:/aether/logs
+      # 备份/升级历史（运维页「备份」「升级」写入，持久化到宿主）
+      - ./backups:/aether/backups
       # 语义图构建产物
       - ./app/sg/output:/aether/app/sg/output
     depends_on:

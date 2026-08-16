@@ -90,6 +90,11 @@ const routes = [
     component: () => import('../views/SemanticsView.vue'),
   },
   {
+    path: '/operations',
+    name: 'Operations',
+    component: () => import('../views/OperationsView.vue'),
+  },
+  {
     path: '/monitor',
     name: 'Monitor',
     component: () => import('../views/MonitorView.vue'),

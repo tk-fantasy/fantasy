@@ -93,6 +93,7 @@ const SLASH_COMMANDS = [
   { cmd: '/doc', desc: '打开RAG文档助手', action: 'nav', url: '/doc' },
   { cmd: '/sg', desc: '构建与管理语义图', action: 'nav', url: '/sg' },
   { cmd: '/semantics', desc: '设备语义映射(继电器反转等)', action: 'nav', url: '/semantics' },
+  { cmd: '/operations', desc: '运维中心(体检/备份/升级)', action: 'nav', url: '/operations' },
   { cmd: '/monitor', desc: '查看系统监控', action: 'nav', url: '/monitor' },
   { cmd: '/plugin', desc: '插件管理', action: 'nav', url: '/plugin' },
 ]

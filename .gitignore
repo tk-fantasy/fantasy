@@ -90,3 +90,6 @@ app/sg/output/
 *.exe
 *.dll
 *.pyd
+
+# 运维页备份/升级历史（运行时产物）
+backups/

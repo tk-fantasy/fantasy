@@ -416,35 +416,6 @@ async function saveEgressMode() {
   }
 }
 
-// ===== 诊断包导出（09 清单条目 1）=====
-const diagExporting = ref(false)
-const diagExportMessage = ref('')
-
-async function exportDiagnostics() {
-  diagExporting.value = true
-  diagExportMessage.value = ''
-  try {
-    const res = await fetch('/api/ops/diagnostics')
-    if (!res.ok) throw new Error(`导出失败（${res.status}）`)
-    const blob = await res.blob()
-    const disposition = res.headers.get('Content-Disposition') || ''
-    const match = disposition.match(/filename="?([^";]+)"?/)
-    const filename = match?.[1] || `aether-diag-${Date.now()}.zip`
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = filename
-    a.click()
-    URL.revokeObjectURL(url)
-    diagExportMessage.value = `已生成 ${filename}（${(blob.size / 1024).toFixed(0)} KB），密钥与个人信息已脱敏`
-  } catch (e) {
-    diagExportMessage.value = e?.message || '导出失败'
-    console.error('Failed to export diagnostics:', e)
-  } finally {
-    diagExporting.value = false
-  }
-}
-
 // ===== PTZ 测试连接 =====
 const ptzTesting = ref(false)
 async function testPtz() {
@@ -862,31 +833,6 @@ onUnmounted(() => {
                 </span>
               </span>
             </div>
-          </div>
-        </div>
-      </section>
-
-      <!-- 运维：诊断包导出（09 清单条目 1） -->
-      <section class="setting-section">
-        <h2 class="section-title">
-          <span class="section-icon">&#128295;</span>
-          运维
-        </h2>
-        <div class="setting-card">
-          <div class="setting-row">
-            <div class="setting-label">
-              <span class="label-text">导出诊断包</span>
-              <span class="label-desc">
-                打包脱敏配置（密钥/个人信息已打码）+ 最近日志 + 系统信息为 zip，<br />
-                发给支持人员即可远程排障。导出会记录审计日志。
-              </span>
-            </div>
-            <button class="btn-primary" @click="exportDiagnostics" :disabled="diagExporting">
-              {{ diagExporting ? '打包中...' : '导出' }}
-            </button>
-          </div>
-          <div v-if="diagExportMessage" class="rebuild-info">
-            <div class="rebuild-message">{{ diagExportMessage }}</div>
           </div>
         </div>
       </section>
