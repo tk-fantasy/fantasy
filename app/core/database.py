@@ -529,7 +529,7 @@ class Database:
                 (user_id, username, password_hash, display_name, now, is_admin),
             )
             await self._db.commit()
-        return {"id": user_id, "username": username, "display_name": display_name, "created_at": now}
+        return {"id": user_id, "username": username, "display_name": display_name, "created_at": now, "is_admin": is_admin}
 
     async def user_get_by_username(self, username: str) -> dict | None:
         """根据用户名获取用户（含 password_hash）。"""
@@ -539,7 +539,7 @@ class Database:
         ) as cursor:
             row = await cursor.fetchone()
             if row:
-                return {"id": row[0], "username": row[1], "password_hash": row[2], "display_name": row[3], "created_at": row[4]}
+                return {"id": row[0], "username": row[1], "password_hash": row[2], "display_name": row[3], "created_at": row[4], "is_admin": row[5]}
             return None
 
     async def user_count(self) -> int:
@@ -556,7 +556,7 @@ class Database:
         ) as cursor:
             row = await cursor.fetchone()
             if row:
-                return {"id": row[0], "username": row[1], "display_name": row[2], "created_at": row[3]}
+                return {"id": row[0], "username": row[1], "display_name": row[2], "created_at": row[3], "is_admin": row[4]}
             return None
 
     # ============ User Settings 操作 ============

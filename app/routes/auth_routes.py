@@ -78,7 +78,7 @@ async def register(request: Request, response: Response, payload: AuthRegisterRe
     logger.info("User registered: %s (%s)", username, user_id)
 
     return ApiResponse(data={
-        "user": {"id": user_id, "username": username, "display_name": display_name},
+        "user": {"id": user_id, "username": username, "display_name": display_name, "is_admin": is_admin},
     })
 
 
@@ -107,7 +107,10 @@ async def login(request: Request, response: Response, payload: AuthLoginRequest)
     logger.info("User logged in: %s (%s)", username, user["id"])
 
     return ApiResponse(data={
-        "user": {"id": user["id"], "username": user["username"], "display_name": user["display_name"]},
+        "user": {
+            "id": user["id"], "username": user["username"],
+            "display_name": user["display_name"], "is_admin": user.get("is_admin", 0),
+        },
     })
 
 

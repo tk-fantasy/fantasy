@@ -16,6 +16,20 @@ window.addEventListener('aether:session-expired', () => {
   user.value = null
 })
 
+// 启动补拉：localStorage 里的 user 是登录那刻的快照，可能缺后来新增的
+// 字段（如 is_admin，/operations 命令的可见性依赖它），登录态下开机刷新一次。
+if (loggedIn.value) {
+  fetch('/api/auth/me', { credentials: 'include' })
+    .then((res) => (res.ok ? res.json() : null))
+    .then((json) => {
+      if (json?.data) {
+        user.value = json.data
+        localStorage.setItem(LS_USER, JSON.stringify(json.data))
+      }
+    })
+    .catch(() => { /* 静默失败，保留旧值 */ })
+}
+
 export function useAuth() {
   const isAuthenticated = computed(() => loggedIn.value)
 

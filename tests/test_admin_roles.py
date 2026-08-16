@@ -84,6 +84,49 @@ class TestRegisterFirstUserIsAdmin:
         assert db._db.execute.await_args[0][1][-1] == 1
 
 
+class TestUserGettersReturnIsAdmin:
+    """回归：user_get_by_* / user_create 必须把 is_admin 放进返回 dict。
+
+    曾在管理员分级上线时 SELECT 了 is_admin 却没映射进返回值，
+    导致 /auth/me 缺字段（/operations 命令永不显示）、get_current_admin
+    对真管理员也 403 —— 全站管理员接口不可用。mock 型测试测不出这类
+    返回形状错误，这里用真实 sqlite 打穿 DB 层。
+    """
+
+    @pytest.mark.asyncio
+    async def test_all_user_getters_include_is_admin(self, tmp_path):
+        import asyncio
+
+        import aiosqlite
+
+        from app.core.database import Database
+
+        db = Database.__new__(Database)
+        db._db = await aiosqlite.connect(str(tmp_path / "users.db"))
+        db._write_lock = asyncio.Lock()
+        try:
+            await db._db.executescript(
+                """
+                CREATE TABLE users (
+                    id TEXT PRIMARY KEY, username TEXT, password_hash TEXT,
+                    display_name TEXT, created_at INTEGER,
+                    is_admin INTEGER NOT NULL DEFAULT 0
+                );
+                """
+            )
+            created = await db.user_create("u1", "owner", "h1", "owner", is_admin=1)
+            await db.user_create("u2", "kid", "h2", "kid", is_admin=0)
+
+            by_id = await db.user_get_by_id("u1")
+            by_name = await db.user_get_by_username("kid")
+            assert created["is_admin"] == 1, "user_create 返回值必须带 is_admin"
+            assert by_id["is_admin"] == 1, "user_get_by_id 返回值必须带 is_admin（get_current_admin 依赖它）"
+            assert by_name["is_admin"] == 0, "user_get_by_username 返回值必须带 is_admin"
+            assert "password_hash" not in by_id, "user_get_by_id 不应泄漏 password_hash"
+        finally:
+            await db._db.close()
+
+
 class TestDangerousRoutesGated:
     """危险路由签名必须挂 get_current_admin（防后续改动悄悄摘掉门）。"""
 
