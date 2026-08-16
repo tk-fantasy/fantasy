@@ -5,16 +5,48 @@
 
 飞书用 WebSocket 长连接（不需要公网 URL），在后台线程跑 lark-oapi 的 ws.Client。
 事件回调通过 run_coroutine_threadsafe 调宿主的 async dispatch_fn。
+
+凭证来源优先级：插件管理页保存的配置（config.json integration.host_configs.feishu）
+> 环境变量 FEISHU_APP_ID 等（.env，老部署兼容）。管理页改配置后宿主会调
+stop()+start() 热重连，无需重启容器。
 """
 
-import os
 import logging
+import os
 
 from .ws_client import FeishuBot
 
 logger = logging.getLogger(__name__)
 
 _bot: FeishuBot | None = None
+
+# 管理页字段名 → 环境变量名（未在界面配置时的回退来源）
+_ENV_FALLBACK = {
+    "app_id": "FEISHU_APP_ID",
+    "app_secret": "FEISHU_APP_SECRET",
+    "verification_token": "FEISHU_VERIFICATION_TOKEN",
+    "encrypt_key": "FEISHU_ENCRYPT_KEY",
+}
+
+
+def _read_config() -> tuple[dict, str]:
+    """合并界面配置与环境变量，返回 (配置, 来源标记)。
+
+    界面配置逐字段优先：界面只填了 app_id 时，secret 等其余字段仍回退 env。
+    """
+    ui: dict = {}
+    try:
+        from app.integration.config_helper import get_host_config
+        ui = get_host_config("feishu") or {}
+    except Exception:
+        ui = {}
+
+    cfg = {}
+    for key, env_name in _ENV_FALLBACK.items():
+        value = str(ui.get(key, "") or "").strip() or os.environ.get(env_name, "")
+        cfg[key] = value
+    source = "ui" if any(str(ui.get(k, "") or "").strip() for k in _ENV_FALLBACK) else "env"
+    return cfg, source
 
 
 def start(dispatch_fn, loop):
@@ -28,21 +60,20 @@ def start(dispatch_fn, loop):
     """
     global _bot
 
-    app_id = os.environ.get("FEISHU_APP_ID", "")
-    app_secret = os.environ.get("FEISHU_APP_SECRET", "")
-    if not app_id or not app_secret:
-        logger.info("飞书凭证未配置，跳过长连接启动")
+    cfg, source = _read_config()
+    if not cfg["app_id"] or not cfg["app_secret"]:
+        logger.info("飞书凭证未配置（管理页与 .env 均为空），跳过长连接启动")
         return None
 
     try:
         _bot = FeishuBot(
-            app_id=app_id,
-            app_secret=app_secret,
-            verification_token=os.environ.get("FEISHU_VERIFICATION_TOKEN", ""),
-            encrypt_key=os.environ.get("FEISHU_ENCRYPT_KEY", ""),
+            app_id=cfg["app_id"],
+            app_secret=cfg["app_secret"],
+            verification_token=cfg.get("verification_token", ""),
+            encrypt_key=cfg.get("encrypt_key", ""),
         )
         _bot.start(dispatch_fn, loop)
-        logger.info("飞书 WebSocket 长连接已启动: %s", app_id[:10] + "...")
+        logger.info("飞书 WebSocket 长连接已启动（凭证来源: %s）: %s", source, cfg["app_id"][:10] + "...")
         return _bot
     except Exception:
         logger.exception("飞书长连接启动失败（non-fatal）")

@@ -76,6 +76,106 @@ async def toggle_plugin_enabled(plugin_id: str, container=Depends(get_container)
                                           "alive": False}}
 
 
+class PluginConfigRequest(BaseModel):
+    """管理页提交的插件配置。secret 字段留空 = 保持原值。"""
+    values: dict[str, str] = {}
+
+
+def _mask_secret(value: str) -> str:
+    """脱敏回显：保留首尾各 4 位（太短则全遮）。"""
+    if len(value) <= 8:
+        return "***" if value else ""
+    return f"{value[:4]}…{value[-4:]}"
+
+
+@router.get("/integrations/{plugin_id}/config")
+async def get_plugin_config(plugin_id: str, container=Depends(get_container)):
+    """读插件配置表单数据：schema + 当前值（secret 字段脱敏，只回显 masked/is_set）。"""
+    layer = container.integration_layer
+    if layer is None:
+        return {"success": False, "message": "集成平台未启用"}
+    target = next((p for p in layer.list_plugins() if p["id"] == plugin_id), None)
+    if target is None:
+        return {"success": False, "message": f"未知插件: {plugin_id}"}
+
+    from ..integration.config_helper import get_host_config
+    schema = target.get("config_schema") or {}
+    stored = get_host_config(plugin_id)
+    values = {}
+    for key, field in schema.items():
+        raw = str(stored.get(key, "") or "")
+        if field.get("type") == "secret":
+            values[key] = {"is_set": bool(raw), "masked": _mask_secret(raw)}
+        else:
+            values[key] = raw
+    return {"success": True, "data": {
+        "id": plugin_id,
+        "schema": schema,
+        "values": values,
+        "has_config_set": bool(stored),
+    }}
+
+
+@router.post("/integrations/{plugin_id}/config")
+async def save_plugin_config(
+    plugin_id: str,
+    req: PluginConfigRequest,
+    container=Depends(get_container),
+    admin: dict = Depends(get_current_admin),
+):
+    """保存插件配置并热生效（写审计）。
+
+    - secret 字段留空 = 保持原值（前端密码框不回显明文）
+    - 宿主侧集成（如飞书）：stop+start 热重连，无需重启容器
+    - 子进程插件（如小爱）：重启插件进程，setup 时按新配置初始化
+    """
+    import asyncio
+
+    from ..integration.config_helper import merge_plugin_config
+    from ..ops import audit
+
+    layer = container.integration_layer
+    if layer is None:
+        return {"success": False, "message": "集成平台未启用"}
+    target = next((p for p in layer.list_plugins() if p["id"] == plugin_id), None)
+    if target is None:
+        return {"success": False, "message": f"未知插件: {plugin_id}"}
+
+    schema = target.get("config_schema") or {}
+    # 只收 schema 声明过的字段，未知字段直接丢弃
+    updates = {k: str(v) for k, v in (req.values or {}).items() if k in schema}
+    secret_keys = {k for k, f in schema.items() if f.get("type") == "secret"}
+    merged = merge_plugin_config(plugin_id, updates, secret_keys)
+
+    # 必填校验：合并后仍为空的必填字段拒绝保存（secret 以「已设置」为准）
+    missing = [
+        k for k, f in schema.items()
+        if f.get("required") and (
+            (k in secret_keys and not merged.get(k)) or
+            (k not in secret_keys and not str(merged.get(k, "")).strip())
+        )
+    ]
+    if missing:
+        return {"success": False, "message": f"必填字段未填写: {', '.join(missing)}"}
+
+    # 热生效
+    applied = "skipped"
+    if plugin_id in layer.host_integrations:
+        restart = getattr(container, "restart_host_integration_fn", None)
+        if callable(restart):
+            applied = "restarted" if restart(plugin_id, asyncio.get_running_loop()) else "not_found"
+    else:
+        applied = "restarted" if await layer.restart_subprocess_plugin(plugin_id) else "not_found"
+
+    operator = admin.get("username") or admin.get("user_id", "")
+    audit.record(operator, "plugin_config", {
+        "plugin": plugin_id,
+        "fields": sorted(updates.keys()),
+        "applied": applied,
+    })
+    return {"success": True, "data": {"id": plugin_id, "applied": applied}}
+
+
 @router.post("/integrations/broadcast/toggle")
 async def toggle_broadcast(container=Depends(get_container)):
     """切换全局广播开关（开↔关），持久化到 config，立即生效。"""

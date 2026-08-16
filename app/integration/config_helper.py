@@ -38,3 +38,36 @@ def get_current_mode() -> str:
 def set_current_mode(mode: str) -> None:
     """持久化当前聊天模式到 config.json。"""
     update_config_section("integration", {"current_mode": str(mode)})
+
+
+def get_host_config(plugin_id: str) -> dict:
+    """读取插件在管理页保存的配置（integration.host_configs.<id>）。
+
+    空配置返回 {}（插件回退到 manifest 默认值 / 环境变量）。
+    """
+    cfg = get_config(f"integration.host_configs.{plugin_id}", {}) or {}
+    return dict(cfg) if isinstance(cfg, dict) else {}
+
+
+def set_host_config(plugin_id: str, values: dict) -> None:
+    """持久化插件配置到 config.json。
+
+    update_config_section 是深合并：只覆盖该插件这一个 key，
+    不影响 host_configs 下其他插件的配置。
+    """
+    update_config_section("integration", {"host_configs": {plugin_id: dict(values)}})
+
+
+def merge_plugin_config(plugin_id: str, updates: dict, secret_keys: set[str]) -> dict:
+    """保存管理页提交的配置并返回合并后的完整值。
+
+    密钥类字段留空 = 保持原值（前端密码框不回显，提交空串不应清空密钥）；
+    显式提交非空值则覆盖。
+    """
+    current = get_host_config(plugin_id)
+    for k, v in (updates or {}).items():
+        if k in secret_keys and not str(v).strip():
+            continue
+        current[k] = v
+    set_host_config(plugin_id, current)
+    return current

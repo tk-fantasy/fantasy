@@ -120,13 +120,18 @@ class IntegrationLayer:
     def list_plugins(self) -> list[dict]:
         """返回插件状态摘要（供 API 查询，含禁用态 + 宿主侧集成）。"""
         from .manifest_loader import load_all_manifests
-        from .config_helper import get_disabled_plugins
+        from .config_helper import get_disabled_plugins, get_host_config
         manifests = load_all_manifests(self._plugin_dir, api_version=self._api_version)
         disabled = set(get_disabled_plugins())
         result = []
         # 子进程插件
         for m in manifests:
             proc = self._supervisor.get_process(m.id)
+            # 汇总各 capability 的 config_schema（管理页弹窗渲染配置表单用）
+            schema: dict = {}
+            for cap in m.capabilities:
+                if cap.config_schema:
+                    schema.update(cap.config_schema)
             result.append({
                 "id": m.id,
                 "name": m.name,
@@ -135,6 +140,8 @@ class IntegrationLayer:
                 "capabilities": [c.type.value for c in m.capabilities],
                 "alive": proc.is_alive if proc is not None else False,
                 "enabled": m.id not in disabled,  # 禁用态
+                "config_schema": schema,
+                "has_config_set": bool(get_host_config(m.id)),
             })
         # 宿主侧集成（非子进程，如飞书长连接）
         for integ_id, info in self.host_integrations.items():
@@ -146,6 +153,8 @@ class IntegrationLayer:
                 "capabilities": info.get("capabilities", []),
                 "alive": info.get("alive", False),
                 "enabled": True,  # 宿主侧集成的启停通过凭证控制
+                "config_schema": info.get("config_schema", {}),
+                "has_config_set": bool(get_host_config(integ_id)),
             })
         return result
 
@@ -157,6 +166,22 @@ class IntegrationLayer:
             info: {"name","description","alive","capabilities",...}
         """
         self.host_integrations[integ_id] = info
+
+    async def restart_subprocess_plugin(self, plugin_id: str) -> bool:
+        """停止并重启一个子进程插件（管理页改配置后让它按新配置 setup）。
+
+        禁用态的插件只保证停（不启动）。返回 False=插件不存在。
+        """
+        from .manifest_loader import load_all_manifests
+        from .config_helper import get_disabled_plugins
+        manifests = {m.id: m for m in
+                     load_all_manifests(self._plugin_dir, api_version=self._api_version)}
+        if plugin_id not in manifests:
+            return False
+        await self._supervisor.stop_one(plugin_id)
+        if plugin_id in set(get_disabled_plugins()):
+            return True
+        return await self._supervisor.start_one(manifests[plugin_id], self._plugin_dir)
 
     def set_broadcast_enabled(self, enabled: bool) -> None:
         """运行时切换全局广播开关（同时写 config 持久化）。"""

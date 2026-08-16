@@ -134,6 +134,7 @@ class TestDangerousRoutesGated:
         ("app.routes.integration_routes", "upload_plugin"),
         ("app.routes.integration_routes", "delete_plugin"),
         ("app.routes.integration_routes", "toggle_plugin_enabled"),
+        ("app.routes.integration_routes", "save_plugin_config"),
         ("app.routes.setup_routes", "setup_ha"),
         ("app.routes.simulator_routes", "simulator_stop"),
         ("app.routes.simulator_routes", "simulator_start"),

@@ -676,7 +676,36 @@ Exa 搜索 Key 在此页配置（**不是** `/models` 页），无环境变量�
 
 ---
 
-## 13. WebSocket /ws
+## 13. 集成插件配置 /integrations
+
+插件管理页（/plugin）点插件卡片打开详情弹窗：无 `config_schema` 的只显示描述；
+有的渲染配置表单（`type: secret` 字段脱敏回显、保存留空=保持原值）。
+
+| 方法 | 路径 | 认证 | 说明 |
+| --- | --- | --- | --- |
+| GET | `/api/integrations` | JWT | 插件列表（含 `config_schema` 与 `has_config_set`） |
+| POST | `/api/integrations/{id}/config` | JWT + 管理员 | 保存配置并热生效（写审计） |
+| GET | `/api/integrations/{id}/config` | JWT | 读配置表单数据（secret 只回 `is_set` + 脱敏值） |
+
+保存后自动生效方式：宿主侧集成（飞书）stop+start 热重连；子进程插件（小爱）重启进程，
+`AETHER_PLUGIN_CONFIG` 环境变量注入，SDK 覆盖 manifest `config_schema` 默认值。
+配置持久化在 `config.json → integration.host_configs.<插件id>`；未配置时飞书回退
+`.env`（`FEISHU_APP_ID` 等），老部署无需迁移。
+
+```jsonc
+// GET /api/integrations/feishu/config 返回
+{
+  "schema": { "app_id": {"type": "string", "required": true, "label": "App ID"},
+              "app_secret": {"type": "secret", "required": true, "label": "App Secret"} },
+  "values": { "app_id": "cli_aaaabbbb",
+              "app_secret": {"is_set": true, "masked": "DsFx…gSOy"} },
+  "has_config_set": true
+}
+```
+
+---
+
+## 14. WebSocket /ws
 
 | 方法 | 路径 | 认证 | 说明 |
 | --- | --- | --- | --- |
@@ -700,6 +729,6 @@ WebSocket token 校验顺序：query `token` → `aether_token` cookie → `X-AP
 
 ---
 
-## 14. 启动期 8011 端口
+## 15. 启动期 8011 端口
 
 冷启动期间（LLM 客户端初始化较慢），`scripts/startup_progress.py` 在 **8011** 端口提供临时的启动进度服务，前端轮询展示进度。主服务（8010）就绪后该服务自动退出。详见《系统健康检查指南》。

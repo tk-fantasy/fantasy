@@ -101,6 +101,20 @@ class PluginProcess:
             old = self._env.get("PYTHONPATH", "")
             self._env["PYTHONPATH"] = str(root) + (os.pathsep + old if old else "")
 
+        # 管理页保存的插件配置注入子进程（SDK 在 setup 前把它覆盖进
+        # manifest config_schema 的 default，插件代码无感读取）。
+        # 每次启动都现查，改配置 → 重启插件进程即生效。
+        try:
+            from .config_helper import get_host_config
+            ui_cfg = get_host_config(self.manifest.id)
+            if ui_cfg:
+                self._env["AETHER_PLUGIN_CONFIG"] = json.dumps(ui_cfg, ensure_ascii=False)
+            else:
+                self._env.pop("AETHER_PLUGIN_CONFIG", None)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("插件 %s 配置注入失败（按 manifest 默认值启动）: %s",
+                           self.manifest.id, exc)
+
         logger.info("启动插件 %s: %s", self.manifest.id, " ".join(cmd))
         self._process = await asyncio.create_subprocess_exec(
             *cmd,

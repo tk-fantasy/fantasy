@@ -575,6 +575,8 @@ async def lifespan(_: FastAPI):
 
     # ── 宿主侧集成（通用扫描 integrations/*/main.py，不硬编码插件名）──
     _host_integrations_ref[:] = _start_host_integrations(_container, asyncio.get_running_loop())
+    # 供插件配置 API 热重启单个宿主集成（改配置 → stop+start，无需重启容器）
+    _container.restart_host_integration_fn = _restart_host_integration
 
     _startup_progress.mark_ready()
     yield
@@ -908,10 +910,44 @@ def _load_host_integration_meta(name: str, integrations_dir: str) -> dict:
             "version": getattr(mod, "VERSION", ""),
             "description": getattr(mod, "DESCRIPTION", f"宿主侧集成"),
             "capabilities": getattr(mod, "CAPABILITIES", []),
+            # 声明了 CONFIG_SCHEMA 的宿主集成会在插件管理页弹窗里渲染配置表单
+            "config_schema": getattr(mod, "CONFIG_SCHEMA", {}),
             "alive": True,
         }
     except Exception:
         return default_meta
+
+
+def _restart_host_integration(name: str, loop=None) -> bool:
+    """热重启一个宿主侧集成（改配置后调用）：stop → 重新 start。
+
+    Returns:
+        True=重启成功或该集成本就未运行（凭证缺失时 start 返回 None 属正常）；
+        False=找不到该集成。
+    """
+    for idx, (iname, mod, _instance) in enumerate(_host_integrations_ref):
+        if iname != name:
+            continue
+        try:
+            if hasattr(mod, "stop"):
+                mod.stop()
+        except Exception:
+            logger.exception("宿主侧集成 %s 停止失败（继续尝试重启）", name)
+        instance = None
+        if hasattr(mod, "start"):
+            # dispatch_fn 用当前容器 dispatcher 重建（与启动时同源）
+            dispatch_fn = _build_dispatch_fn(_container.dispatcher)
+            instance = mod.start(dispatch_fn, loop or asyncio.get_event_loop())
+        _host_integrations_ref[idx] = (iname, mod, instance)
+        # 同步插件管理页的存活状态
+        meta = _load_host_integration_meta(
+            name, os.path.join(os.path.dirname(os.path.dirname(__file__)), "integrations"))
+        if _container.integration_layer:
+            meta["alive"] = instance is not None
+            _container.integration_layer.register_host_integration(name, meta)
+        logger.info("宿主侧集成 %s 已热重启（alive=%s）", name, instance is not None)
+        return True
+    return False
 
 
 def _stop_host_integrations(started_list):

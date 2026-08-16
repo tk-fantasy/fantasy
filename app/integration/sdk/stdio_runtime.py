@@ -15,6 +15,7 @@
 
 import asyncio
 import json
+import os
 import sys
 import traceback
 from pathlib import Path
@@ -147,6 +148,18 @@ async def run_stdio_plugin(
 ) -> None:
     """插件进程入口：实例化 → 注入 HostProxy → setup → 并发 runtime 主循环。"""
     manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    # 管理页保存的配置覆盖 manifest 默认值：宿主把 UI 配置经
+    # AETHER_PLUGIN_CONFIG 注入环境。只改各 capability config_schema 的
+    # default，插件按原逻辑 .get("default") 读取，无需感知配置来源。
+    ui_config = json.loads(os.environ.get("AETHER_PLUGIN_CONFIG") or "{}")
+    if ui_config:
+        for cap in manifest.get("capabilities", []):
+            schema = cap.get("config_schema")
+            if not isinstance(schema, dict):
+                continue
+            for key, value in ui_config.items():
+                if key in schema and isinstance(schema[key], dict):
+                    schema[key]["default"] = value
     plugin = plugin_cls()
     plugin.manifest = manifest  # 保证 setup 前 manifest 可用
     runtime = _StdioRuntime(plugin)

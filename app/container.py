@@ -55,6 +55,10 @@ class AppContainer:
     # set_entity_note 写完备注后立即触发一次，让新备注进缓存，
     # 不必等后台 60 秒循环（否则用户写完备注立刻聊天，LLM 看到的还是旧缓存）。
     catalog_refresh_fn: Any = None
+    # 宿主侧集成热重启回调（main.py 注入 _restart_host_integration）。
+    # 插件配置 API 保存配置后调它 stop+start 对应集成（如飞书长连接），
+    # 无需重启容器。
+    restart_host_integration_fn: Any = None
 
     # ── 调度器（lifespan 启动阶段赋值，初始化前为 None）──
     # 放在所有无默认值字段之后，因其有默认值。
