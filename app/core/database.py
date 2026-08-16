@@ -102,7 +102,8 @@ class Database:
                 username TEXT UNIQUE NOT NULL,
                 password_hash TEXT NOT NULL,
                 display_name TEXT DEFAULT '',
-                created_at INTEGER NOT NULL
+                created_at INTEGER NOT NULL,
+                is_admin INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS user_settings (
@@ -169,6 +170,15 @@ class Database:
         await _ensure_column("emoji_preferences", "user_id", "user_id TEXT DEFAULT ''")
         # 多摄像头:rules 表加 camera_id 列(空串=全局规则,归所有摄像头)
         await _ensure_column("rules", "camera_id", "camera_id TEXT DEFAULT ''")
+        # 管理员分级（安全审计 2B）：旧库补 is_admin 列；无人是管理员时把
+        # 最早注册的用户提升为管理员（存量部署的户主即首用户）
+        await _ensure_column("users", "is_admin", "is_admin INTEGER NOT NULL DEFAULT 0")
+        async with db.execute("SELECT COUNT(*) FROM users WHERE is_admin = 1") as cur:
+            if (await cur.fetchone())[0] == 0:
+                await db.execute(
+                    "UPDATE users SET is_admin = 1 WHERE id = "
+                    "(SELECT id FROM users ORDER BY created_at LIMIT 1)"
+                )
         await db.commit()
 
         cls._db = db
@@ -506,13 +516,17 @@ class Database:
 
     # ============ Users 操作 ============
 
-    async def user_create(self, user_id: str, username: str, password_hash: str, display_name: str = "") -> dict:
-        """创建新用户。"""
+    async def user_create(
+        self, user_id: str, username: str, password_hash: str,
+        display_name: str = "", is_admin: int = 0,
+    ) -> dict:
+        """创建新用户（首个用户由调用方传 is_admin=1）。"""
         now = int(time.time() * 1000)
         async with self._write_lock:
             await self._db.execute(
-                "INSERT INTO users (id, username, password_hash, display_name, created_at) VALUES (?, ?, ?, ?, ?)",
-                (user_id, username, password_hash, display_name, now),
+                "INSERT INTO users (id, username, password_hash, display_name, created_at, is_admin) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (user_id, username, password_hash, display_name, now, is_admin),
             )
             await self._db.commit()
         return {"id": user_id, "username": username, "display_name": display_name, "created_at": now}
@@ -520,7 +534,7 @@ class Database:
     async def user_get_by_username(self, username: str) -> dict | None:
         """根据用户名获取用户（含 password_hash）。"""
         async with self._db.execute(
-            "SELECT id, username, password_hash, display_name, created_at FROM users WHERE username = ?",
+            "SELECT id, username, password_hash, display_name, created_at, is_admin FROM users WHERE username = ?",
             (username,),
         ) as cursor:
             row = await cursor.fetchone()
@@ -528,10 +542,16 @@ class Database:
                 return {"id": row[0], "username": row[1], "password_hash": row[2], "display_name": row[3], "created_at": row[4]}
             return None
 
+    async def user_count(self) -> int:
+        """用户总数（注册时判定「首用户即管理员」）。"""
+        async with self._db.execute("SELECT COUNT(*) FROM users") as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else 0
+
     async def user_get_by_id(self, user_id: str) -> dict | None:
         """根据 ID 获取用户（不含 password_hash）。"""
         async with self._db.execute(
-            "SELECT id, username, display_name, created_at FROM users WHERE id = ?",
+            "SELECT id, username, display_name, created_at, is_admin FROM users WHERE id = ?",
             (user_id,),
         ) as cursor:
             row = await cursor.fetchone()

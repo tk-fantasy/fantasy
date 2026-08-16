@@ -98,6 +98,11 @@ const SLASH_COMMANDS = [
   { cmd: '/plugin', desc: '插件管理', action: 'nav', url: '/plugin' },
 ]
 
+// /operations 是管理员工具，普通成员不显示
+const availableSlashCommands = computed(() =>
+  SLASH_COMMANDS.filter(c => c.cmd !== '/operations' || !!user.value?.is_admin)
+)
+
 const statusText = computed(() => {
   switch (statusPhase.value) {
     case 'thinking': return '正在思考...'
@@ -440,7 +445,7 @@ function onInput(e) {
   const val = e.target.value
   if (val.startsWith('/')) {
     const q = val.slice(1).toLowerCase()
-    slashFiltered.value = SLASH_COMMANDS.filter(c =>
+    slashFiltered.value = availableSlashCommands.value.filter(c =>
       c.cmd.startsWith('/' + q) || c.desc.toLowerCase().includes(q)
     )
     if (slashFiltered.value.length) {

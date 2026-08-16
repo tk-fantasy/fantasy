@@ -24,6 +24,17 @@ export function useAuth() {
     localStorage.setItem(LS_USER, JSON.stringify(userData))
   }
 
+  /** 刷新本地 user（登录后调用，拿 is_admin 等角色字段） */
+  async function refreshUser() {
+    try {
+      const res = await fetch('/api/auth/me', { credentials: 'include' })
+      if (res.ok) {
+        const json = await res.json()
+        if (json.data) setUser(json.data)
+      }
+    } catch { /* 静默失败，保留旧值 */ }
+  }
+
   async function login(username, password) {
     const res = await fetch('/api/auth/login', {
       method: 'POST',
@@ -58,6 +69,7 @@ export function useAuth() {
     loggedIn.value = true
     localStorage.setItem(LS_LOGGED_IN, 'true')
     setUser(json.data.user)
+    refreshUser()  // 补拉 is_admin 等角色字段
     window.dispatchEvent(new Event('aether:login-success'))
     return json.data
   }
@@ -80,6 +92,7 @@ export function useAuth() {
   return {
     user,
     isAuthenticated,
+    refreshUser,
     login,
     register,
     logout,

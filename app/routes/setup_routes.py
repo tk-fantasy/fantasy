@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from ..container import AppContainer, get_container
 from ..core.api_models import ApiResponse
-from ..core.auth import extract_token_from_request, verify_token
+from ..core.auth import extract_token_from_request, get_current_admin, verify_token
 from ..core.config import get_config, update_config_section
 from ..core.database import Database
 from ..services import egress_service
@@ -142,6 +142,7 @@ async def setup_ha(
     body: HASetupRequest,
     request: Request,
     container: AppContainer = Depends(get_container),
+    admin: dict = Depends(get_current_admin),
 ) -> ApiResponse[dict]:
     """保存 HA 连接配置并测试连接。
 

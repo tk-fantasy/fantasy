@@ -17,6 +17,7 @@ import httpx
 from fastapi import APIRouter, Depends
 
 from ..core.api_models import ApiResponse
+from ..core.auth import get_current_admin
 from ..container import AppContainer, get_container
 
 logger = logging.getLogger(__name__)
@@ -127,7 +128,7 @@ async def simulator_status() -> ApiResponse[dict]:
 
 
 @router.post("/simulator/stop")
-async def simulator_stop(container: AppContainer = Depends(get_container)) -> ApiResponse[dict]:
+async def simulator_stop(container: AppContainer = Depends(get_container), admin: dict = Depends(get_current_admin)) -> ApiResponse[dict]:
     """停止虚拟设备模拟器和 mosquitto（设备全部下线）。"""
     if not docker_socket_available():
         return ApiResponse(code="unavailable", message="Docker socket 不可用", data={"ok": False})
@@ -144,7 +145,7 @@ async def simulator_stop(container: AppContainer = Depends(get_container)) -> Ap
 
 
 @router.post("/simulator/start")
-async def simulator_start(container: AppContainer = Depends(get_container)) -> ApiResponse[dict]:
+async def simulator_start(container: AppContainer = Depends(get_container), admin: dict = Depends(get_current_admin)) -> ApiResponse[dict]:
     """启动 mosquitto 和虚拟设备模拟器（先 broker 后模拟器）。"""
     if not docker_socket_available():
         return ApiResponse(code="unavailable", message="Docker socket 不可用", data={"ok": False})

@@ -11,6 +11,7 @@ from fastapi import APIRouter, Body, Depends, UploadFile, File
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from ..core.auth import get_current_admin
 from ..container import get_container
 from ..core.config import BASE_DIR, get_config
 from ..integration.schema import Manifest
@@ -49,7 +50,7 @@ async def list_integrations(container=Depends(get_container)):
 
 
 @router.post("/integrations/{plugin_id}/toggle-enabled")
-async def toggle_plugin_enabled(plugin_id: str, container=Depends(get_container)):
+async def toggle_plugin_enabled(plugin_id: str, container=Depends(get_container), admin: dict = Depends(get_current_admin)):
     """切换插件启用/禁用（热加载，不重启 Aether）。
 
     禁用 → 立即停止该插件进程。
@@ -224,7 +225,7 @@ async def export_plugin(plugin_id: str):
 
 
 @router.post("/integrations/upload")
-async def upload_plugin(file: UploadFile = File(...)):
+async def upload_plugin(file: UploadFile = File(...), admin: dict = Depends(get_current_admin)):
     """上传插件 zip 包，校验后解压到 integrations/。
 
     校验：
@@ -325,7 +326,7 @@ async def upload_plugin(file: UploadFile = File(...)):
 
 
 @router.delete("/integrations/{plugin_id}")
-async def delete_plugin(plugin_id: str, container=Depends(get_container)):
+async def delete_plugin(plugin_id: str, container=Depends(get_container), admin: dict = Depends(get_current_admin)):
     """删除插件（删 integrations/{id}/ 文件夹）。
 
     若插件正在运行，先停止进程。删内置插件需谨慎（建议先禁用）。

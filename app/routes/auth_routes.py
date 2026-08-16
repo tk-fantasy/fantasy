@@ -39,7 +39,8 @@ _register_limiter = RateLimiter(max_requests=3, window_seconds=60)  # 3 attempts
 async def register(request: Request, response: Response, payload: AuthRegisterRequest) -> ApiResponse[dict]:
     """用户注册。
 
-    第一个注册的用户自动成为管理员（预留字段，暂未使用）。
+    第一个注册的用户自动成为管理员（后续用户为普通成员，
+    危险接口见 core.auth.get_current_admin）。
     """
     # Rate limiting
     client_ip = request.client.host if request.client else "unknown"
@@ -57,10 +58,11 @@ async def register(request: Request, response: Response, payload: AuthRegisterRe
     if existing:
         raise AppException("用户名已存在", code="username_exists", http_status=400)
 
-    # 创建用户
+    # 创建用户（首用户即管理员——户主先注册）
+    is_admin = 1 if await db.user_count() == 0 else 0
     user_id = str(uuid.uuid4())
     password_hash = hash_password(password)
-    user = await db.user_create(user_id, username, password_hash, display_name)
+    user = await db.user_create(user_id, username, password_hash, display_name, is_admin=is_admin)
 
     # 初始化新用户的 user_settings（空的 llm_keys 和 providers）
     import json

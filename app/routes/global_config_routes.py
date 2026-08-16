@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 
 from ..container import AppContainer, get_container
 from ..core.api_models import ApiResponse
-from ..core.auth import get_current_user, hash_password
+from ..core.auth import get_current_admin, get_current_user, hash_password
 from ..core.config import (
     get_config,
     save_global_llm_keys,
@@ -51,7 +51,7 @@ async def get_global_password_status() -> ApiResponse[dict]:
 @router.post("/global/password")
 async def set_global_password(
     payload: SecondaryPasswordSetupRequest,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_admin),
 ) -> ApiResponse[dict]:
     """首次设置二级密码。若已设置则 409，需先调用 DELETE /global/password 重置。"""
     if llm_key_service.is_secondary_password_set():
@@ -84,9 +84,9 @@ async def verify_global_password(
 
 @router.delete("/global/password")
 async def reset_global_password(
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_admin),
 ) -> ApiResponse[dict]:
-    """重置（清除）二级密码。不验证二级密码本身，只验证 JWT：丢了密码的人需要自救入口。"""
+    """重置（清除）二级密码。仅管理员（自救入口收窄到户主，防家庭成员接管全局 key）。"""
     if not llm_key_service.is_secondary_password_set():
         raise AppException(
             "二级密码未设置，无需重置",

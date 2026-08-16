@@ -248,3 +248,26 @@ async def get_current_user(
     }
 
 
+async def get_current_admin(
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    """FastAPI 依赖注入：要求当前用户是管理员。
+
+    用于危险接口的权限分级（安全审计 2B）：插件上传/删除、HA 连接配置、
+    模拟器开关、运维操作、二级密码管理。首注册用户自动成为管理员。
+    """
+    from .database import Database
+
+    try:
+        db = Database.get()
+        user = await db.user_get_by_id(current_user["user_id"])
+    except Exception:
+        user = None
+    if not user or not user.get("is_admin"):
+        raise AppException(
+            "该操作需要管理员权限（首个注册的用户）",
+            code="admin_required", http_status=403,
+        )
+    return {**current_user, "is_admin": 1}
+
+

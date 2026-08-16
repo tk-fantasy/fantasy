@@ -1,6 +1,6 @@
 """运维路由（09 清单条目 1 + 运维页 /operations 的全部后端）。
 
-端点一览（均在 /api 下，经 api_token_guard 要求 JWT；写操作叠加 get_current_user）：
+端点一览（均在 /api 下，经 api_token_guard 要求 JWT；写操作叠加 get_current_admin）：
 - GET  /api/ops/diagnostics      下载脱敏诊断包 zip（操作写审计）
 - POST /api/ops/diagnose         跑部署体检，返回结构化报告
 - GET  /api/ops/audit            最近运维审计记录
@@ -26,7 +26,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 
 from ..core.api_models import ApiResponse
-from ..core.auth import get_current_user
+from ..core.auth import get_current_admin
 from ..core.exceptions import AppException
 from ..core.version import get_version
 from ..ops import audit, backup, diagnose, update_channel, upgrade
@@ -47,7 +47,7 @@ class UpdateSettingsRequest(BaseModel):
 
 @router.get("/ops/diagnostics")
 async def export_diagnostics(
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_admin),
 ) -> Response:
     data, filename = await build_diagnostic_package(
         operator=current_user.get("username") or current_user["user_id"]
@@ -61,7 +61,7 @@ async def export_diagnostics(
 
 @router.get("/ops/audit")
 async def recent_audit(
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_admin),
 ) -> ApiResponse[list[dict]]:
     return ApiResponse(data=audit.tail(limit=50))
 
@@ -70,7 +70,7 @@ async def recent_audit(
 
 @router.post("/ops/diagnose")
 async def run_diagnose(
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_admin),
 ) -> ApiResponse[dict]:
     audit.record(current_user.get("username") or current_user["user_id"], "diagnose_run", {})
     # 检查内部自带并行与超时（run_all 在线程池里跑阻塞 IO，放 executor 避免卡事件循环）
@@ -84,7 +84,7 @@ async def run_diagnose(
 
 @router.get("/ops/version")
 async def version_info(
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_admin),
 ) -> ApiResponse[dict]:
     return ApiResponse(data={
         "version": get_version(),
@@ -96,7 +96,7 @@ async def version_info(
 @router.post("/ops/upgrade")
 async def upload_upgrade(
     pack: UploadFile = File(...),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_admin),
 ) -> ApiResponse[dict]:
     """上传升级包（tar.gz，含镜像与 manifest）→ 校验 → docker load → 自动重启。"""
     operator = current_user.get("username") or current_user["user_id"]
@@ -120,7 +120,7 @@ async def upload_upgrade(
 
 @router.get("/ops/update/settings")
 async def get_update_settings(
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_admin),
 ) -> ApiResponse[dict]:
     return ApiResponse(data={"manifest_url": update_channel.get_manifest_url()})
 
@@ -128,7 +128,7 @@ async def get_update_settings(
 @router.post("/ops/update/settings")
 async def set_update_settings(
     payload: UpdateSettingsRequest,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_admin),
 ) -> ApiResponse[dict]:
     url = update_channel.set_manifest_url(payload.manifest_url)
     audit.record(
@@ -141,14 +141,14 @@ async def set_update_settings(
 
 @router.get("/ops/update/check")
 async def check_update_route(
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_admin),
 ) -> ApiResponse[dict]:
     return ApiResponse(data=await update_channel.check_update())
 
 
 @router.post("/ops/update/apply")
 async def apply_update_from_channel(
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_admin),
 ) -> ApiResponse[dict]:
     """从配置的更新源下载升级包并升级。响应结构与上传升级一致（含 restarting）。"""
     operator = current_user.get("username") or current_user["user_id"]
@@ -164,7 +164,7 @@ async def apply_update_from_channel(
 
 @router.post("/ops/backups")
 async def create_backup_route(
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_admin),
 ) -> ApiResponse[dict]:
     operator = current_user.get("username") or current_user["user_id"]
     try:
@@ -176,7 +176,7 @@ async def create_backup_route(
 
 @router.get("/ops/backups")
 async def list_backups_route(
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_admin),
 ) -> ApiResponse[list[dict]]:
     return ApiResponse(data=await _run_in_executor(backup.list_backups))
 
@@ -184,7 +184,7 @@ async def list_backups_route(
 @router.delete("/ops/backups/{name}")
 async def delete_backup_route(
     name: str,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_admin),
 ) -> ApiResponse[dict]:
     operator = current_user.get("username") or current_user["user_id"]
     try:
@@ -199,7 +199,7 @@ async def delete_backup_route(
 @router.get("/ops/backups/{name}/validate")
 async def validate_backup_route(
     name: str,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_admin),
 ) -> ApiResponse[dict]:
     try:
         return ApiResponse(data=await _run_in_executor(backup.validate_backup, name))
@@ -213,7 +213,7 @@ async def validate_backup_route(
 async def restore_backup_route(
     name: str,
     payload: RestoreRequest,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_admin),
 ) -> ApiResponse[dict]:
     if not payload.confirm:
         raise HTTPException(status_code=400, detail="需要 confirm=true（恢复会覆盖当前数据并重启服务）")
