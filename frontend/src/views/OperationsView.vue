@@ -26,6 +26,7 @@ async function runDiagnose() {
   diagReport.value = null
   try {
     diagReport.value = await apiPost('/api/ops/diagnose', {})
+    loadAudit()
   } catch (e) {
     diagError.value = e?.message || '体检失败'
   } finally {
@@ -54,6 +55,7 @@ async function exportDiagnostics() {
     a.click()
     URL.revokeObjectURL(url)
     diagExportMessage.value = `已生成 ${filename}（${(blob.size / 1024).toFixed(0)} KB），密钥与个人信息已脱敏`
+    loadAudit()
   } catch (e) {
     diagExportMessage.value = e?.message || '导出失败'
   } finally {
@@ -91,6 +93,7 @@ async function createBackup() {
     const r = await apiPost('/api/ops/backups', {})
     backupMessage.value = `备份完成：${r.name}（${(r.size_bytes / 1024 / 1024).toFixed(1)} MB），保留最近 3 份`
     await loadBackups()
+    loadAudit()
   } catch (e) {
     backupMessage.value = e?.message || '备份失败'
   } finally {
@@ -102,7 +105,9 @@ async function deleteBackup(name) {
   if (!window.confirm(`删除备份 ${name}？不可恢复。`)) return
   try {
     await apiDelete(`/api/ops/backups/${encodeURIComponent(name)}`)
+    backupMessage.value = `已删除 ${name}`
     await loadBackups()
+    loadAudit()
   } catch (e) {
     window.alert(e?.message || '删除失败')
   }
@@ -242,6 +247,7 @@ async function saveUpdateUrl() {
     updateInfo.value = null
     updateUrlSaved.value = true
     setTimeout(() => { updateUrlSaved.value = false }, 2000)
+    loadAudit()
   } catch (e) {
     upgradeMessage.value = e?.message || '更新源保存失败'
   } finally {

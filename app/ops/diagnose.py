@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import json
+import os
 import platform
 import shutil
 import socket
@@ -54,9 +55,15 @@ def _result(name, status, detail, advice=""):
 
 def _load_config() -> dict:
     try:
-        return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        cfg = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {}
+        cfg = {}
+    # 与 app/core/config.py 的运行时覆盖规则对齐：compose 部署用 HA_URL 环境
+    # 变量覆盖 config.json 的 localhost 地址。诊断必须用与运行时一致的地址，
+    # 否则容器内 HA 探测必误报（config.json 里通常还是宿主机的 localhost）。
+    if os.environ.get("HA_URL"):
+        cfg.setdefault("ha", {})["url"] = os.environ["HA_URL"]
+    return cfg
 
 
 # ==================== 端口 ====================

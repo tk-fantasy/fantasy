@@ -43,6 +43,10 @@ RUN pip install --no-cache-dir \
 # 拷贝后端代码
 COPY app/ ./app/
 
+# 版本清单（app/core/version.py 读取；缺失时版本回退 0.0.0-dev，
+# 运维页版本显示与在线更新比较都会失真）
+COPY version.json ./
+
 # 测试配置（容器内跑 pytest 用，提供 asyncio_mode=auto 等）
 COPY pytest.ini ./
 
