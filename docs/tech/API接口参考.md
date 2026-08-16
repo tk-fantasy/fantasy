@@ -489,7 +489,138 @@ Exa 搜索 Key 在此页配置（**不是** `/models` 页），无环境变量�
 
 `/api/metrics` 返回 `metrics_service.snapshot()`：请求计数、延迟分位、工具调用计数、LLM 调用计数、自动化评估计数等。
 
-### 文档/RAG /doc, /search
+---
+
+## 15. 运维中心 /ops
+
+> 所有运维接口需要管理员权限（`Depends(get_current_admin)`），操作写入审计日志。
+
+### 诊断包导出
+
+| 方法 | 路径 | 认证 | 说明 |
+| --- | --- | --- | --- |
+| GET | `/api/ops/diagnostics` | JWT + 管理员 | 下载脱敏诊断包（zip） |
+| POST | `/api/ops/diagnose` | JWT + 管理员 | 运行部署体检，返回结构化报告 |
+| GET | `/api/ops/audit` | JWT + 管理员 | 最近运维审计记录（最多 50 条） |
+
+**诊断包内容**：
+- 脱敏后的 `config.json`（密钥字段打码）
+- 系统信息（uname、docker ps、磁盘/内存）
+- 最近日志（每文件尾部 2MB，总量 10MB）
+
+**部署体检项**：
+- 端口占用（8010、8123、1884）
+- 网络连通性（HA、RTSP、DNS）
+- 资源检查（磁盘 > 2GB、内存 > 2GB）
+- 时间同步（NTP）
+
+### 版本与升级
+
+| 方法 | 路径 | 认证 | 说明 |
+| --- | --- | --- | --- |
+| GET | `/api/ops/version` | JWT + 管理员 | 当前版本 + 升级历史 |
+| POST | `/api/ops/upgrade` | JWT + 管理员 | 上传升级包（multipart，tar.gz） |
+
+```jsonc
+// GET /api/ops/version 返回
+{
+  "version": "1.0.0",
+  "docker_socket": "true",
+  "history": [
+    { "from": "0.9.0", "to": "1.0.0", "at": "2026-08-16T10:00:00Z" }
+  ]
+}
+```
+
+**升级流程**：上传 → 校验 sha256 → docker load → 切换 tag → 健康检查（180s）→ 失败自动回滚
+
+### 在线更新
+
+| 方法 | 路径 | 认证 | 说明 |
+| --- | --- | --- | --- |
+| GET | `/api/ops/update/settings` | JWT + 管理员 | 读更新源地址 |
+| POST | `/api/ops/update/settings` | JWT + 管理员 | 写更新源地址 |
+| GET | `/api/ops/update/check` | JWT + 管理员 | 检查是否有新版本 |
+| POST | `/api/ops/update/apply` | JWT + 管理员 | 一键升级（下载 → 校验 → 升级） |
+
+```jsonc
+// 更新源配置
+{ "manifest_url": "https://your-server.com/update-channel.json" }
+
+// GET /api/ops/update/check 返回
+{
+  "has_update": true,
+  "latest_version": "1.1.0",
+  "current_version": "1.0.0",
+  "changelog": "### Added\n- 新功能 A\n- 新功能 B"
+}
+```
+
+### 备份与恢复
+
+| 方法 | 路径 | 认证 | 说明 |
+| --- | --- | --- | --- |
+| GET | `/api/ops/backups` | JWT + 管理员 | 备份列表 |
+| POST | `/api/ops/backups` | JWT + 管理员 | 立即备份（保留最近 3 份） |
+| DELETE | `/api/ops/backups/{name}` | JWT + 管理员 | 删除指定备份 |
+| GET | `/api/ops/backups/{name}/validate` | JWT + 管理员 | 恢复前预检 |
+| POST | `/api/ops/backups/{name}/restore` | JWT + 管理员 | 恢复并自动重启 |
+
+```jsonc
+// POST /api/ops/backups 返回
+{
+  "name": "aether-backup-20260816-100000.tar.gz",
+  "size_mb": 15.2,
+  "created_at": "2026-08-16T10:00:00Z"
+}
+
+// 恢复请求（必须 confirm=true）
+{ "confirm": true }
+```
+
+**备份内容**：`config.json` + `.env` + HA 配置 + MQTT 配置 + aether-data 数据卷
+
+---
+
+## 16. 数据出网策略 /egress
+
+| 方法 | 路径 | 认证 | 说明 |
+| --- | --- | --- | --- |
+| GET | `/api/egress` | JWT | 获取当前策略状态 |
+| POST | `/api/egress` | JWT | 设置出网模式 |
+| POST | `/api/egress/confirm` | JWT | 确认数据流向声明 |
+
+```jsonc
+// GET /api/egress 返回
+{
+  "mode": "cloud",           // cloud / hybrid / local
+  "mode_label": "云端对话",
+  "confirmed": true,
+  "confirmed_at": "2026-08-15T10:00:00Z",
+  "confirmed_by": "alice",
+  "endpoints": [
+    { "role": "chat", "base_url": "https://api.openai.com/v1", "private": false, "configured": true },
+    { "role": "vision", "base_url": "http://ollama:11434/v1", "private": true, "configured": true }
+  ],
+  "warnings": [],
+  "notes": []
+}
+
+// POST /api/egress 设置模式
+{ "mode": "local" }
+
+// POST /api/egress/confirm 确认声明
+// （body 为空，用户信息从 JWT 提取）
+```
+
+**三档模式**：
+- `cloud`：云端模式（默认），对话走 HTTPS 到模型厂商
+- `hybrid`：混合模式，对话走云端，敏感角色建议内网
+- `local`：纯内网模式，所有端点必须内网，公网端点硬拦截
+
+---
+
+## 17. 文档/RAG /doc, /search
 
 | 方法 | 路径 | 认证 | Body | 说明 |
 | --- | --- | --- | --- | --- |

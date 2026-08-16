@@ -50,7 +50,7 @@ Manage all low-level configuration in one place: weather API keys, Exa search en
 
 ### 🤖 Model management — plug into any LLM
 
-Visually manage all LLM model configs. Set up **chat**, **vision**, **embed**, and **summary** models separately, and switch between providers (OpenAI, Claude, DeepSeek, etc.). Each account can configure its own API keys independently without interfering with others.
+Visually manage all LLM model configs. Set up **chat**, **vision**, **embed**, and **summary** models separately, and switch between providers (OpenAI, Claude, DeepSeek, etc.). Each account can configure its own API keys independently without interfering with others. There's also a set of **global keys** (vision/embed are globally shared; chat/summary/stt can optionally fall back to global), protected by a secondary password with one-click reset.
 
 <br/>
 <img src="docs/images/models.webp" alt="Model management" width="720"/>
@@ -82,7 +82,7 @@ Create condition-based automation rules: turn on the AC when it's over 30°C, tu
 
 ### 👁️ Vision — let the AI see your home
 
-Connect an RTSP or USB camera and the AI analyzes the scene in real time. Supports motion-triggered visual reasoning and proactively notifies you when something unusual happens. Ask the camera in chat "what do you see".
+Connect RTSP or USB cameras and the AI analyzes the scene in real time. Supports motion-triggered visual reasoning and proactively notifies you when something unusual happens. Ask the camera in chat "what do you see".
 
 <br/>
 <img src="docs/images/vision.webp" alt="Vision" width="720"/>
@@ -122,6 +122,9 @@ AI replies stream token-by-token, like a person typing. Markdown rendering with 
 - **📊 Semantic knowledge graph (RAG)** — Docs vectorized + faiss retrieval + entity co-occurrence graphing, 3D visualization, auto-detect on embed-model change + one-click rebuild.
 - **🔌 MCP tool ecosystem** — Built-in weather / web search / device-control tools, plus support for external MCP servers.
 - **🔐 JWT auth + independent config** — Sessions use JWT, LLM keys are managed independently with isolated sessions, one-click clear of conversation history.
+- **🛠️ Operations center** — Diagnostic package export, deployment health check, online upgrades, backup/restore — all operations in one place without SSH access.
+- **🌐 Egress policy** — Three modes (cloud/hybrid/local) with real-time mode badge in chat, meeting different security requirements.
+- **👑 Admin tiering** — First registered user becomes admin automatically; dangerous endpoints (plugin upload/ops/etc.) require admin privileges.
 
 ## Architecture & ports
 
@@ -184,7 +187,7 @@ Open `http://localhost:8010`. On first run you'll go through a setup wizard:
 >
 > The repo **does not ship** HA runtime state files (onboarding / auth / entity_registry etc.) — every clone starts with a clean HA that must go through the onboarding above. `ha_config/.storage/core.config` keeps default location/timezone, and `ha_config/mqtt/*.yaml` are simulator device declarations auto-loaded by HA on startup.
 
-> **Built-in demo devices**: the repo ships 11 virtual devices (3 lights / 1 AC / 1 curtain / 1 fan / 1 humidifier / 2 sensors / 2 plugs) declared in `ha_config/mqtt/*.yaml`, with state published by the `aether-simulator` container via MQTT. The goal is to let users without real smart-home hardware experience the full AI control flow (chat to turn on lights, adjust AC, etc.) out of the box.
+> **Built-in demo devices**: the repo ships 10 virtual devices (3 lights / 1 AC / 1 curtain / 1 fan / 1 humidifier / 2 sensors / 2 plugs) declared in `ha_config/mqtt/*.yaml`, with state published by the `aether-simulator` container via MQTT. The goal is to let users without real smart-home hardware experience the full AI control flow (chat to turn on lights, adjust AC, etc.) out of the box.
 >
 > **How to handle demo devices when connecting your real HA**:
 > - Option 1 (recommended): disable the corresponding entities in HA UI (Settings → Devices & Services → MQTT), or delete `ha_config/mqtt/*.yaml` and restart the HA container.
@@ -259,7 +262,7 @@ Environment variables take precedence and override `config.json`:
 | `LOG_LEVEL` | `logging.level` | Log level |
 | `STARTUP_PROGRESS_HOST` | — | Bind address for the startup-progress port (set to `0.0.0.0` in container) |
 
-> LLM keys are best managed via the "API Keys" card on the Advanced page — it writes to `.env` and persists metadata to the database automatically.
+> LLM keys are best managed via the Models page (`/models`: per-user keys + role binding + secondary password for global config), which writes to `.env` and persists metadata to the database. The Advanced page also has an API Keys section for managing per-user keys.
 
 ## Project layout
 
@@ -301,28 +304,41 @@ CI runs `pytest -m "not slow"` on every push and pull request via GitHub Actions
 
 ## Documentation
 
-Full docs live under `docs/`, organized by feature (Chinese, English translation in progress):
+Full docs live under `docs/`, organized by feature (Chinese):
 
-- `docs/01-安装部署/` — environment prep, Docker deploy, HA connection, LLM keys, weather API, Tailscale remote
+- `docs/01-安装部署/` — environment prep, Docker deploy, HA connection, LLM keys, weather API, Tailscale remote, local Ollama
 - `docs/02-AI聊天/` — chat basics, persona customization, model roles, session management, slash commands
 - `docs/03-设备控制/` — natural-language control, device widgets, device panel
 - `docs/04-自动化规则/` — scheduled tasks, automation rules, rule maintenance, vision triggers
 - `docs/05-摄像头视觉/` — camera input, focus-item config, motion detection
 - `docs/06-集成扩展/` — Exa search, MQTT integration, external MCP
 - `docs/07-个性化/` — emoji customization, household info & theme
-- `docs/08-运维排查/` — API auth, log inspection, health checks
-- `docs/tech/` — architecture overview, API/MCP reference, scheduler/automation engine, vision subsystem, config reference
+- `docs/08-运维排查/` — API auth, log inspection, health checks, **operations center**, egress policy
+- `docs/09-商业化工程化清单.md` — delivery capability checklist and implementation notes
+- `docs/10-交付物料/` — SLA template, disclaimer template
+- `docs/tech/` — architecture overview, API/MCP reference, scheduler/automation engine, vision subsystem, data flow, config reference
 
 ## UI navigation
 
-Four sidebar entries; other features are reachable via slash commands:
+Three sidebar entries; other features are reachable via slash commands:
 
 | Entry | Description |
 |-------|-------------|
-| **Butler** | Main chat. Type `/` to see all slash commands (devices, schedules, models, one-click jumps). |
+| **Butler** | Main chat. Type `/` to see all slash commands (devices, schedules, models, operations, etc.). |
 | **Cameras** | Multi-camera management: add RTSP/USB, PTZ pan-tilt, ONVIF discovery, per-camera focus items, single active AI preview. |
 | **Settings** | Household info, region, dark mode. |
-| **Advanced** | System-level config page: weather API, Exa search, vision params, HA connection, assistant persona, API Keys (click a card to edit in a modal), plus emoji-index rebuild and doc-vector rebuild. |
+
+**Common slash commands**:
+
+| Command | Description |
+|---------|-------------|
+| `/devices` or `/halist` | Device panel |
+| `/schedules` | Scheduled tasks |
+| `/rules` | Automation rules |
+| `/models` | Model management |
+| `/advanced` | Advanced settings |
+| `/operations` | Operations center (diagnostics, upgrade, backup) |
+| `/semantics` | Semantic graph |
 
 ---
 
