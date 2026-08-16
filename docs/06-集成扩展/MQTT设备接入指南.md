@@ -22,7 +22,7 @@
 - **Home Assistant**：智能家居平台，容器名 `aether-ha`，官方镜像 `homeassistant/home-assistant:stable`，端口 `8123`，通过 MQTT 集成感知设备
 - **Aether**：AI 助手后端，通过 HA REST API 读写设备状态并执行自动化
 
-> docker-compose 有四个服务：`mqtt`（mosquitto）、`homeassistant`（HA 官方镜像）、`aether`（本地构建）、`simulator`（虚拟设备模拟器）。HA 配置通过 `./ha_config` 挂载，只用 `default_config` + 内置 MQTT 集成，无需手动构建镜像。详见《Docker服务部署指南》。
+> docker-compose 默认启动三个服务：`mqtt`（mosquitto）、`homeassistant`（HA 官方镜像）、`aether`（本地构建）；`simulator`（虚拟设备模拟器）默认不启动，首次启用 `docker compose --profile simulator up -d simulator`。HA 配置通过 `./ha_config` 挂载，只用 `default_config` + 内置 MQTT 集成，无需手动构建镜像。详见《Docker服务部署指南》。
 
 ## 前置准备
 

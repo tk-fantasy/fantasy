@@ -106,6 +106,22 @@ class TestSimulatorStopStart:
         assert (simulator_routes.SIMULATOR_CONTAINER, "start") in calls
 
     @pytest.mark.asyncio
+    async def test_start_simulator_not_created_returns_hint(self):
+        """模拟器容器不存在（profile 默认不启动）→ 返回首次启用命令而非笼统失败。"""
+        async def fake_action(name, action):
+            if name == simulator_routes.SIMULATOR_CONTAINER:
+                return {"available": True, "ok": False, "error": "容器不存在（compose 未启动？）"}
+            return {"available": True, "ok": True}
+
+        with patch.object(simulator_routes, "docker_socket_available", return_value=True), \
+             patch.object(simulator_routes, "_container_action", side_effect=fake_action):
+            result = await simulator_routes.simulator_start()
+
+        assert result.data["ok"] is False
+        assert "--profile simulator" in result.data["hint"]
+        assert "--profile simulator" in result.message
+
+    @pytest.mark.asyncio
     async def test_stop_partial_failure(self):
         """部分失败 → ok=False，code=partial。"""
         async def fake_action(name, action):

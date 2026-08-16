@@ -85,8 +85,6 @@ services:
         condition: service_healthy
       homeassistant:
         condition: service_started
-      simulator:
-        condition: service_started
     restart: unless-stopped
 
   # 纯内网本地模型（可选，默认不启动）：
@@ -103,9 +101,13 @@ services:
     restart: unless-stopped
 
   simulator:
-    # 虚拟设备模拟器：通过 MQTT 往 HA 报告灯/空调/窗帘等设备状态
+    # 虚拟设备模拟器：通过 MQTT 往 HA 报告灯/空调/窗帘等设备状态。
+    # 默认不启动（生产环境不该有假设备）：首次启用跑
+    #   docker compose --profile simulator up -d simulator
+    # 之后「高级配置 → 虚拟设备」开关即可随时启停（docker start/stop）。
     container_name: aether-simulator
     image: python:3.11-slim
+    profiles: ["simulator"]
     working_dir: /sim
     # 钉死版本：ha_simulator 用 paho-mqtt 2.x API（CallbackAPIVersion.VERSION2）
     command: ["sh", "-c", "pip install --no-cache-dir -q -i https://pypi.tuna.tsinghua.edu.cn/simple paho-mqtt==2.1.0 && python ha_simulator.py --docker"]

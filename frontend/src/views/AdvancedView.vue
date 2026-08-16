@@ -572,7 +572,8 @@ async function toggleSimulator() {
     const action = simulator.value.running ? 'stop' : 'start'
     const data = await apiPost(`/api/simulator/${action}`, {})
     if (data && data.ok === false) {
-      simulatorError.value = '操作失败，请检查 docker 服务状态'
+      // 优先展示服务端给出的具体原因（如容器未创建时的首次启用命令）
+      simulatorError.value = data.hint || '操作失败，请检查 docker 服务状态'
     }
     await loadSimulatorStatus()
   } catch (e) {
@@ -701,8 +702,11 @@ onUnmounted(() => {
               <span class="label-text">模拟器 + MQTT broker</span>
               <span class="label-desc">
                 关闭后虚拟设备（灯/空调/窗帘等）全部下线，
-                <template v-if="simulator.available">当前：{{ simulator.running ? '运行中' : '已关闭' }}</template>
-                <template v-else>（需 Docker 部署并挂载 docker.sock）</template>
+                <template v-if="!simulator.available">（需 Docker 部署并挂载 docker.sock）</template>
+                <template v-else-if="simulator.simulator && simulator.simulator.exists === false">
+                  默认关闭：首次启用在主机执行 docker compose --profile simulator up -d simulator，之后可在此开关
+                </template>
+                <template v-else>当前：{{ simulator.running ? '运行中' : '已关闭' }}</template>
               </span>
             </div>
             <BaseToggle

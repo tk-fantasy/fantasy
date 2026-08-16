@@ -9,7 +9,7 @@ Aether 编排四个容器，都定义在 `docker-compose.yml` 里：
 1. **aether**——后端主服务（API + WebSocket + 前端页面），Dockerfile 构建
 2. **Home Assistant（智能家居大脑）**——管理所有智能设备，Aether 通过它的 API 控制全屋
 3. **Mosquitto MQTT（消息中转）**——一个"消息邮局"，虚拟设备把状态发到这里，HA 从这里接收
-4. **aether-simulator（虚拟设备模拟器）**——通过 MQTT 往 HA 上报 10 个演示设备（灯/空调/窗帘等），接真实设备后可在「高级」页一键停掉
+4. **aether-simulator（虚拟设备模拟器）**——**默认不启动**（生产环境不该有假设备）。首次启用：`docker compose --profile simulator up -d simulator`，之后可在「高级」页一键启停；接真实设备后建议保持关闭
 
 > 另有**可选的第五个服务 Ollama**（本地模型，默认不启动）：`docker compose --profile local-llm up -d ollama` 启动，用于纯内网零出网部署，详见《本地 Ollama 模型部署》。
 >
@@ -79,8 +79,8 @@ http://localhost:8123
 ### 第一次进 HA 要做的事
 
 - 如果是新启动的数据卷，HA 会让你创建管理员账号——随便填，这是 HA 自己的账号，和 Aether 的登录账号没关系
-- 进去后应该能看到一些虚拟设备（灯、空调等），它们是 `ha_simulator.py` 模拟器通过 MQTT 报上来的
-- 确认设备列表不空，说明 MQTT 链路通了
+- 全新安装默认没有虚拟设备（模拟器默认关闭，见下节）；若已启用模拟器，应能看到灯/空调等演示设备
+- 接入真实设备后确认列表不空，说明 MQTT 链路通了
 
 ## 虚拟设备模拟器
 
@@ -90,7 +90,13 @@ Aether 自带一个虚拟设备模拟器 `ha_config/ha_simulator.py`，它通过
 conda run -n yolo python ha_config\ha_simulator.py
 ```
 
-`docker compose up -d` 会自动启动它，日志在 `logs/ha_simulator.log`。
+Docker 部署默认**不启动**（compose profile 隔离）。首次启用：
+
+```powershell
+docker compose --profile simulator up -d simulator
+```
+
+启用后「高级配置 → 虚拟设备」开关即可随时启停（对已创建容器做 docker start/stop）。日志在 `logs/ha_simulator.log`。
 
 ## 配置文件位置
 
@@ -117,7 +123,7 @@ connection_messages true
 A：官方镜像会自动拉取；报错一般是网络问题（国内拉 Docker Hub 慢/超时）。重试、换镜像加速源，或确认镜像名正确。
 
 **Q：HA 打开了但没设备？**
-A：模拟器没启动。检查 `logs/ha_simulator.log`，或手动跑 `ha_simulator.py`。
+A：模拟器默认关闭。启用：`docker compose --profile simulator up -d simulator`（或本地手动跑 `ha_simulator.py`）。检查 `logs/ha_simulator.log`。
 
 **Q：8123 端口被占？**
 A：可能是上次 HA 没关干净。`docker compose down` 后再 `up`，或关掉占用 8123 的其他程序。

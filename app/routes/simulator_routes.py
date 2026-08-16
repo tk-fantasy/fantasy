@@ -154,8 +154,12 @@ async def simulator_start(container: AppContainer = Depends(get_container), admi
     ok = bool(mqtt.get("ok")) and bool(sim.get("ok"))
     if ok:
         await _refresh_device_views(container)
+    # 模拟器容器不存在（compose profile 默认不启动）：给出首次启用命令
+    hint = ""
+    if not sim.get("ok") and "容器不存在" in str(sim.get("error", "")):
+        hint = "首次启用需先在主机执行一次：docker compose --profile simulator up -d simulator"
     return ApiResponse(
         code="ok" if ok else "partial",
-        message="已启动" if ok else "部分失败",
-        data={"ok": ok, "simulator": sim, "mqtt": mqtt},
+        message="已启动" if ok else (hint or "部分失败"),
+        data={"ok": ok, "simulator": sim, "mqtt": mqtt, **({"hint": hint} if hint else {})},
     )
