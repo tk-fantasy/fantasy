@@ -85,6 +85,25 @@ def _classify_url(base_url: str) -> dict:
     }
 
 
+def assert_endpoint_allowed(base_url: str) -> None:
+    """local 模式下拒绝公网模型端点（密钥保存/测试卡点，硬拦截）。
+
+    hybrid/cloud 不拦（hybrid 的敏感角色仅警告，见 warnings_for）。
+    切回云端/混合模式后立刻放行，不锁死。
+    """
+    mode = get_mode()
+    if mode != "local":
+        return
+    host = urlparse((base_url or "").strip()).hostname or ""
+    if host and not is_private_host(host):
+        raise AppException(
+            f"纯内网模式下不允许使用公网端点（{host}）。"
+            "请改用内网模型端点（如内置 Ollama http://ollama:11434/v1），"
+            "或到「高级设置 → 数据出网模式」切换回云端/混合模式",
+            code="egress_local_blocked", http_status=400,
+        )
+
+
 def endpoint_report() -> list[dict]:
     """按角色报告当前生效模型端点的内外网归属（不解析密钥）。"""
     providers = get_config("providers", {}) or {}

@@ -11,6 +11,7 @@ import logging
 from fastapi import APIRouter, Depends
 from urllib.parse import urlparse
 
+from ..services import egress_service
 from ..container import AppContainer, get_container
 from ..core.api_models import ApiResponse
 from ..core.auth import get_current_user
@@ -64,6 +65,7 @@ async def upsert_llm_key_route(
 ) -> ApiResponse[list[dict]]:
     """添加或更新 LLM Key。新增时自动测试连接。"""
     base_url = payload.base_url.strip()
+    egress_service.assert_endpoint_allowed(base_url)  # 纯内网模式硬拦截公网端点
     model = payload.model.strip()
     model_type = payload.type.strip()
     api_key = payload.api_key.strip()

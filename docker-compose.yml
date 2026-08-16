@@ -89,6 +89,19 @@ services:
         condition: service_started
     restart: unless-stopped
 
+  # 纯内网本地模型（可选，默认不启动）：
+  #   docker compose --profile local-llm up -d ollama        # 启动
+  #   docker exec aether-ollama ollama pull qwen3:8b          # 拉模型（按需选）
+  # 之后在「API Keys」把各角色 base_url 填 http://ollama:11434/v1（OpenAI 兼容），
+  # 高级设置 → 数据出网模式 切「纯内网」，即完成零出网配置。
+  ollama:
+    container_name: aether-ollama
+    image: ollama/ollama:latest
+    profiles: ["local-llm"]
+    volumes:
+      - ollama:/root/.ollama
+    restart: unless-stopped
+
   simulator:
     # 虚拟设备模拟器：通过 MQTT 往 HA 报告灯/空调/窗帘等设备状态
     container_name: aether-simulator
@@ -108,3 +121,4 @@ services:
 
 volumes:
   aether-data:
+  ollama:

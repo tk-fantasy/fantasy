@@ -1190,8 +1190,10 @@ onUnmounted(() => {
           ⚠️ {{ egressWarnings.join('；') }}
         </p>
         <p class="egress-hint">
-          纯内网模式：在内网任意机器（如 Mac 上的 Ollama / LM Studio、自建 vLLM）
-          发布 OpenAI 兼容端点，到「API Keys」里把各角色 base_url 指过去即可。
+          纯内网模式：到「API Keys」把各角色 base_url 指向 OpenAI 兼容的内网端点即可。<br />
+          内置 Ollama：<code>docker compose --profile local-llm up -d ollama</code> 启动后填
+          <code>http://ollama:11434/v1</code>；也可用内网其他机器（Mac 上的 Ollama / LM Studio、自建 vLLM）。<br />
+          切到纯内网后，保存公网端点会被拒绝（硬拦截，切回云端/混合立刻放行）。
         </p>
         <div class="modal-save-bar">
           <button class="btn-primary" :class="{ saved: egressSaved }" @click="saveEgressMode" :disabled="egressSaving">

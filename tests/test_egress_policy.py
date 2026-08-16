@@ -134,6 +134,36 @@ class TestWarnings:
         assert es.warnings_for(report, "cloud") == []
 
 
+# ==================== 纯内网硬拦截（保存卡点） ====================
+
+class TestAssertEndpointAllowed:
+    def test_local_mode_rejects_public(self):
+        with patch.object(es, "get_config", return_value="local"):
+            with pytest.raises(AppException) as ei:
+                es.assert_endpoint_allowed("https://api.openai.com/v1")
+        assert ei.value.http_status == 400
+        assert ei.value.code == "egress_local_blocked"
+
+    @pytest.mark.parametrize("url", [
+        "http://ollama:11434/v1",           # 内置 Ollama（服务名单标签）
+        "http://192.168.1.20:11434/v1",     # 内网 IP
+        "http://localhost:8000/v1",
+    ])
+    def test_local_mode_allows_private(self, url):
+        with patch.object(es, "get_config", return_value="local"):
+            es.assert_endpoint_allowed(url)  # 不抛即通过
+
+    @pytest.mark.parametrize("mode", ["cloud", "hybrid"])
+    def test_other_modes_never_block(self, mode):
+        with patch.object(es, "get_config", return_value=mode):
+            es.assert_endpoint_allowed("https://api.openai.com/v1")
+
+    def test_empty_url_ignored(self):
+        # 空 base_url 由各路由自身的必填校验处理，这里不重复拦
+        with patch.object(es, "get_config", return_value="local"):
+            es.assert_endpoint_allowed("")
+
+
 # ==================== 声明确认 ====================
 
 class TestConfirmDeclaration:
