@@ -2,7 +2,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuth } from '../composables/useAuth'
-import { useEgressMode } from '../composables/useEgressMode'
+import { EGRESS_MODES } from '../composables/useEgressMode'
 
 const router = useRouter()
 const { user } = useAuth()
@@ -50,7 +50,7 @@ const haForm = ref({
 
 // Step 4: 数据出网模式声明（09 清单条目 4）
 // 模式列表与文案统一维护在 useEgressMode（高级设置弹窗共用）
-const { EGRESS_MODES: egressModes } = useEgressMode()
+const egressModes = EGRESS_MODES
 const egressMode = ref('cloud')
 const egressAcknowledged = ref(false)
 const egressConfirmedExisting = ref(false)  // 已确认过声明（老用户升级场景）

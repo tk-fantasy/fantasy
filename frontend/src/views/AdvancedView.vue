@@ -4,7 +4,7 @@ import FlowSelect from '../components/FlowSelect.vue'
 import AdvancedModal from '../components/AdvancedModal.vue'
 import BaseToggle from '../components/BaseToggle.vue'
 import { apiGet, apiPost } from '../utils/api'
-import { useEgressMode } from '../composables/useEgressMode'
+import { EGRESS_MODES, useEgressMode } from '../composables/useEgressMode'
 
 // ===== Modal 管理 =====
 const activeModal = ref(null) // 'weather' | 'exa' | 'camparams' | 'ha' | 'unique' | 'keys' | 'automation' | 'egress'
@@ -303,6 +303,59 @@ async function testVision() {
   }
 }
 
+
+// ===== 自动化保存 =====
+async function saveAutomation() {
+  automationSaving.value = true
+  automationSaved.value = false
+  try {
+    await Promise.all([
+      apiPost('/api/automation/silent', {
+        enabled: automationConfig.value.silent_eval_enabled,
+        interval_seconds: automationConfig.value.silent_eval_interval_seconds,
+      }),
+      apiPost('/api/automation/cooldown', {
+        cooldown_seconds: automationConfig.value.default_cooldown_seconds,
+      }),
+      apiPost('/api/automation/dhash-threshold', {
+        threshold: automationConfig.value.motion_threshold,
+      }),
+    ])
+    await loadAll()
+    automationSaved.value = true
+    setTimeout(() => { automationSaved.value = false }, 2000)
+  } catch (e) {
+    console.error('Failed to save automation config:', e)
+  } finally {
+    automationSaving.value = false
+  }
+}
+
+// ===== 数据出网模式 =====
+const { egressMode, egressLabel, egressWarnings, loadEgressMode } = useEgressMode()
+const egressModeOptions = EGRESS_MODES
+const egressDraftMode = ref('cloud')   // 弹窗里的未保存选择
+const egressSaving = ref(false)
+const egressSaved = ref(false)
+
+function openEgressModal() {
+  egressDraftMode.value = egressMode.value
+  openModal('egress')
+}
+
+async function saveEgressMode() {
+  egressSaving.value = true
+  try {
+    await apiPost('/api/egress', { mode: egressDraftMode.value })
+    await loadEgressMode()
+    egressSaved.value = true
+    setTimeout(() => { egressSaved.value = false }, 2000)
+  } catch (e) {
+    console.error('Failed to save egress mode:', e)
+  } finally {
+    egressSaving.value = false
+  }
+}
 
 // ===== 摄像头参数保存(运动检测+推理间隔走 vision 全局) =====
 const camParamsSaving = ref(false)
