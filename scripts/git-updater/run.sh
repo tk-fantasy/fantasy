@@ -18,6 +18,14 @@ export GIT_TERMINAL_PROMPT=0
 # 挂载进来的仓库属于宿主用户（UID 与容器内 root 不同），
 # 不声明 safe.directory git 会以 dubious ownership 拒绝所有操作
 git config --global --add safe.directory /repo
+# 宿主为 Windows 开发机时工作树是 CRLF，容器内 git 默认不转换会误报"工作树脏"；
+# input = 比对时按 LF 归一，对 Linux 部署（文件本就是 LF）无影响
+git config --global core.autocrlf input
+
+# compose 项目名必须与要升级的现有栈一致：否则 /repo 目录名推导出项目 "repo"，
+# 会另起一套容器（端口冲突）而不是升级现有 aether 栈。从运行中容器的 label 读真实项目名。
+PROJECT=$(docker inspect aether --format '{{ index .Config.Labels "com.docker.compose.project" }}' 2>/dev/null | tr -d '\r\n')
+[ -n "$PROJECT" ] && export COMPOSE_PROJECT_NAME="$PROJECT"
 
 # 令牌经 GIT_ASKPASS 注入（不进命令行、不进 git config，进程列表与配置文件都看不到）
 ASKPASS="$(mktemp)"
@@ -48,8 +56,8 @@ if [ "$MODE" = "check" ]; then
     exit 0
   fi
   head_sha=$(git rev-parse HEAD)
-  up_sha=$(git rev-parse @{u} 2>/dev/null || echo "")
-  [ -n "$up_sha" ] || up_sha=$(git rev-parse origin/HEAD)
+  # upstream 优先；老仓库（push 而非 clone 建立）没有 origin/HEAD，退回 origin/master
+  up_sha=$(git rev-parse @{u} 2>/dev/null || git rev-parse origin/master 2>/dev/null || git rev-parse origin/HEAD)
   if [ "$head_sha" = "$up_sha" ]; then
     jq -n --arg c "$(git rev-parse --short HEAD)" \
       '{status:"up_to_date", current_commit:$c}' > "$RESULT_FILE"
