@@ -150,11 +150,8 @@ async function confirmRestore() {
 
 // ============ 版本与升级 ============
 const versionInfo = ref(null)
-const uploadPercent = ref(-1)   // -1 未上传
-const upgrading = ref(false)
 const upgradeMessage = ref('')
 const upgradeResult = ref(null)
-const fileInput = ref(null)
 
 async function loadVersion() {
   try {
@@ -162,63 +159,6 @@ async function loadVersion() {
   } catch (e) {
     console.error('Failed to load version:', e)
   }
-}
-
-function pickFile() {
-  if (versionInfo.value?.docker_socket === 'False') {
-    upgradeMessage.value = 'docker.sock 不可用：请按部署文档挂载后再升级（或用 scripts/upgrade.sh）'
-    return
-  }
-  fileInput.value?.click()
-}
-
-/** XHR 上传（fetch 拿不到进度，升级包可达 GB 级必须有进度条） */
-function onFileChosen(ev) {
-  const file = ev.target.files?.[0]
-  ev.target.value = ''
-  if (!file) return
-  if (!file.name.startsWith('aether-update-') || !file.name.endsWith('.tar.gz')) {
-    upgradeMessage.value = '请选择 build-update-pack.py 产出的升级包（aether-update-<版本>.tar.gz）'
-    return
-  }
-  upgrading.value = true
-  upgradeMessage.value = ''
-  upgradeResult.value = null
-  uploadPercent.value = 0
-
-  const xhr = new XMLHttpRequest()
-  xhr.open('POST', '/api/ops/upgrade')
-  xhr.withCredentials = true
-  xhr.upload.onprogress = (p) => {
-    if (p.lengthComputable) uploadPercent.value = Math.round((p.loaded / p.total) * 100)
-  }
-  xhr.onload = () => {
-    upgrading.value = false
-    try {
-      const json = JSON.parse(xhr.responseText)
-      if (xhr.status >= 200 && xhr.status < 300) {
-        upgradeResult.value = json.data
-        uploadPercent.value = 100
-        waitingRestart.value = true
-        pollUntilBack()
-      } else {
-        upgradeMessage.value = json?.message || json?.detail || `升级失败（HTTP ${xhr.status}）`
-        uploadPercent.value = -1
-      }
-    } catch {
-      upgradeMessage.value = `升级失败（HTTP ${xhr.status}）`
-      uploadPercent.value = -1
-    }
-    loadVersion()
-  }
-  xhr.onerror = () => {
-    upgrading.value = false
-    upgradeMessage.value = '上传中断（网络错误）'
-    uploadPercent.value = -1
-  }
-  const fd = new FormData()
-  fd.append('pack', file)
-  xhr.send(fd)
 }
 
 // ============ 在线检查更新（更新源通道） ============
@@ -283,14 +223,88 @@ async function applyUpdate() {
     waitingRestart.value = true
     pollUntilBack()
   } catch (e) {
-    upgradeMessage.value = e?.message || '在线升级失败（可改用上传升级包）'
+    upgradeMessage.value = e?.message || '在线升级失败'
   } finally {
     updateApplying.value = false
   }
 }
 
-// ============ 操作审计 ============
+// ============ git 一键升级（Gitee） ============
+const gitInfo = ref(null)          // GET /ops/update/git
+const gitToken = ref('')
+const gitRepoPath = ref('')
+const gitSaving = ref(false)
+const gitChecking = ref(false)
+const gitCheckInfo = ref(null)     // check 结果
+const gitApplying = ref(false)
+const gitLog = ref('')
+
+async function loadGitSettings() {
+  try {
+    gitInfo.value = await apiGet('/api/ops/update/git')
+    gitRepoPath.value = gitInfo.value?.repo_path || ''
+  } catch (e) {
+    console.error('Failed to load git settings:', e)
+  }
+}
+
+async function saveGitSettings() {
+  gitSaving.value = true
+  try {
+    await apiPost('/api/ops/update/git', { token: gitToken.value.trim(), repo_path: gitRepoPath.value.trim() })
+    gitToken.value = ''   // 不留在输入框
+    gitCheckInfo.value = null
+    await loadGitSettings()
+    loadAudit()
+  } catch (e) {
+    upgradeMessage.value = e?.message || '保存失败'
+  } finally {
+    gitSaving.value = false
+  }
+}
+
+async function checkGitUpdate() {
+  gitChecking.value = true
+  gitCheckInfo.value = null
+  upgradeMessage.value = ''
+  try {
+    gitCheckInfo.value = await apiPost('/api/ops/update/git/check', {})
+  } catch (e) {
+    upgradeMessage.value = e?.message || '检查更新失败'
+    const s = await apiGet('/api/ops/update/git/status').catch(() => null)
+    if (s?.log_tail) gitLog.value = s.log_tail
+  } finally {
+    gitChecking.value = false
+  }
+}
+
+/** git 升级是同步长请求（重建可达数分钟），期间服务会断连：
+ *  请求一发出就盖上重启遮罩，响应/断连都交给 pollUntilBack 处理 */
+async function applyGitUpdate() {
+  const info = gitCheckInfo.value
+  const tip = info?.status === 'available'
+    ? `确定从 Gitee 拉取最新代码并升级？\n当前 ${info.current_commit} → 远程 ${info.remote_commit}（落后 ${info.behind} 个提交）。\n升级会在主机上重新构建镜像（约数分钟），期间服务会重启、页面自动刷新。`
+    : '确定从 Gitee 拉取最新代码并升级？\n升级会在主机上重新构建镜像（约数分钟），期间服务会重启、页面自动刷新。'
+  if (!window.confirm(tip)) return
+  gitApplying.value = true
+  waitingRestart.value = true
+  pollUntilBack(15 * 60 * 1000)
+  try {
+    await apiPost('/api/ops/update/git/apply', {})
+  } catch (e) {
+    // 网络断连（服务重建中）不是失败；真正的失败等 pollUntilBack 后看日志
+    if (e?.message && !/network|fetch|Failed to fetch/i.test(e.message)) {
+      upgradeMessage.value = e?.message || 'git 升级失败'
+      waitingRestart.value = false
+    }
+  } finally {
+    gitApplying.value = false
+  }
+}
+
+
 const auditRows = ref([])
+const auditClearing = ref(false)
 
 async function loadAudit() {
   try {
@@ -300,14 +314,27 @@ async function loadAudit() {
   }
 }
 
+async function clearAudit() {
+  if (!window.confirm('确定清空全部操作审计记录？此操作不可恢复（清空动作本身会留下一条记录）。')) return
+  auditClearing.value = true
+  try {
+    await apiDelete('/api/ops/audit')
+    await loadAudit()
+  } catch (e) {
+    window.alert(e?.message || '清空失败')
+  } finally {
+    auditClearing.value = false
+  }
+}
+
 // ============ 重启等待 ============
 /** 恢复/升级后服务会自动重启：轮询 /api/health 直到回来再刷新页面 */
-function pollUntilBack() {
+function pollUntilBack(timeoutMs = 180000) {
   const started = Date.now()
   const timer = setInterval(async () => {
-    if (Date.now() - started > 180000) {
+    if (Date.now() - started > timeoutMs) {
       clearInterval(timer)
-      restoreMessage.value = '等待超时：请手动刷新页面确认服务状态'
+      restoreMessage.value = '等待超时：请手动刷新页面确认服务状态（git 升级可在 logs/git-update.log 查看进度）'
       waitingRestart.value = false
       return
     }
@@ -334,6 +361,7 @@ onMounted(() => {
   loadVersion()
   loadAudit()
   loadUpdateSettings()
+  loadGitSettings()
 })
 </script>
 
@@ -471,19 +499,76 @@ onMounted(() => {
           <div class="setting-label">
             <span class="label-text">当前版本：v{{ versionInfo?.version || '…' }}</span>
             <span class="label-desc">
-              离线升级：上传 build-update-pack.py 产出的升级包，自动校验 → 导入镜像 → 重启生效。<br />
-              升级前自动核对 sha256 与版本兼容性；失败不影响当前运行。SSH 场景也可用 scripts/upgrade.sh。
+              升级方式：在主机执行 ./scripts/update-from-git.sh —— git 拉取最新代码 → 重建容器 → 健康自检，失败自动回退。<br />
+              也可配置下方更新源在线升级（需挂载 docker.sock）。
             </span>
-          </div>
-          <div>
-            <input ref="fileInput" type="file" accept=".tar.gz" style="display:none" @change="onFileChosen" />
-            <button class="btn-primary" :disabled="upgrading || waitingRestart" @click="pickFile">
-              {{ upgrading ? `上传中 ${uploadPercent}%` : '上传升级包' }}
-            </button>
           </div>
         </div>
 
-        <!-- 在线更新源：配置后可一键检查/升级，地址留空则只用手动上传 -->
+        <!-- git 一键升级（Gitee）：填一次令牌，之后网页上点一下即拉取+重建 -->
+        <div class="setting-row update-source-row">
+          <div class="setting-label">
+            <span class="label-text">git 一键升级（Gitee）
+              <template v-if="gitInfo?.token_configured"><span class="git-token-ok">✓ 令牌已配置</span></template>
+            </span>
+            <span class="label-desc">
+              填一次 Gitee 私有令牌（仓库 → 管理 → 私人令牌，勾选 projects 只读权限即可），
+              之后「检查更新 → 一键升级」自动完成：拉取代码 → 重建容器 → 健康自检，失败自动回退上一提交。
+              <template v-if="gitInfo?.repo_path"><br />仓库：{{ gitInfo.repo_path }}</template>
+              <template v-if="gitInfo?.repo_error"><br /><span class="warn-text">{{ gitInfo.repo_error }}</span></template>
+            </span>
+          </div>
+        </div>
+        <div class="git-controls">
+          <input
+            v-model="gitToken"
+            type="password"
+            class="update-url-input"
+            :placeholder="gitInfo?.token_configured ? '令牌已保存（留空保持不变）' : 'Gitee 私人令牌'"
+            autocomplete="new-password"
+          />
+          <input
+            v-model="gitRepoPath"
+            type="text"
+            class="update-url-input"
+            placeholder="宿主仓库绝对路径（通常自动探测，无需填）"
+          />
+          <button class="btn-secondary" :disabled="gitSaving" @click="saveGitSettings">
+            {{ gitSaving ? '保存中…' : '保存' }}
+          </button>
+          <button
+            class="btn-primary"
+            :disabled="gitChecking || !gitInfo?.token_configured || gitInfo?.docker_socket === 'False'"
+            @click="checkGitUpdate"
+          >{{ gitChecking ? '检查中…' : '检查更新' }}</button>
+          <button
+            v-if="gitCheckInfo?.status === 'available'"
+            class="btn-danger"
+            :disabled="gitApplying || waitingRestart"
+            @click="applyGitUpdate"
+          >{{ gitApplying ? '升级中…' : '一键升级' }}</button>
+        </div>
+
+        <div v-if="gitCheckInfo?.status === 'up_to_date'" class="op-message success">
+          已是最新（{{ gitCheckInfo.current_commit }}），无需更新。
+        </div>
+        <div v-else-if="gitCheckInfo?.status === 'available'" class="update-available">
+          <div class="update-available-head">
+            <span>发现新提交：<b>{{ gitCheckInfo.current_commit }}</b> → <b>{{ gitCheckInfo.remote_commit }}</b>（落后 {{ gitCheckInfo.behind }} 个提交）</span>
+            <button class="btn-danger" :disabled="gitApplying || waitingRestart" @click="applyGitUpdate">
+              {{ gitApplying ? '升级中…' : '一键升级' }}
+            </button>
+          </div>
+        </div>
+        <div v-else-if="gitCheckInfo?.status === 'error'" class="op-message error">
+          {{ gitCheckInfo.message }}
+        </div>
+        <div v-if="gitLog" class="git-log">
+          <div class="git-log-title">最近一次升级日志（logs/git-update.log 尾部）：</div>
+          <pre>{{ gitLog }}</pre>
+        </div>
+
+        <!-- 在线更新源：配置后可一键检查/升级，地址留空则不启用 -->
         <div class="setting-row update-source-row">
           <div class="setting-label">
             <span class="label-text">更新源（可选）</span>
@@ -523,7 +608,7 @@ onMounted(() => {
           </div>
           <p v-if="updateInfo.latest.notes" class="update-notes">{{ updateInfo.latest.notes }}</p>
           <p v-if="updateInfo.docker_socket === false" class="update-notes warn">
-            docker.sock 未挂载，在线升级不可用：请按部署文档挂载，或下载升级包后用「上传升级包」。
+            docker.sock 未挂载，在线升级不可用：请按部署文档挂载，或在主机执行 scripts/update-from-git.sh 升级。
           </p>
         </div>
         <div v-else-if="updateInfo?.status === 'incompatible'" class="op-message error">
@@ -533,10 +618,6 @@ onMounted(() => {
           {{ updateInfo.message }}
         </div>
 
-        <div v-if="upgrading" class="upload-progress">
-          <div class="upload-bar"><div class="upload-fill" :style="{ width: uploadPercent + '%' }"></div></div>
-          <span class="upload-text">{{ uploadPercent }}% · 校验与导入在传输完成后自动进行，请勿关闭页面</span>
-        </div>
         <div v-if="upgradeMessage" class="op-message error">{{ upgradeMessage }}</div>
         <div v-if="upgradeResult" class="op-message success">
           升级包已应用：v{{ upgradeResult.from_version }} → v{{ upgradeResult.to_version }}，服务重启中。
@@ -560,7 +641,12 @@ onMounted(() => {
     <section class="setting-section">
       <h2 class="section-title"><span class="section-icon">&#128220;</span> 操作审计</h2>
       <div class="setting-card">
-        <div class="op-muted" style="margin-bottom:8px">谁、何时、执行了什么运维操作（最近 50 条，交付验收依据）</div>
+        <div class="setting-row" style="margin-bottom:8px">
+          <div class="op-muted">谁、何时、执行了什么运维操作（最近 50 条）</div>
+          <button class="btn-mini danger" :disabled="auditClearing || !auditRows.length" @click="clearAudit">
+            {{ auditClearing ? '清理中…' : '一键清空' }}
+          </button>
+        </div>
         <table v-if="auditRows.length" class="diag-table">
           <thead><tr><th>时间</th><th>操作人</th><th>动作</th><th>详情</th></tr></thead>
           <tbody>
@@ -700,22 +786,6 @@ onMounted(() => {
 .restore-body { font-size: var(--text-sm); line-height: 1.7; margin-bottom: var(--space-12); }
 .restore-actions { display: flex; justify-content: flex-end; gap: var(--space-12); }
 
-/* 上传进度 */
-.upload-progress { margin-top: var(--space-12); }
-.upload-bar {
-  height: 8px;
-  background: var(--color-border);
-  border-radius: 4px;
-  overflow: hidden;
-  margin-bottom: var(--space-6);
-}
-.upload-fill {
-  height: 100%;
-  background: var(--color-primary);
-  transition: width 0.3s;
-}
-.upload-text { font-size: var(--text-xs); color: var(--color-text-secondary); }
-
 /* 在线更新源 */
 .btn-secondary {
   padding: var(--space-8) var(--space-16);
@@ -770,6 +840,41 @@ onMounted(() => {
   line-height: 1.6;
 }
 .update-notes.warn { color: var(--color-warning); }
+
+/* git 一键升级 */
+.git-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  flex-wrap: wrap;
+  margin-top: var(--space-8);
+  padding-top: var(--space-8);
+  border-top: 1px dashed var(--color-border);
+}
+.git-token-ok {
+  margin-left: var(--space-8);
+  font-size: var(--text-xs);
+  font-weight: normal;
+  color: var(--color-success);
+}
+.warn-text { color: var(--color-warning); }
+.git-log {
+  margin-top: var(--space-12);
+  padding: var(--space-12);
+  background: var(--color-bg);
+  border-radius: var(--radius-md);
+}
+.git-log-title { font-size: var(--text-xs); color: var(--color-text-tertiary); margin-bottom: var(--space-6); }
+.git-log pre {
+  margin: 0;
+  font-size: var(--text-xs);
+  font-family: monospace;
+  color: var(--color-text-secondary);
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 240px;
+  overflow-y: auto;
+}
 
 /* 重启遮罩 */
 .restart-overlay {

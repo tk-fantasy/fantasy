@@ -4,32 +4,37 @@
 - GET  /api/ops/diagnostics      下载脱敏诊断包 zip（操作写审计）
 - POST /api/ops/diagnose         跑部署体检，返回结构化报告
 - GET  /api/ops/audit            最近运维审计记录
+- DELETE /api/ops/audit          清空审计日志（清空动作本身会留一条记录）
 - GET  /api/ops/version          当前版本 + 升级历史
 - POST /api/ops/backups          立即备份（应用侧，保留 3 份）
 - GET  /api/ops/backups          备份列表
 - DELETE /api/ops/backups/{name} 删除备份
 - GET  /api/ops/backups/{name}/validate  恢复前预检（内容清单）
 - POST /api/ops/backups/{name}/restore   恢复并自动重启（需 confirm=true）
-- POST /api/ops/upgrade          上传升级包（multipart），校验+load+自重启
 - GET  /api/ops/update/check     在线检查更新（对比配置的更新源）
 - GET  /api/ops/update/settings  读更新源地址（config.json update.manifest_url）
 - POST /api/ops/update/settings  写更新源地址（写审计）
 - POST /api/ops/update/apply     一键升级：下载更新源升级包 → 校验 → load → 自重启
+- GET  /api/ops/update/git       git 一键升级配置（令牌只回 configured，不回明文）
+- PUT  /api/ops/update/git       保存 Gitee 访问令牌（写审计，不回显）
+- POST /api/ops/update/git/check   git 检查更新（fetch + 比对 commit）
+- POST /api/ops/update/git/apply   git 一键升级（拉取→重建→健康自检→失败回退）
+- GET  /api/ops/update/git/status  git 升级最近结果与日志尾
 """
 from __future__ import annotations
 
 import logging
-import shutil
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel
+import httpx
 
 from ..core.api_models import ApiResponse
 from ..core.auth import get_current_admin
 from ..core.exceptions import AppException
 from ..core.version import get_version
-from ..ops import audit, backup, diagnose, update_channel, upgrade
+from ..ops import audit, backup, diagnose, git_update, update_channel, upgrade
 from ..ops.diag import build_diagnostic_package
 
 logger = logging.getLogger(__name__)
@@ -66,6 +71,17 @@ async def recent_audit(
     return ApiResponse(data=audit.tail(limit=50))
 
 
+@router.delete("/ops/audit")
+async def clear_audit(
+    current_user: dict = Depends(get_current_admin),
+) -> ApiResponse[dict]:
+    """清空审计日志。清空动作本身立即记一条 audit_clear（谁清的、清了多少条）。"""
+    operator = current_user.get("username") or current_user["user_id"]
+    removed = await _run_in_executor(audit.clear)
+    audit.record(operator, "audit_clear", {"removed_entries": removed})
+    return ApiResponse(data={"cleared": True, "removed": removed})
+
+
 # ==================== 部署体检 ====================
 
 @router.post("/ops/diagnose")
@@ -91,29 +107,6 @@ async def version_info(
         "docker_socket": str(upgrade.DOCKER_SOCK.exists()),
         "history": upgrade.upgrade_history(),
     })
-
-
-@router.post("/ops/upgrade")
-async def upload_upgrade(
-    pack: UploadFile = File(...),
-    current_user: dict = Depends(get_current_admin),
-) -> ApiResponse[dict]:
-    """上传升级包（tar.gz，含镜像与 manifest）→ 校验 → docker load → 自动重启。"""
-    operator = current_user.get("username") or current_user["user_id"]
-    tmp_dir = upgrade.make_temp_pack_dir()
-    tmp_file = tmp_dir / (pack.filename or "pack.tar.gz")
-    try:
-        # 流式落盘（镜像包可达 GB 级，不能进内存）
-        with tmp_file.open("wb") as f:
-            while chunk := await pack.read(8 * 1024 * 1024):
-                f.write(chunk)
-        result = await upgrade.apply_upgrade(tmp_file, operator)
-        return ApiResponse(data=result)
-    except (ValueError, RuntimeError) as e:
-        logger.warning("Upgrade rejected/failed: %s", e)
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 # ==================== 在线检查更新与一键升级 ====================
@@ -158,6 +151,81 @@ async def apply_update_from_channel(
         logger.warning("Channel upgrade rejected/failed: %s", e.message)
         raise HTTPException(status_code=e.http_status or 400, detail=e.message) from e
     return ApiResponse(data=result)
+
+
+# ==================== git 一键升级 ====================
+
+class GitTokenRequest(BaseModel):
+    token: str = ""
+    repo_path: str = ""
+
+
+@router.get("/ops/update/git")
+async def get_git_update_settings(
+    current_user: dict = Depends(get_current_admin),
+) -> ApiResponse[dict]:
+    try:
+        repo_path = await git_update.resolve_repo_path()
+        repo_error = ""
+    except AppException as e:
+        repo_path, repo_error = "", e.message
+    return ApiResponse(data={
+        "token_configured": git_update.get_git_token() != "",
+        "repo_path": repo_path,
+        "repo_error": repo_error,
+        "docker_socket": str(upgrade.DOCKER_SOCK.exists()),
+    })
+
+
+@router.put("/ops/update/git")
+async def set_git_update_settings(
+    payload: GitTokenRequest,
+    current_user: dict = Depends(get_current_admin),
+) -> ApiResponse[dict]:
+    operator = current_user.get("username") or current_user["user_id"]
+    if payload.repo_path:
+        update_config_section("update", {"git_repo_path": payload.repo_path.strip()})
+    configured = git_update.set_git_token(payload.token)
+    audit.record(
+        operator, "git_update_settings",
+        {"token": "已配置" if configured else "(清空)",
+         "repo_path": payload.repo_path or "(未改)"},
+    )
+    return ApiResponse(data={"token_configured": configured})
+
+
+@router.post("/ops/update/git/check")
+async def check_git_update_route(
+    current_user: dict = Depends(get_current_admin),
+) -> ApiResponse[dict]:
+    try:
+        result = await git_update.check_git_update()
+    except AppException as e:
+        raise HTTPException(status_code=e.http_status or 400, detail=e.message) from e
+    except (RuntimeError, httpx.HTTPError) as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+    return ApiResponse(data=result)
+
+
+@router.post("/ops/update/git/apply")
+async def apply_git_update_route(
+    current_user: dict = Depends(get_current_admin),
+) -> ApiResponse[dict]:
+    operator = current_user.get("username") or current_user["user_id"]
+    try:
+        result = await git_update.apply_git_update(operator)
+    except AppException as e:
+        raise HTTPException(status_code=e.http_status or 400, detail=e.message) from e
+    except (RuntimeError, httpx.HTTPError) as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+    return ApiResponse(data=result)
+
+
+@router.get("/ops/update/git/status")
+async def git_update_status_route(
+    current_user: dict = Depends(get_current_admin),
+) -> ApiResponse[dict]:
+    return ApiResponse(data=await git_update.status_git_update())
 
 
 # ==================== 备份与恢复 ====================

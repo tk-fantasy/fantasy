@@ -519,6 +519,7 @@ Exa 搜索 Key 在此页配置（**不是** `/models` 页），无环境变量�
 | GET | `/api/ops/diagnostics` | JWT + 管理员 | 下载脱敏诊断包（zip） |
 | POST | `/api/ops/diagnose` | JWT + 管理员 | 运行部署体检，返回结构化报告 |
 | GET | `/api/ops/audit` | JWT + 管理员 | 最近运维审计记录（最多 50 条） |
+| DELETE | `/api/ops/audit` | JWT + 管理员 | 清空审计日志（清空动作留一条 audit_clear 记录） |
 
 **诊断包内容**：
 - 脱敏后的 `config.json`（密钥字段打码）
@@ -536,7 +537,10 @@ Exa 搜索 Key 在此页配置（**不是** `/models` 页），无环境变量�
 | 方法 | 路径 | 认证 | 说明 |
 | --- | --- | --- | --- |
 | GET | `/api/ops/version` | JWT + 管理员 | 当前版本 + 升级历史 |
-| POST | `/api/ops/upgrade` | JWT + 管理员 | 上传升级包（multipart，tar.gz） |
+| GET/PUT | `/api/ops/update/git` | JWT + 管理员 | git 一键升级配置（Gitee 令牌只回 configured，不回明文） |
+| POST | `/api/ops/update/git/check` | JWT + 管理员 | git 检查更新（fetch + 比对当前/远程 commit） |
+| POST | `/api/ops/update/git/apply` | JWT + 管理员 | git 一键升级（拉取→重建→健康自检→失败回退，长请求） |
+| GET | `/api/ops/update/git/status` | JWT + 管理员 | git 升级最近结果 + 日志尾 |
 
 ```jsonc
 // GET /api/ops/version 返回

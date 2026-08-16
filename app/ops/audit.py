@@ -38,6 +38,19 @@ def record(operator: str, action: str, detail: dict[str, Any] | None = None) -> 
     return entry
 
 
+def clear() -> int:
+    """清空审计日志，返回清除的条目数（文件不存在返回 0）。"""
+    with _lock:
+        try:
+            if not AUDIT_FILE.exists():
+                return 0
+            lines = AUDIT_FILE.read_text(encoding="utf-8").splitlines()
+            AUDIT_FILE.write_text("", encoding="utf-8")
+            return len([line for line in lines if line.strip()])
+        except OSError:
+            return 0
+
+
 def tail(limit: int = 50) -> list[dict[str, Any]]:
     """读最近 limit 条审计记录（新的在后）。文件不存在返回空列表。"""
     if not AUDIT_FILE.exists():

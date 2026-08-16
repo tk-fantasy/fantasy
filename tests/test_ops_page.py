@@ -215,6 +215,19 @@ class TestUpgradeHistory:
         assert history[0]["to_version"] == "1.2.0"  # 新的在前
 
 
+class TestAuditClear:
+    def test_clear_returns_count_and_empties(self, tmp_path, monkeypatch):
+        from app.ops import audit
+
+        monkeypatch.setattr(audit, "AUDIT_DIR", tmp_path)
+        monkeypatch.setattr(audit, "AUDIT_FILE", tmp_path / "ops_audit.jsonl")
+        audit.record("t", "diagnose_run")
+        audit.record("t", "backup_create")
+        assert audit.clear() == 2
+        assert audit.tail() == []
+        assert audit.clear() == 0  # 再清（文件已空）返回 0 不抛错
+
+
 # ==================== 体检目标映射 ====================
 
 class TestDiagnoseTargets:

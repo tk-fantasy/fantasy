@@ -4,7 +4,7 @@
 # 用法（仓库根目录）：./scripts/update-from-git.sh
 # 前提：私库已配好只读部署公钥（Gitee/GitHub 仓库级 Deploy Key，见 docs）
 # 流程：干净树检查 → pull → 重建 → 健康自检 → 失败自动回退上一 commit 重建
-# 说明：升级包通道（upgrade.sh / 运维页）面向交付场景；本脚本面向开发者自用，
+# 说明：升级包通道（upgrade.sh / 运维页在线更新源）面向交付场景；本脚本面向开发者自用，
 #       两者互不干扰。升级记录同样写入 backups/upgrade-history.jsonl，
 #       运维页「升级历史」能看到 git 更新。
 set -euo pipefail

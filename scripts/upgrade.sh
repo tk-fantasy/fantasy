@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Aether 离线升级脚本（09 清单条目 2）—— 客户侧（树莓派）命令行版
 #
-# 与运维页「上传升级包」按钮等价（按钮走 Docker API，本脚本走 docker CLI），
-# 适合远程 SSH 操作或应用起不来的场景。
+# 命令行版离线升级（走 docker CLI），适合远程 SSH 操作或应用起不来的场景，
+# 与运维页在线更新源通道互为补充。
 #
 # 用法：把升级包拷到仓库目录（含 docker-compose.yml 的目录），执行：
 #     ./scripts/upgrade.sh aether-update-1.0.1.tar.gz
