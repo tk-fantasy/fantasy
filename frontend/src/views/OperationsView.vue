@@ -303,6 +303,76 @@ async function applyGitUpdate() {
 }
 
 
+// ============ 升级包分发（导出 / 本地安装） ============
+// 发布方：导出当前运行版本为升级包，浏览器下载后微信/网盘发给接收方
+const packExport = ref(null)        // /update-pack/export/status
+let packExportTimer = null
+
+const packExportPercent = computed(() => {
+  const s = packExport.value
+  if (!s?.total_bytes) return 0
+  return Math.min(100, Math.round((s.staged_bytes / s.total_bytes) * 100))
+})
+
+async function pollPackExport() {
+  try {
+    packExport.value = await apiGet('/api/ops/update-pack/export/status')
+  } catch (e) {
+    console.error('Failed to poll pack export:', e)
+  }
+  const s = packExport.value
+  if (s?.status === 'running') {
+    packExportTimer = setTimeout(pollPackExport, 2000)
+  } else if (s?.status === 'done' || s?.status === 'error') {
+    clearTimeout(packExportTimer)
+    loadAudit()
+  }
+}
+
+async function startPackExport() {
+  try {
+    await apiPost('/api/ops/update-pack/export', {})
+    pollPackExport()
+  } catch (e) {
+    upgradeMessage.value = e?.message || '导出启动失败'
+  }
+}
+
+// 接收方：把收到的包放进 Aether/backups/，这里识别并一键安装
+const localPacks = ref([])
+const localPacksLoading = ref(false)
+const installingPack = ref('')
+
+async function loadLocalPacks() {
+  localPacksLoading.value = true
+  try {
+    localPacks.value = await apiGet('/api/ops/update-pack/local')
+  } catch (e) {
+    console.error('Failed to load local packs:', e)
+  } finally {
+    localPacksLoading.value = false
+  }
+}
+
+async function installPack(name) {
+  if (!window.confirm(
+    `确定安装升级包 ${name}？\n` +
+    '系统会自动校验（sha256 / 版本兼容）→ 导入镜像 → 重启服务，安装成功后自动删除该包。'
+  )) return
+  installingPack.value = name
+  upgradeMessage.value = ''
+  try {
+    await apiPost(`/api/ops/update-pack/local/${encodeURIComponent(name)}/apply`, {})
+    waitingRestart.value = true
+    pollUntilBack()
+  } catch (e) {
+    upgradeMessage.value = e?.message || '安装失败（校验不通过或 docker 异常）'
+  } finally {
+    installingPack.value = ''
+  }
+}
+
+
 const auditRows = ref([])
 const auditClearing = ref(false)
 
@@ -362,6 +432,8 @@ onMounted(() => {
   loadAudit()
   loadUpdateSettings()
   loadGitSettings()
+  pollPackExport()      // 恢复上次未完成的导出进度轮询
+  loadLocalPacks()
 })
 </script>
 
@@ -637,6 +709,80 @@ onMounted(() => {
       </div>
     </section>
 
+    <!-- 升级包分发：发布方导出 / 接收方本地安装 -->
+    <section class="setting-section">
+      <h2 class="section-title"><span class="section-icon">&#128229;</span> 升级包分发</h2>
+      <div class="setting-card">
+        <div class="setting-row">
+          <div class="setting-label">
+            <span class="label-text">导出当前版本（发给别人）</span>
+            <span class="label-desc">
+              把当前运行的版本打成升级包（含镜像 + 校验信息），下载后微信/网盘发给对方。<br />
+              对方收到后放入其服务器 Aether/backups/ 目录，在下方「安装收到的升级包」一键安装。
+            </span>
+          </div>
+          <div class="pack-export-actions">
+            <button
+              v-if="packExport?.status === 'done'"
+              class="btn-secondary"
+              @click="loadLocalPacks"
+            >刷新列表</button>
+            <a
+              v-if="packExport?.status === 'done'"
+              class="btn-primary pack-download-btn"
+              href="/api/ops/update-pack/download"
+            >下载 {{ packExport.file }}</a>
+            <button
+              v-else
+              class="btn-primary"
+              :disabled="packExport?.status === 'running'"
+              @click="startPackExport"
+            >{{ packExport?.status === 'running' ? `导出中 ${packExportPercent}%` : '一键导出升级包' }}</button>
+          </div>
+        </div>
+        <div v-if="packExport?.status === 'running'" class="upload-progress">
+          <div class="upload-bar"><div class="upload-fill" :style="{ width: packExportPercent + '%' }"></div></div>
+          <span class="upload-text">正在导出镜像（{{ fmtSize(packExport.staged_bytes) }}{{ packExport.total_bytes ? ' / ' + fmtSize(packExport.total_bytes) : '' }}），导出+压缩约需数分钟，请勿关闭页面</span>
+        </div>
+        <div v-if="packExport?.status === 'error'" class="op-message error">
+          导出失败：{{ packExport.error }}
+        </div>
+
+        <div class="setting-row" style="margin-top:16px">
+          <div class="setting-label">
+            <span class="label-text">安装收到的升级包</span>
+            <span class="label-desc">
+              把收到的 aether-update-*.tar.gz 放到本服务器 Aether/backups/ 目录（即备份列表同目录），点刷新识别后安装。<br />
+              自动校验 sha256 与版本兼容性 → 导入镜像 → 重启生效，安装成功后自动删除包文件。
+            </span>
+          </div>
+          <button class="btn-secondary" :disabled="localPacksLoading" @click="loadLocalPacks">
+            {{ localPacksLoading ? '扫描中…' : '刷新列表' }}
+          </button>
+        </div>
+        <div v-if="localPacks.length" class="diag-table-wrap">
+          <table class="diag-table">
+            <thead><tr><th>升级包</th><th>大小</th><th>放入时间</th><th style="width:120px">操作</th></tr></thead>
+            <tbody>
+              <tr v-for="p in localPacks" :key="p.name">
+                <td>{{ p.name }}</td>
+                <td>{{ fmtSize(p.size_bytes) }}</td>
+                <td>{{ p.created_at }}</td>
+                <td>
+                  <button
+                    class="btn-mini"
+                    :disabled="installingPack === p.name || waitingRestart"
+                    @click="installPack(p.name)"
+                  >{{ installingPack === p.name ? '安装中…' : '安装' }}</button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div v-else class="op-muted">backups/ 目录暂无升级包。放入文件后点「刷新列表」。</div>
+      </div>
+    </section>
+
     <!-- 操作审计 -->
     <section class="setting-section">
       <h2 class="section-title"><span class="section-icon">&#128220;</span> 操作审计</h2>
@@ -858,6 +1004,30 @@ onMounted(() => {
   color: var(--color-success);
 }
 .warn-text { color: var(--color-warning); }
+
+/* 升级包分发 */
+.pack-export-actions { display: flex; gap: var(--space-8); align-items: center; }
+.pack-download-btn {
+  display: inline-block;
+  text-decoration: none;
+  text-align: center;
+  line-height: 1.5;
+}
+.upload-progress { margin-top: var(--space-12); }
+.upload-bar {
+  height: 8px;
+  background: var(--color-border);
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: var(--space-6);
+}
+.upload-fill {
+  height: 100%;
+  background: var(--color-primary);
+  transition: width 0.3s;
+}
+.upload-text { font-size: var(--text-xs); color: var(--color-text-secondary); }
+.diag-table-wrap { margin-top: var(--space-8); overflow-x: auto; }
 .git-log {
   margin-top: var(--space-12);
   padding: var(--space-12);

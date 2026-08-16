@@ -20,6 +20,11 @@
 - POST /api/ops/update/git/check   git 检查更新（fetch + 比对 commit）
 - POST /api/ops/update/git/apply   git 一键升级（拉取→重建→健康自检→失败回退）
 - GET  /api/ops/update/git/status  git 升级最近结果与日志尾
+- POST /api/ops/update-pack/export       一键导出当前版本为升级包（后台任务）
+- GET  /api/ops/update-pack/export/status 导出进度
+- GET  /api/ops/update-pack/download     下载导出的升级包
+- GET  /api/ops/update-pack/local        扫描 backups/ 已投放的升级包（接收方）
+- POST /api/ops/update-pack/local/{name}/apply  安装本地升级包（装完自动删包）
 """
 from __future__ import annotations
 
@@ -34,7 +39,7 @@ from ..core.api_models import ApiResponse
 from ..core.auth import get_current_admin
 from ..core.exceptions import AppException
 from ..core.version import get_version
-from ..ops import audit, backup, diagnose, git_update, update_channel, upgrade
+from ..ops import audit, backup, diagnose, git_update, pack_export, update_channel, upgrade
 from ..ops.diag import build_diagnostic_package
 
 logger = logging.getLogger(__name__)
@@ -226,6 +231,70 @@ async def git_update_status_route(
     current_user: dict = Depends(get_current_admin),
 ) -> ApiResponse[dict]:
     return ApiResponse(data=await git_update.status_git_update())
+
+
+# ==================== 升级包导出与本地安装 ====================
+
+class PackExportRequest(BaseModel):
+    notes: str = ""
+
+
+@router.post("/ops/update-pack/export")
+async def start_pack_export(
+    payload: PackExportRequest,
+    current_user: dict = Depends(get_current_admin),
+) -> ApiResponse[dict]:
+    operator = current_user.get("username") or current_user["user_id"]
+    result = await pack_export.start_export(operator, payload.notes.strip())
+    audit.record(operator, "pack_export_start", {})
+    return ApiResponse(data=result)
+
+
+@router.get("/ops/update-pack/export/status")
+async def pack_export_status(
+    current_user: dict = Depends(get_current_admin),
+) -> ApiResponse[dict]:
+    return ApiResponse(data=pack_export.export_status())
+
+
+@router.get("/ops/update-pack/download")
+async def download_pack(
+    current_user: dict = Depends(get_current_admin),
+):
+    """下载导出的升级包。浏览器 <a> 直链 GET 自带 cookie，GB 级流式落盘。"""
+    from fastapi.responses import FileResponse
+
+    status = pack_export.export_status()
+    if not status.get("file"):
+        raise HTTPException(status_code=404, detail="尚未导出任何升级包")
+    path = pack_export.PACK_DIR / status["file"]
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="升级包文件不存在")
+    return FileResponse(path, filename=path.name)
+
+
+@router.get("/ops/update-pack/local")
+async def list_local_packs(
+    current_user: dict = Depends(get_current_admin),
+) -> ApiResponse[list[dict]]:
+    return ApiResponse(data=pack_export.scan_local_packs())
+
+
+@router.post("/ops/update-pack/local/{name}/apply")
+async def apply_local_pack_route(
+    name: str,
+    current_user: dict = Depends(get_current_admin),
+) -> ApiResponse[dict]:
+    """安装 backups/ 里的升级包：校验 → load → 重启，成功后自动删包。"""
+    operator = current_user.get("username") or current_user["user_id"]
+    try:
+        result = await pack_export.apply_local_pack(name, operator)
+    except AppException as e:
+        raise HTTPException(status_code=e.http_status or 400, detail=e.message) from e
+    except (ValueError, RuntimeError) as e:
+        logger.warning("Local pack install rejected/failed: %s", e)
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return ApiResponse(data=result)
 
 
 # ==================== 备份与恢复 ====================

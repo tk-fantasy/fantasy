@@ -95,9 +95,15 @@ async def apply_upgrade(pack_path: Path, operator: str) -> dict:
     manifest = verify_pack(pack_path)
     new_version = manifest["version"]
 
-    # 1. docker load（流式传 tar）
-    with pack_path.open("rb") as f:
-        resp = await _docker("POST", "/images/load", params={"quiet": 1}, content=f, timeout=600.0)
+    # 1. docker load（异步生成器流式传 tar：同步文件对象会让 AsyncClient 报
+    #    "Attempted to send an sync request"，此前该路径未被真实执行过）
+    async def _pack_stream():
+        with pack_path.open("rb") as f:
+            while chunk := f.read(8 * 1024 * 1024):
+                yield chunk
+
+    resp = await _docker("POST", "/images/load", params={"quiet": 1},
+                         content=_pack_stream(), timeout=600.0)
     if resp.status_code not in (200, 201):
         raise RuntimeError(f"docker load 失败（HTTP {resp.status_code}）：{resp.text[:200]}")
 
