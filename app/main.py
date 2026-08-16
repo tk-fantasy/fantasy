@@ -650,7 +650,6 @@ from .routes.scheduler_routes import router as scheduler_router
 from .routes.session_routes import router as session_router
 from .routes.ha_routes import router as ha_router
 from .routes.mcp_routes import router as mcp_router
-from .routes.ptz_routes import router as ptz_router
 from .routes.discovery_routes import router as discovery_router
 from .routes.camera_routes import router as camera_router
 from .routes.setup_routes import router as setup_router
@@ -676,7 +675,6 @@ app.include_router(scheduler_router, prefix="/api")
 app.include_router(session_router, prefix="/api")
 app.include_router(ha_router, prefix="/api")
 app.include_router(mcp_router, prefix="/api")
-app.include_router(ptz_router, prefix="/api")
 app.include_router(discovery_router, prefix="/api")  # ONVIF 摄像头发现：/api/discovery/*
 app.include_router(camera_router, prefix="/api")     # Task 6:多摄像头统一入口 /api/cameras/* + /api/ha/areas
 app.include_router(automation_router, prefix="/api")  # 自动化：/api/automation/*

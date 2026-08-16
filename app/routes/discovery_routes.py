@@ -12,7 +12,6 @@ from fastapi import APIRouter
 
 from ..core.api_models import ApiResponse
 from ..core.config import get_config, update_config_section
-from ..schema.api_schemas import ManualIpRequest
 from ..services.camera_discovery_service import discovery_service
 from ..services.config_probes import probe_ptz
 
@@ -47,35 +46,3 @@ async def trigger_discovery() -> ApiResponse[dict]:
     )
 
 
-@router.post("/discovery/manual-ip")
-async def set_manual_ip(payload: ManualIpRequest) -> ApiResponse[dict]:
-    """手动填 IP 兜底:probe_ptz 验证 → 写 config(自动捕获/核对 MAC)。
-
-    自动发现找不到时,用户手填 IP 救场。probe 通过才落盘。
-    """
-    ip = (payload.ip or "").strip()
-    if not ip:
-        return ApiResponse(code="bad_format", message="IP 不能为空", data={"saved": False})
-    port = int(get_config("ptz.port", 80))
-    user = str(get_config("ptz.username", ""))
-    pwd_env = str(get_config("ptz.password_env", ""))
-    pwd = os.getenv(pwd_env, "") if pwd_env else ""
-    # 先 probe 验证凭证 + 可达性
-    result = await probe_ptz(ip, port, user, pwd)
-    if not result.ok:
-        logger.warning("Manual IP probe rejected: %s (%s)", result.reason, result.detail)
-        return ApiResponse(
-            code="probe_failed",
-            message=result.detail,
-            data={"saved": False, **result.to_dict()},
-        )
-    # probe 通过 → 写 config(RTSP + PTZ 同步)
-    await discovery_service.apply_found_ip(ip)
-    # 顺便捕获/核对 MAC(手填 IP 后补上身份证)
-    try:
-        hardware_id = await discovery_service.read_device_hardware_id(ip, port, user, pwd)
-        if hardware_id:
-            update_config_section("vision", {"device_mac": hardware_id})
-    except Exception:  # noqa: BLE001
-        logger.debug("manual-ip MAC capture failed (non-fatal)", exc_info=True)
-    return ApiResponse(data={"saved": True, "ip": ip})

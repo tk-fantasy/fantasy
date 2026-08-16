@@ -65,20 +65,6 @@ const visionConfig = ref({
 })
 const rtspPassword = ref('')
 
-// PTZ 云台配置
-const ptzConfig = ref({
-  enabled: false,
-  ip: '',
-  port: 80,
-  username: '',
-  has_password: false,
-  speed: 0.5,
-  step_ms: 300,
-})
-const ptzPassword = ref('')
-const ptzSaving = ref(false)
-const ptzSaved = ref(false)
-
 // 自动化（dhash 事件触发 + 定时器兜底；dhash 阈值滑块留 P1）
 const automationConfig = ref({
   silent_eval_enabled: true,
@@ -120,13 +106,12 @@ const typeSelectOptions = typeOptions.map(t => ({ value: t, label: t }))
 async function loadAll() {
   loading.value = true
   try {
-    const [weatherRes, advRes, haRes, uniqueRes, keysRes, ptzRes, automationRes] = await Promise.all([
+    const [weatherRes, advRes, haRes, uniqueRes, keysRes, automationRes] = await Promise.all([
       fetch('/api/weather/config'),
       fetch('/api/advanced/config'),
       fetch('/api/ha/config'),
       fetch('/api/unique'),
       fetch('/api/llm_keys'),
-      fetch('/api/ptz/config'),
       fetch('/api/automation/status'),
     ])
 
@@ -155,20 +140,6 @@ async function loadAll() {
     if (keysRes.ok) {
       const json = await keysRes.json()
       keys.value = json.data || []
-    }
-    if (ptzRes.ok) {
-      const json = await ptzRes.json()
-      const data = json.data || {}
-      ptzConfig.value = {
-        ...ptzConfig.value,
-        enabled: data.enabled ?? false,
-        ip: data.ip || '',
-        port: data.port || 80,
-        username: data.username || '',
-        has_password: data.has_password ?? false,
-        speed: data.speed ?? 0.5,
-        step_ms: data.step_ms ?? 300,
-      }
     }
     if (automationRes.ok) {
       const json = await automationRes.json()
@@ -332,110 +303,8 @@ async function testVision() {
   }
 }
 
-// ===== PTZ 云台保存 =====
-const ptzProbeResult = ref(null)
-async function savePtz() {
-  ptzSaving.value = true
-  ptzSaved.value = false
-  ptzProbeResult.value = null
-  try {
-    const data = await apiPost('/api/ptz/config', {
-      enabled: ptzConfig.value.enabled,
-      ip: ptzConfig.value.ip,
-      port: ptzConfig.value.port,
-      username: ptzConfig.value.username,
-      password: ptzPassword.value,
-      speed: ptzConfig.value.speed,
-      step_ms: ptzConfig.value.step_ms,
-    })
-    if (data && data.saved === false) {
-      ptzProbeResult.value = { status: 'fail', reason: data.reason || 'error', detail: data.detail || '' }
-      return
-    }
-    ptzPassword.value = ''
-    await loadAll()
-    ptzSaved.value = true
-    setTimeout(() => { ptzSaved.value = false }, 2000)
-  } catch (e) {
-    ptzProbeResult.value = { status: 'fail', reason: 'bad_format', detail: e?.message || String(e) }
-    console.error('Failed to save PTZ config:', e)
-  } finally {
-    ptzSaving.value = false
-  }
-}
 
-// ===== 自动化保存 =====
-async function saveAutomation() {
-  automationSaving.value = true
-  automationSaved.value = false
-  try {
-    await Promise.all([
-      apiPost('/api/automation/silent', {
-        enabled: automationConfig.value.silent_eval_enabled,
-        interval_seconds: automationConfig.value.silent_eval_interval_seconds,
-      }),
-      apiPost('/api/automation/cooldown', {
-        cooldown_seconds: automationConfig.value.default_cooldown_seconds,
-      }),
-      apiPost('/api/automation/dhash-threshold', {
-        threshold: automationConfig.value.motion_threshold,
-      }),
-    ])
-    await loadAll()
-    automationSaved.value = true
-    setTimeout(() => { automationSaved.value = false }, 2000)
-  } catch (e) {
-    console.error('Failed to save automation config:', e)
-  } finally {
-    automationSaving.value = false
-  }
-}
-
-// ===== 数据出网模式（09 清单条目 4）=====
-const { EGRESS_MODES: egressModeOptions, egressMode, egressLabel, egressWarnings, loadEgressMode } = useEgressMode()
-const egressDraftMode = ref('cloud')   // 弹窗里的未保存选择
-const egressSaving = ref(false)
-const egressSaved = ref(false)
-
-function openEgressModal() {
-  egressDraftMode.value = egressMode.value
-  openModal('egress')
-}
-
-async function saveEgressMode() {
-  egressSaving.value = true
-  try {
-    await apiPost('/api/egress', { mode: egressDraftMode.value })
-    await loadEgressMode()
-    egressSaved.value = true
-    setTimeout(() => { egressSaved.value = false }, 2000)
-  } catch (e) {
-    console.error('Failed to save egress mode:', e)
-  } finally {
-    egressSaving.value = false
-  }
-}
-
-// ===== PTZ 测试连接 =====
-const ptzTesting = ref(false)
-async function testPtz() {
-  ptzTesting.value = true
-  ptzProbeResult.value = null
-  try {
-    const data = await apiPost('/api/ptz/test', {})
-    if (data && data.connected) {
-      ptzProbeResult.value = { status: 'success' }
-    } else {
-      ptzProbeResult.value = { status: 'fail', reason: data?.reason || 'error', detail: data?.detail || '' }
-    }
-  } catch (e) {
-    ptzProbeResult.value = { status: 'fail', reason: 'error', detail: String(e) }
-  } finally {
-    ptzTesting.value = false
-  }
-}
-
-// ===== 摄像头参数保存(运动检测+推理间隔走 vision 全局,云台速度+步进走 ptz 全局) =====
+// ===== 摄像头参数保存(运动检测+推理间隔走 vision 全局) =====
 const camParamsSaving = ref(false)
 const camParamsSaved = ref(false)
 async function saveCamParams() {
@@ -445,15 +314,6 @@ async function saveCamParams() {
     // vision 段:只改 motion_threshold + min_infer_interval_seconds,其余字段原样回传
     await apiPost('/api/advanced/config', {
       vision: { ...visionConfig.value },
-    })
-    // ptz 段:只改 speed + step_ms,其余字段原样回传(不传 password)
-    await apiPost('/api/ptz/config', {
-      enabled: ptzConfig.value.enabled,
-      ip: ptzConfig.value.ip,
-      port: ptzConfig.value.port,
-      username: ptzConfig.value.username,
-      speed: ptzConfig.value.speed,
-      step_ms: ptzConfig.value.step_ms,
     })
     await loadAll()
     camParamsSaved.value = true
@@ -961,7 +821,7 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- 摄像头参数(运动检测+推理间隔+云台速度+步进,全局) -->
+      <!-- 摄像头参数(运动检测+推理间隔；云台速度/步进已并入各摄像头的 PTZ 设置) -->
       <div v-else-if="activeModal === 'camparams'" class="modal-content">
         <div class="setting-row">
           <label class="setting-label">
@@ -976,20 +836,6 @@ onUnmounted(() => {
             <span class="label-desc">防止频繁调用视觉模型</span>
           </label>
           <input v-model.number="visionConfig.min_infer_interval_seconds" type="number" step="0.5" class="setting-input narrow" />
-        </div>
-        <div class="setting-row">
-          <label class="setting-label">
-            <span class="label-text">云台转动速度</span>
-            <span class="label-desc">0.1~1.0,越大转得越快</span>
-          </label>
-          <input v-model.number="ptzConfig.speed" type="number" step="0.1" min="0.1" max="1.0" class="setting-input narrow" />
-        </div>
-        <div class="setting-row">
-          <label class="setting-label">
-            <span class="label-text">云台步进时长 (ms)</span>
-            <span class="label-desc">点一下转多长时间</span>
-          </label>
-          <input v-model.number="ptzConfig.step_ms" type="number" class="setting-input narrow" />
         </div>
         <div class="modal-save-bar">
           <button class="btn-primary" :class="{ saved: camParamsSaved }" @click="saveCamParams" :disabled="camParamsSaving">

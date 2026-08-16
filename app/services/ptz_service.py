@@ -248,6 +248,3 @@ class PtzRegistry:
 
 
 ptz_registry = PtzRegistry()
-
-# deprecated:旧全局单例,Task 6 camera_routes 切到 ptz_registry 后删。
-ptz_service = PtzService()

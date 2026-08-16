@@ -26,11 +26,6 @@ from ..core.config import get_config, update_config_section
 logger = logging.getLogger(__name__)
 
 
-def ptz_service_notify_ip_changed(new_ip: str) -> None:
-    """薄包装:通知 ptz_service IP 变了。单独成函数便于测试 mock。"""
-    from .ptz_service import ptz_service
-    ptz_service.notify_ip_changed(new_ip)
-
 
 def normalize_mac(mac: str) -> str:
     """归一化 MAC 为纯小写十六进制(去冒号/横线)。
@@ -215,17 +210,13 @@ class CameraDiscoveryService:
     async def _probe_candidate(self, ip: str) -> str:
         """Stage2: 对单个候选 IP 做 ONVIF probe,读 HardwareId。
 
-        Task 3:多路时用 find_camera 缓存的 _probe_creds(从 cameras 行读的
-        per-camera 凭证);旧路径(单摄/_probe_creds=None)走 ptz config。
-        失败返回空串(不抛,扫描继续)。
+        用 find_camera 缓存的 _probe_creds(从 cameras 行读的 per-camera 凭证)。
+        无凭证(该路未配置 PTZ)直接跳过。失败返回空串(不抛,扫描继续)。
         """
-        if self._probe_creds is not None:
-            port, user, pwd = self._probe_creds
-        else:
-            port = int(get_config("ptz.port", 80))
-            user = str(get_config("ptz.username", ""))
-            pwd_env = str(get_config("ptz.password_env", ""))
-            pwd = os.getenv(pwd_env, "") if pwd_env else ""
+        if self._probe_creds is None:
+            # 全局 PTZ 凭证已随旧单例移除：无 per-camera 凭证（未配置 PTZ 的路）不 probe
+            return ""
+        port, user, pwd = self._probe_creds
         if not user or not pwd:
             return ""
         try:
@@ -369,15 +360,12 @@ class CameraDiscoveryService:
     async def apply_found_ip(self, camera_id: str = "", new_ip: str = "") -> None:
         """发现到新 IP 后,更新该路配置 + 通知重连。
 
-        Task 3 多路化:
-        - camera_id 非空 → 更新该路 cameras 行(ptz_ip + rtsp_url 换 host),
-          触发 _on_ip_changed(camera_id, new_ip) 回调(取代旧硬接线
-          ptz_service_notify_ip_changed)。
-        - camera_id 空 → 旧逻辑(写 config.json + ptz_service_notify_ip_changed),
-          向后兼容未迁移场景。
+        更新该路 cameras 行(ptz_ip + rtsp_url 换 host)，触发 _on_ip_changed
+        回调通知重连。rtsp_url 只替换 host 部分,保留端口/路径/凭据;
+        USB 模式(无 rtsp_url)只更新 ptz_ip。
 
-        rtsp_url 只替换 host 部分,保留端口/路径/凭据;USB 模式(无 rtsp_url)
-        只更新 ptz_ip。
+        旧版"camera_id 为空写 config.json 全局 ptz 段"的分支已随全局 PTZ
+        单例一并移除——所有 PTZ 均为 per-camera 配置。
         """
         new_ip = (new_ip or "").strip()
         if not new_ip:
@@ -402,18 +390,8 @@ class CameraDiscoveryService:
                     logger.exception("on_ip_changed callback failed for %s", camera_id)
             return
 
-        # —— 旧逻辑:写 config.json + 通知全局 ptz 单例(向后兼容)——
-        update_config_section("ptz", {"ip": new_ip})
-        logger.info("apply_found_ip: ptz.ip updated to %s", new_ip)
-        old_url = str(get_config("vision.rtsp_url", "") or "").strip()
-        if old_url:
-            new_url = self._replace_url_host(old_url, new_ip)
-            update_config_section("vision", {"rtsp_url": new_url})
-            logger.info("apply_found_ip: rtsp_url host updated to %s", new_ip)
-        try:
-            ptz_service_notify_ip_changed(new_ip)
-        except Exception:  # noqa: BLE001
-            logger.exception("notify ptz ip change failed")
+        # camera_id 为空：旧全局分支已移除，多路体系下必须有 camera_id
+        logger.warning("apply_found_ip: empty camera_id, skip (per-camera only)")
 
     @staticmethod
     def _replace_url_host(url: str, new_host: str) -> str:

@@ -267,39 +267,19 @@ class TestFindCamera:
             svc._discovery_lock.release()
 
 
-class TestApplyFoundIp:
-    """apply_found_ip: 更新 vision.rtsp_url(只换 IP)+ ptz.ip,通知 ptz 重连。"""
+class TestApplyFoundIpLegacyGuard:
+    """旧全局分支已移除：空 camera_id 一律跳过（PTZ 全部 per-camera）。"""
 
     @pytest.mark.asyncio
-    async def test_updates_rtsp_url_and_ptz_ip(self):
+    async def test_empty_camera_id_noop(self):
         from app.core import config as cfg
-        # 起始 config 有旧 rtsp_url 和 ptz.ip
-        cfg.CONFIG["vision"]["rtsp_url"] = "rtsp://192.168.1.50:554/stream2"
-        cfg.CONFIG["ptz"]["ip"] = "192.168.1.50"
-        svc = CameraDiscoveryService()
-        notify_mock = MagicMock()
-        with patch("app.services.camera_discovery_service.ptz_service_notify_ip_changed", notify_mock):
-            await svc.apply_found_ip(new_ip="192.168.1.99")
-        # rtsp_url 的 IP 被换,port/path/凭据保留
-        assert "192.168.1.99" in cfg.CONFIG["vision"]["rtsp_url"]
-        assert ":554/stream2" in cfg.CONFIG["vision"]["rtsp_url"]
-        assert "192.168.1.50" not in cfg.CONFIG["vision"]["rtsp_url"]
-        # ptz.ip 同步更新
-        assert cfg.CONFIG["ptz"]["ip"] == "192.168.1.99"
-        # ptz 收到重连通知
-        notify_mock.assert_called_once_with("192.168.1.99")
 
-    @pytest.mark.asyncio
-    async def test_no_rtsp_url_only_updates_ptz(self):
-        """USB 模式(无 rtsp_url)只更新 ptz.ip。"""
-        from app.core import config as cfg
-        cfg.CONFIG["vision"]["rtsp_url"] = ""
-        cfg.CONFIG["ptz"]["ip"] = "192.168.1.50"
+        before_vision = dict(cfg.CONFIG.get("vision", {}))
+        before_ptz = dict(cfg.CONFIG.get("ptz", {}))
         svc = CameraDiscoveryService()
-        with patch("app.services.camera_discovery_service.ptz_service_notify_ip_changed", MagicMock()):
-            await svc.apply_found_ip(new_ip="192.168.1.99")
-        assert cfg.CONFIG["vision"]["rtsp_url"] == ""
-        assert cfg.CONFIG["ptz"]["ip"] == "192.168.1.99"
+        await svc.apply_found_ip(new_ip="192.168.1.99")  # camera_id 空 → skip
+        assert cfg.CONFIG.get("vision", {}) == before_vision
+        assert cfg.CONFIG.get("ptz", {}) == before_ptz
 
 
 class TestReplaceUrlHost:
