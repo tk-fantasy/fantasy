@@ -379,11 +379,6 @@ const groupedDevices = computed(() => {
   return Object.entries(groups).sort(([a], [b]) => a.localeCompare(b))
 })
 
-const stats = computed(() => ({
-  online: entities.value.filter(isOn).length,
-  total: entities.value.length,
-}))
-
 // ========================
 //  Device-level helpers
 // ========================
@@ -393,6 +388,13 @@ function isDeviceOnline(dev) {
   return (dev.entities || []).some(e =>
     e.state && e.state !== 'unavailable' && e.state !== 'unknown')
 }
+
+// 头部统计按物理设备口径（devices 已按 device_id 分组），
+// 不能用扁平实体列表——每个 MIoT spec 属性都是一条实体，会把 8 台设备数成 60 台
+const stats = computed(() => ({
+  online: devices.value.filter(isDeviceOnline).length,
+  total: devices.value.length,
+}))
 
 // 设备图标：取第一个可控实体的 domain，否则第一个实体的 domain
 function deviceIconDomain(dev) {

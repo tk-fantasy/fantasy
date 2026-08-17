@@ -14,9 +14,9 @@
             "config_schema": {
                 "entity_id": {
                     "type": "string",
-                    "required": true,
-                    "label": "小爱实体ID",
-                    "default": "media_player.xiaoai_pro"
+                    "required": false,
+                    "label": "小爱实体ID（留空自动检测）",
+                    "default": ""
                 },
                 "execute_mode": {
                     "type": "enum",

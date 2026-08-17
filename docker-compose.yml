@@ -100,17 +100,6 @@ services:
       - ollama:/root/.ollama
     restart: unless-stopped
 
-  # git 一键升级的执行镜像（运维页「git 一键升级」用，默认不启动）。
-  # 首次启用构建一次：docker compose --profile ops up -d --build git-updater
-  # 之后实际升级由后端经 Docker API 临时创建一次性容器（非本 service）。
-  git-updater:
-    container_name: aether-git-updater
-    build: ./scripts/git-updater
-    image: aether-git-updater:latest
-    profiles: ["ops"]
-    entrypoint: ["echo", "镜像载体（实际升级经运维页触发，临时容器执行）"]
-    restart: "no"
-
   simulator:
     # 虚拟设备模拟器：通过 MQTT 往 HA 报告灯/空调/窗帘等设备状态。
     # 默认不启动（生产环境不该有假设备）：首次启用跑

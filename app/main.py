@@ -357,6 +357,10 @@ async def lifespan(_: FastAPI):
     # 异步加载 emoji 索引（不阻塞启动）
     _background_task_mgr.spawn(emoji_service.load_index_async(), name="emoji_index_load")
 
+    # 升级包自动升级监视器：backups/ 出现更高版本的包即自动安装
+    from .ops.auto_update import watcher_loop as _auto_update_loop
+    _background_task_mgr.spawn(_auto_update_loop(), name="auto_update_watcher")
+
     _startup_progress.set("正在加载会话与规则...")
     # 从数据库加载持久化数据
     await rule_registry_service.load_from_db()

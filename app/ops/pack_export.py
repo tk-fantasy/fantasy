@@ -70,9 +70,10 @@ async def _export_job(operator: str, notes: str) -> None:
     """导出主流程：tag 版本号 → 流式 docker save → manifest → tar.gz。"""
     version = get_version()
     try:
+        import shutil
+
+        shutil.rmtree(STAGING_DIR, ignore_errors=True)   # 上次中断可能留下半成品（含目录）
         STAGING_DIR.mkdir(parents=True, exist_ok=True)
-        for old in STAGING_DIR.iterdir():
-            old.unlink(missing_ok=True)
 
         # 1. 当前 latest 补打 <版本> tag：apply_upgrade 侧 docker load 后按
         #    aether-app:<版本> → latest 切换，包内镜像必须带版本 tag
