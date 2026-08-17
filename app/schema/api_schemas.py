@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -460,9 +460,14 @@ class RuleEnabledRequest(BaseModel):
 # --------------- Automation ---------------
 
 class AutomationSilentRequest(BaseModel):
-    """POST /automation/silent 请求体。开关与间隔任选其一传，未传者不改。"""
+    """POST /automation/silent 请求体。开关与间隔任选其一传，未传者不改。
+
+    scope 指定作用管道:vision=摄像头(视觉)兜底(默认,兼容旧前端),
+    nonvision=全局(定时/天气)兜底。
+    """
     enabled: bool | None = None
     interval_seconds: int | None = None
+    scope: Literal["vision", "nonvision"] = "vision"
 
 
 class AutomationVisionRecognizerRequest(BaseModel):

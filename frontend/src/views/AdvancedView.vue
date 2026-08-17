@@ -65,10 +65,12 @@ const visionConfig = ref({
 })
 const rtspPassword = ref('')
 
-// 自动化（dhash 事件触发 + 定时器兜底；dhash 阈值滑块留 P1）
+// 自动化（dhash 事件触发(仅视觉) + 视觉/非视觉双静默兜底；dhash 阈值滑块留 P1）
 const automationConfig = ref({
   silent_eval_enabled: true,
   silent_eval_interval_seconds: 60,
+  nonvision_silent_enabled: true,
+  nonvision_silent_interval_seconds: 30,
   default_cooldown_seconds: 5,
   motion_threshold: 15,
   motion_threshold_max: 256,
@@ -76,6 +78,7 @@ const automationConfig = ref({
   camera_vl_display_enabled: true,
   running: false,
   eval_count: 0,
+  nonvision_eval_count: 0,
 })
 const automationSaving = ref(false)
 const automationSaved = ref(false)
@@ -148,6 +151,8 @@ async function loadAll() {
         ...automationConfig.value,
         silent_eval_enabled: data.silent_eval_enabled ?? true,
         silent_eval_interval_seconds: data.silent_eval_interval_seconds ?? 60,
+        nonvision_silent_enabled: data.nonvision_silent_enabled ?? true,
+        nonvision_silent_interval_seconds: data.nonvision_silent_interval_seconds ?? 30,
         default_cooldown_seconds: data.default_cooldown_seconds ?? 5,
         motion_threshold: data.motion_threshold ?? 15,
         motion_threshold_max: data.motion_threshold_max ?? 256,
@@ -155,6 +160,7 @@ async function loadAll() {
         camera_vl_display_enabled: data.camera_vl_display_enabled ?? true,
         running: data.running ?? false,
         eval_count: data.eval_count ?? 0,
+        nonvision_eval_count: data.nonvision_eval_count ?? 0,
       }
     }
   } catch (e) {
@@ -313,6 +319,12 @@ async function saveAutomation() {
       apiPost('/api/automation/silent', {
         enabled: automationConfig.value.silent_eval_enabled,
         interval_seconds: automationConfig.value.silent_eval_interval_seconds,
+        scope: 'vision',
+      }),
+      apiPost('/api/automation/silent', {
+        enabled: automationConfig.value.nonvision_silent_enabled,
+        interval_seconds: automationConfig.value.nonvision_silent_interval_seconds,
+        scope: 'nonvision',
       }),
       apiPost('/api/automation/cooldown', {
         cooldown_seconds: automationConfig.value.default_cooldown_seconds,
@@ -591,11 +603,15 @@ const haSummary = computed(() => haConfig.value.url || '未配置')
 const uniqueSummary = computed(() => personaCustomized.value ? '已自定义' : '默认')
 const keysSummary = computed(() => `${keys.value.length} 个`)
 const egressSummary = computed(() => egressLabel.value)
-const automationSummary = computed(() =>
-  automationConfig.value.silent_eval_enabled
-    ? `兜底 ${automationConfig.value.silent_eval_interval_seconds}s`
-    : '仅事件触发'
-)
+const automationSummary = computed(() => {
+  const visionPart = automationConfig.value.silent_eval_enabled
+    ? `视觉兜底 ${automationConfig.value.silent_eval_interval_seconds}s`
+    : '视觉仅运动触发'
+  const nonvisionPart = automationConfig.value.nonvision_silent_enabled
+    ? `定时/天气 ${automationConfig.value.nonvision_silent_interval_seconds}s`
+    : '定时/天气已停'
+  return `${visionPart} · ${nonvisionPart}`
+})
 
 onMounted(() => {
   loadAll()
@@ -1020,15 +1036,32 @@ onUnmounted(() => {
       <div v-else-if="activeModal === 'automation'" class="modal-content">
         <div class="setting-row">
           <label class="setting-label">
-            <span class="label-text">定时器兜底</span>
-            <span class="label-desc">dhash 阈值拉满时即轮询间隔；关掉仅靠事件触发</span>
+            <span class="label-text">全局(定时/天气)规则兜底</span>
+            <span class="label-desc">时间/天气规则仅由此循环按间隔评估；关闭后将不再评估</span>
+          </label>
+          <input type="checkbox" v-model="automationConfig.nonvision_silent_enabled" />
+        </div>
+        <div class="setting-row">
+          <label class="setting-label">
+            <span class="label-text">全局兜底间隔（秒）</span>
+            <span class="label-desc">5~3600，时间规则触发精度=此间隔；条件未满足时每 tick 每条一次 LLM</span>
+          </label>
+          <div class="slider-row">
+            <input type="range" min="5" max="3600" step="1" v-model.number="automationConfig.nonvision_silent_interval_seconds" />
+            <span class="slider-value">{{ automationConfig.nonvision_silent_interval_seconds }}s</span>
+          </div>
+        </div>
+        <div class="setting-row">
+          <label class="setting-label">
+            <span class="label-text">摄像头(视觉)规则兜底</span>
+            <span class="label-desc">dhash 阈值拉满时即轮询间隔；关掉仅靠运动触发</span>
           </label>
           <input type="checkbox" v-model="automationConfig.silent_eval_enabled" />
         </div>
         <div class="setting-row">
           <label class="setting-label">
-            <span class="label-text">兜底间隔（秒）</span>
-            <span class="label-desc">5~3600，dhash 无运动时按此周期评估</span>
+            <span class="label-text">摄像头兜底间隔（秒）</span>
+            <span class="label-desc">5~3600，无运动时按此周期评估视觉规则</span>
           </label>
           <div class="slider-row">
             <input type="range" min="5" max="3600" step="1" v-model.number="automationConfig.silent_eval_interval_seconds" />
@@ -1065,9 +1098,9 @@ onUnmounted(() => {
         <div class="setting-row">
           <label class="setting-label">
             <span class="label-text">运行状态</span>
-            <span class="label-desc">已评估次数</span>
+            <span class="label-desc">视觉 / 定时天气评估次数</span>
           </label>
-          <span class="slider-value">{{ automationConfig.running ? '运行中' : '已停' }} · {{ automationConfig.eval_count }} 次</span>
+          <span class="slider-value">{{ automationConfig.running ? '运行中' : '已停' }} · {{ automationConfig.eval_count }} / {{ automationConfig.nonvision_eval_count }} 次</span>
         </div>
         <div class="modal-save-bar">
           <button class="btn-primary" :class="{ saved: automationSaved }" @click="saveAutomation" :disabled="automationSaving">

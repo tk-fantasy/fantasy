@@ -33,12 +33,20 @@ class AutomationService:
         # 缓存 chat LLM 客户端，避免每次规则评估都重新读取配置和解析 API key
         self._chat_client = None
 
-    async def evaluate(self, frames: list | None = None, camera_id: str = "") -> list[dict]:
+    async def evaluate(
+        self,
+        frames: list | None = None,
+        camera_id: str = "",
+        rule_types: tuple[str, ...] | None = None,
+    ) -> list[dict]:
         """评估所有规则（async）——按 type 路由 + 设备状态门控。
 
         Task 5 多路化:camera_id 非空时,只评估绑定该摄像头 + 未绑定(camera_id='')
         的全局规则;camera_id 空串则评估所有(向后兼容单摄时代)。
         规则的 camera_id 非空且与传入 camera_id 不匹配 → 跳过。
+
+        评估管道拆分:rule_types 限定本轮评估的规则类型(None=全部,向后兼容)。
+        运动触发与视觉静默兜底传 ("vision",),非视觉静默循环传 ("time","weather")。
 
         路由（替代旧全局 use_context_only）：
           - type=time/weather → chat LLM（_evaluate_context_only，按时间+天气，无需帧）
@@ -69,6 +77,12 @@ class AutomationService:
         gated_count = 0
         skipped_count = 0
         for rule in rules:
+            # 管道过滤(最廉价的检查放最前):非本轮管道的类型直接跳过,
+            # 如运动触发只评 vision;也避免他管道规则先命中设备门控污染 gated 归因。
+            rtype = str(rule.get("type", "vision") or "vision").lower()
+            if rule_types is not None and rtype not in rule_types:
+                skipped_count += 1
+                continue
             if not rule.get("enabled", True):
                 logger.debug("Rule '%s' skipped: disabled", rule.get("name", ""))
                 skipped_count += 1
@@ -96,7 +110,6 @@ class AutomationService:
                 gated_count += 1
                 logger.debug("Rule '%s' skipped: device already in target state", rule.get("name", ""))
                 continue
-            rtype = str(rule.get("type", "vision") or "vision").lower()
             if rtype in ("time", "weather"):
                 chat_rules.append(rule)
             else:  # vision / 未知 → VL

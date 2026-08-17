@@ -28,7 +28,9 @@ async def automation_status(container: AppContainer = Depends(get_container)) ->
     motion_hash_size = int(get_config("vision.motion_hash_size", 16))
     return ApiResponse(data={
         "silent_eval_enabled": bool(get_config("automation.silent_eval_enabled", True)),
-        "silent_eval_interval_seconds": int(get_config("automation.silent_eval_interval_seconds", 60)),
+        "silent_eval_interval_seconds": int(get_config("automation.silent_eval_interval_seconds", 300)),
+        "nonvision_silent_enabled": bool(get_config("automation.nonvision_silent_enabled", True)),
+        "nonvision_silent_interval_seconds": int(get_config("automation.nonvision_silent_interval_seconds", 30)),
         "default_cooldown_seconds": int(get_config("automation.default_cooldown_seconds", 5)),
         # dhash 阈值复用 vision.motion_threshold（P1 滑块用），范围 1~hash_size²
         "motion_threshold": int(get_config("vision.motion_threshold", 15)),
@@ -38,6 +40,7 @@ async def automation_status(container: AppContainer = Depends(get_container)) ->
         "camera_vl_display_enabled": bool(get_config("automation.camera_vl_display_enabled", True)),
         "running": bool(agent._running) if agent else False,
         "eval_count": int(agent._eval_count) if agent else 0,
+        "nonvision_eval_count": int(agent._nonvision_eval_count) if agent else 0,
     })
 
 
@@ -46,27 +49,37 @@ async def set_silent_eval(
     payload: AutomationSilentRequest,
     container: AppContainer = Depends(get_container),
 ) -> ApiResponse[dict]:
-    """热切换定时器兜底（静默推理）：开关 + 间隔。
+    """热切换静默兜底（开关 + 间隔），scope 分视觉/非视觉两条管道。
 
-    间隔走 set_silent_interval（带 0.5s 防抖，松手后生效一次并立刻评估一次）。
-    开关走 set_silent_enabled（call_soon_threadsafe，可跨线程）。配置同步落盘
+    vision(默认,兼容旧前端)= 摄像头(视觉)兜底;nonvision = 全局(定时/天气)兜底。
+    间隔走 set_*_interval（带 0.5s 防抖，松手后生效一次并立刻评估一次）。
+    开关走 set_*_enabled（call_soon_threadsafe，可跨线程）。配置同步落盘
     config.json，重启后保持。
     """
     agent = container.automation_agent_ref[0]
     if agent is None:
         return ApiResponse(code="not_started", message="AutomationAgent 未启动", data={"saved": False})
+    nonvision = payload.scope == "nonvision"
     config_patch: dict = {}
     if payload.interval_seconds is not None:
         # 5~3600s 钳制（与前端滑块范围一致）
         interval = max(5, min(3600, int(payload.interval_seconds)))
-        agent.set_silent_interval(float(interval))
-        config_patch["silent_eval_interval_seconds"] = interval
+        if nonvision:
+            agent.set_nonvision_silent_interval(float(interval))
+            config_patch["nonvision_silent_interval_seconds"] = interval
+        else:
+            agent.set_silent_interval(float(interval))
+            config_patch["silent_eval_interval_seconds"] = interval
     if payload.enabled is not None:
-        agent.set_silent_enabled(bool(payload.enabled))
-        config_patch["silent_eval_enabled"] = bool(payload.enabled)
+        if nonvision:
+            agent.set_nonvision_silent_enabled(bool(payload.enabled))
+            config_patch["nonvision_silent_enabled"] = bool(payload.enabled)
+        else:
+            agent.set_silent_enabled(bool(payload.enabled))
+            config_patch["silent_eval_enabled"] = bool(payload.enabled)
     if config_patch:
         update_config_section("automation", config_patch)
-        logger.info("Automation silent config updated: %s", config_patch)
+        logger.info("Automation silent config updated (scope=%s): %s", payload.scope, config_patch)
     return ApiResponse(data={"saved": True, **config_patch})
 
 

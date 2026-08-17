@@ -478,19 +478,24 @@ async def lifespan(_: FastAPI):
     dispatcher._tools = langchain_tools  # 供 per-user agent 构建使用
     _container.dispatcher = dispatcher
 
-    # 启动自动化评估（dhash 事件触发 + 定时器兜底，替代旧 10s 轮询 + 推理完成双触发）
+    # 启动自动化评估（dhash 事件触发(仅视觉) + 视觉/非视觉双静默兜底）
     silent_eval_enabled = bool(get_config("automation.silent_eval_enabled", True))
     silent_eval_interval = max(5.0, float(get_config("automation.silent_eval_interval_seconds", 300.0)))
+    nonvision_silent_enabled = bool(get_config("automation.nonvision_silent_enabled", True))
+    nonvision_silent_interval = max(5.0, float(get_config("automation.nonvision_silent_interval_seconds", 30.0)))
     _automation_agent_ref[0] = AutomationAgent(
         automation_service=automation_service,
         silent_eval_enabled=silent_eval_enabled,
         silent_eval_interval=silent_eval_interval,
         camera_manager=_services.get("camera_manager"),
+        nonvision_silent_enabled=nonvision_silent_enabled,
+        nonvision_silent_interval=nonvision_silent_interval,
     )
     await _automation_agent_ref[0].start()
     logger.info(
-        "AutomationAgent started (silent=%s/%.1fs)",
+        "AutomationAgent started (vision-silent=%s/%.1fs, nonvision-silent=%s/%.1fs)",
         silent_eval_enabled, silent_eval_interval,
+        nonvision_silent_enabled, nonvision_silent_interval,
     )
 
     # 启动定时任务调度器（与 AutomationAgent 互补：精确时刻触发，零 LLM 开销）

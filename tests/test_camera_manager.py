@@ -336,3 +336,18 @@ class TestOnCameraIpChanged:
         old_stream.stop.assert_called_once()
         mgr._db.cameras_get.assert_called_once_with("cam_a")
         assert result["rtsp_url"] == "rtsp://new/stream"
+
+
+class TestMotionTriggerVisionOnly:
+    """管道拆分:dhash 运动触发只评 vision 规则,不再顺带评估 time/weather。"""
+
+    @pytest.mark.asyncio
+    async def test_eval_one_passes_vision_rule_types(self):
+        mgr = CameraManager.__new__(CameraManager)
+        svc = MagicMock()
+        svc.evaluate = AsyncMock()
+        mgr._automation_service = svc
+        await mgr._eval_one("cam_a", [[1, 2]])
+        svc.evaluate.assert_called_once_with(
+            frames=[[1, 2]], camera_id="cam_a", rule_types=("vision",)
+        )

@@ -649,3 +649,90 @@ class TestApplyResultsExceptionTraceback:
         assert "ValueError" in tb_str or "boom" in tb_str
 
 
+
+
+# ============================================================================
+# 评估管道拆分: evaluate(rule_types=...) 按类型过滤
+# ============================================================================
+
+
+class TestEvaluateFiltersByRuleTypes:
+    """rule_types 限定本轮评估的规则类型;None=全部(向后兼容)。"""
+
+    def _make_rules(self):
+        return [
+            {"id": "t1", "camera_id": "", "enabled": True, "type": "time",
+             "condition": "每天8点", "actions": [], "cooldown_seconds": 5,
+             "last_triggered_at": 0, "name": "t1"},
+            {"id": "w1", "camera_id": "", "enabled": True, "type": "weather",
+             "condition": "下雨时", "actions": [], "cooldown_seconds": 5,
+             "last_triggered_at": 0, "name": "w1"},
+            {"id": "v1", "camera_id": "cam_a", "enabled": True, "type": "vision",
+             "condition": "画面里有人", "actions": [], "cooldown_seconds": 5,
+             "last_triggered_at": 0, "name": "v1"},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_rule_types_vision_skips_time_weather(self):
+        """rule_types=('vision',):time/weather 被跳过,只走 VL 路由。"""
+        reg = MagicMock()
+        reg.list_rules.return_value = self._make_rules()
+        svc = AutomationService(reg, vision_service=MagicMock(), ha_service=None)
+        seen_ctx: list[str] = []
+        seen_vl: list[str] = []
+
+        async def fake_ctx_only(condition, context, user_id=""):
+            seen_ctx.append(condition)
+            return 0
+
+        with patch.object(svc, "_evaluate_context_only", side_effect=fake_ctx_only), \
+             patch.object(svc, "_resolve_chat_client", return_value=MagicMock()), \
+             patch.object(svc._vision_service, "evaluate_condition",
+                          side_effect=lambda *a, **k: seen_vl.append(k.get("condition_text") or a[1] if len(a) > 1 else "vl") or _vl_zero()):
+            await svc.evaluate(frames=[[1]], camera_id="cam_a", rule_types=("vision",))
+        assert seen_ctx == []          # chat 组不应被评估
+        assert "画面里有人" in "".join(map(str, seen_vl)) or seen_vl  # VL 路由被调
+
+    @pytest.mark.asyncio
+    async def test_rule_types_nonvision_skips_vision(self):
+        """rule_types=('time','weather'):vision 规则被跳过,无帧也照常评估。"""
+        reg = MagicMock()
+        reg.list_rules.return_value = self._make_rules()
+        svc = AutomationService(reg, vision_service=MagicMock(), ha_service=None)
+        seen_ctx: list[str] = []
+
+        async def fake_ctx_only(condition, context, user_id=""):
+            seen_ctx.append(condition)
+            return 0
+
+        vl_called = []
+        with patch.object(svc, "_evaluate_context_only", side_effect=fake_ctx_only), \
+             patch.object(svc, "_resolve_chat_client", return_value=MagicMock()), \
+             patch.object(svc._vision_service, "evaluate_condition",
+                          side_effect=lambda *a, **k: vl_called.append(1)):
+            await svc.evaluate(frames=None, camera_id="", rule_types=("time", "weather"))
+        assert "每天8点" in seen_ctx and "下雨时" in seen_ctx
+        assert vl_called == []         # VL 组不应被调
+
+    @pytest.mark.asyncio
+    async def test_rule_types_none_evaluates_all(self):
+        """rule_types=None(默认):全部规则按各自路由评估(向后兼容)。"""
+        reg = MagicMock()
+        reg.list_rules.return_value = self._make_rules()
+        svc = AutomationService(reg, vision_service=MagicMock(), ha_service=None)
+        seen_ctx: list[str] = []
+
+        async def fake_ctx_only(condition, context, user_id=""):
+            seen_ctx.append(condition)
+            return 0
+
+        with patch.object(svc, "_evaluate_context_only", side_effect=fake_ctx_only), \
+             patch.object(svc, "_resolve_chat_client", return_value=MagicMock()), \
+             patch.object(svc._vision_service, "evaluate_condition",
+                          side_effect=lambda *a, **k: _vl_zero()):
+            await svc.evaluate(frames=[[1]], camera_id="cam_a")
+        assert "每天8点" in seen_ctx and "下雨时" in seen_ctx  # chat 组也评
+
+
+async def _vl_zero():
+    return 0

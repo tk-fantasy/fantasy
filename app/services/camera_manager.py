@@ -343,7 +343,11 @@ class CameraManager:
         if self._automation_service is None:
             return
         try:
-            await self._automation_service.evaluate(frames=frames, camera_id=camera_id)
+            # 管道拆分:运动触发只评 vision 规则;time/weather 由
+            # AutomationAgent 非视觉兜底循环独立评估,不再顺带。
+            await self._automation_service.evaluate(
+                frames=frames, camera_id=camera_id, rule_types=("vision",)
+            )
         except Exception:  # noqa: BLE001
             logger.exception("automation eval failed for %s", camera_id)
 

@@ -1,9 +1,10 @@
-"""Tests for AutomationAgent — 定时器兜底核心模块。
+"""Tests for AutomationAgent — 视觉/非视觉双静默兜底核心模块。
 
 多路模式下 dhash 运动事件由 CameraManager._on_automation_trigger 自闭环驱动
-(per-camera 节流闸,见 test_camera_manager.py),本 agent 只剩:
-- 定时器兜底(_silent_tick_loop + 热切换 setter)
-- 并发保护(_eval_running 丢弃重叠评估)
+(只评 vision 规则,见 test_camera_manager.py),本 agent 负责:
+- 视觉兜底(_silent_tick_loop + 热切换 setter,遍历各路只评 vision)
+- 非视觉兜底(_nonvision_tick_loop,无帧只评 time/weather,与摄像头解耦)
+- 并发保护(_eval_running / _nonvision_eval_running 各自丢弃重叠评估)
 """
 from __future__ import annotations
 
@@ -20,20 +21,28 @@ class TestAutomationAgentInit:
         agent = AutomationAgent()
         assert agent._silent_enabled is True
         assert agent._silent_interval == 60.0
+        assert agent._nonvision_enabled is True
+        assert agent._nonvision_interval == 30.0
         assert agent._running is False
         assert agent._eval_count == 0
+        assert agent._nonvision_eval_count == 0
 
     def test_custom_params(self):
         agent = AutomationAgent(
             silent_eval_enabled=False,
             silent_eval_interval=30.0,
+            nonvision_silent_enabled=False,
+            nonvision_silent_interval=10.0,
         )
         assert agent._silent_enabled is False
         assert agent._silent_interval == 30.0
+        assert agent._nonvision_enabled is False
+        assert agent._nonvision_interval == 10.0
 
     def test_silent_interval_clamped_to_min_5s(self):
-        agent = AutomationAgent(silent_eval_interval=1.0)
+        agent = AutomationAgent(silent_eval_interval=1.0, nonvision_silent_interval=1.0)
         assert agent._silent_interval == 5.0  # max(5.0, 1.0)
+        assert agent._nonvision_interval == 5.0
 
 
 class TestAutomationAgentStartStop:
@@ -136,7 +145,9 @@ class TestRunEvaluationCycle:
         agent = AutomationAgent(automation_service=svc, camera_manager=mgr)
         await agent._run_evaluation_cycle()
         assert agent._eval_count == 1
-        svc.evaluate.assert_called_once_with(frames=[[1, 2]], camera_id="cam_x")
+        svc.evaluate.assert_called_once_with(
+            frames=[[1, 2]], camera_id="cam_x", rule_types=("vision",)
+        )
 
     @pytest.mark.asyncio
     async def test_no_service_no_crash(self):
@@ -153,7 +164,9 @@ class TestRunEvaluationCycle:
         svc.evaluate = AsyncMock()
         agent = AutomationAgent(automation_service=svc, camera_manager=mgr)
         await agent._run_evaluation_cycle()
-        svc.evaluate.assert_called_once_with(frames=[[1, 2], [3, 4]], camera_id="cam_x")
+        svc.evaluate.assert_called_once_with(
+            frames=[[1, 2], [3, 4]], camera_id="cam_x", rule_types=("vision",)
+        )
 
     @pytest.mark.asyncio
     async def test_concurrent_guard_drops_overlap(self):
@@ -176,5 +189,114 @@ class TestRunEvaluationCycle:
         await agent._run_evaluation_cycle()
         assert agent._eval_count == 1  # 只第一次计数
         # 放行第一次
+        slow_eval.set()
+        await t1
+
+
+class TestNonvisionTick:
+    """非视觉兜底循环:无帧评估 time/weather,与摄像头完全解耦。"""
+
+    @pytest.mark.asyncio
+    async def test_nonvision_tick_evaluates_on_interval(self):
+        svc = MagicMock()
+        svc.evaluate = AsyncMock()
+        agent = AutomationAgent(
+            automation_service=svc, nonvision_silent_enabled=True, nonvision_silent_interval=5.0
+        )
+        agent._nonvision_interval = 0.2  # 绕过 5s 下限加速测试
+        await agent.start()
+        try:
+            await asyncio.sleep(0.5)  # 至少一个 tick
+            assert agent._nonvision_eval_count >= 1
+            # 无帧 + camera_id 空串 + 只评 time/weather
+            svc.evaluate.assert_called_with(
+                frames=None, camera_id="", rule_types=("time", "weather")
+            )
+        finally:
+            await agent.stop()
+
+    @pytest.mark.asyncio
+    async def test_nonvision_disabled_no_tick(self):
+        svc = MagicMock()
+        svc.evaluate = AsyncMock()
+        agent = AutomationAgent(automation_service=svc, nonvision_silent_enabled=False)
+        await agent.start()
+        try:
+            await asyncio.sleep(0.3)
+            assert agent._nonvision_eval_count == 0
+            assert agent._nonvision_task is None
+        finally:
+            await agent.stop()
+
+    @pytest.mark.asyncio
+    async def test_nonvision_no_camera_manager_still_evaluates(self):
+        """非视觉循环不依赖 camera_manager:无 manager 也照常评估。"""
+        svc = MagicMock()
+        svc.evaluate = AsyncMock()
+        agent = AutomationAgent(automation_service=svc, camera_manager=None)
+        await agent._run_nonvision_cycle()
+        assert agent._nonvision_eval_count == 1
+        svc.evaluate.assert_called_once_with(
+            frames=None, camera_id="", rule_types=("time", "weather")
+        )
+
+    @pytest.mark.asyncio
+    async def test_nonvision_tick_independent_of_vision_tick(self):
+        """视觉兜底关闭时,非视觉循环照常跑(两循环互不依赖)。"""
+        svc = MagicMock()
+        svc.evaluate = AsyncMock()
+        agent = AutomationAgent(
+            automation_service=svc,
+            silent_eval_enabled=False,
+            nonvision_silent_enabled=True,
+            nonvision_silent_interval=5.0,
+        )
+        agent._nonvision_interval = 0.2
+        await agent.start()
+        try:
+            await asyncio.sleep(0.5)
+            assert agent._silent_task is None
+            assert agent._nonvision_eval_count >= 1
+            assert agent._eval_count == 0
+        finally:
+            await agent.stop()
+
+    @pytest.mark.asyncio
+    async def test_set_nonvision_enabled_toggles_tick(self):
+        svc = MagicMock()
+        svc.evaluate = AsyncMock()
+        agent = AutomationAgent(
+            automation_service=svc, nonvision_silent_enabled=False, nonvision_silent_interval=5.0
+        )
+        agent._nonvision_interval = 0.2
+        await agent.start()
+        try:
+            assert agent._nonvision_task is None
+            agent.set_nonvision_silent_enabled(True)
+            await asyncio.sleep(0.05)
+            assert agent._nonvision_task is not None
+            await asyncio.sleep(0.35)
+            assert agent._nonvision_eval_count >= 1
+            agent.set_nonvision_silent_enabled(False)
+            await asyncio.sleep(0.05)
+            assert agent._nonvision_task is None
+        finally:
+            await agent.stop()
+
+    @pytest.mark.asyncio
+    async def test_nonvision_concurrent_guard_drops_overlap(self):
+        """非视觉并发保护:评估进行中时,第二次 tick 直接丢弃(不计数)。"""
+        svc = MagicMock()
+        slow_eval = asyncio.Event()
+
+        async def slow(*a, **kw):
+            await slow_eval.wait()
+
+        svc.evaluate = AsyncMock(side_effect=slow)
+        agent = AutomationAgent(automation_service=svc)
+        t1 = asyncio.create_task(agent._run_nonvision_cycle())
+        await asyncio.sleep(0.02)
+        await agent._run_nonvision_cycle()
+        assert agent._nonvision_eval_count == 1
         slow_eval.set()
         await t1
