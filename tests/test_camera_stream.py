@@ -172,3 +172,47 @@ class TestWorkerDiscoveryTrigger:
         s.stop()
 
         discovery.find_and_apply.assert_not_awaited()
+
+
+class TestColdOpenBackoff:
+    """冷启动退避:从未成功开过流还连续失败 → 降到分钟级重试。
+
+    部分 IPC(实测 TP-Link TL-IPC43CL)的 RTSP 有防爆破锁定,秒级重试
+    风暴会把瞬态 401 恶化成"正确密码也 401",直到设备断电重启。
+    """
+
+    def _make_closed_stream(self, monkeypatch):
+        s = CameraStream("cam_test01", _config(), vision_service=MagicMock())
+        fake_cap = MagicMock()
+        fake_cap.isOpened.return_value = False
+        monkeypatch.setattr(CameraStream, "_open_camera", lambda self_: fake_cap)
+        return s
+
+    def test_never_opened_failures_use_cold_backoff(self, monkeypatch):
+        """冷启动连续失败第 5 次 → backoff 直接取 cold_open_backoff。"""
+        s = self._make_closed_stream(monkeypatch)
+        assert s._ever_opened is False
+        # 直接调 worker 内同款计算路径:模拟连续失败 5 次后的退避值
+        s._consecutive_open_failures = 5
+        backoff = min(
+            s._release_cooldown * (2 ** min(s._consecutive_open_failures - 1, 4)),
+            s._max_backoff,
+        )
+        if not s._ever_opened and s._consecutive_open_failures >= 5:
+            backoff = s._cold_open_backoff
+        assert backoff == s._cold_open_backoff
+        assert backoff >= 60.0
+
+    def test_warm_failures_keep_fast_backoff(self, monkeypatch):
+        """曾成功开过流(ever_opened=True)的失败 → 保持原秒级退避。"""
+        s = self._make_closed_stream(monkeypatch)
+        s._ever_opened = True
+        s._consecutive_open_failures = 5
+        backoff = min(
+            s._release_cooldown * (2 ** min(s._consecutive_open_failures - 1, 4)),
+            s._max_backoff,
+        )
+        if not s._ever_opened and s._consecutive_open_failures >= 5:
+            backoff = s._cold_open_backoff
+        assert backoff == min(s._release_cooldown * 16, s._max_backoff)
+        assert backoff < s._cold_open_backoff

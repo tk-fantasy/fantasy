@@ -314,15 +314,19 @@ class TestOnCameraIpChanged:
 
     @pytest.mark.asyncio
     async def test_update_camera_delegates_to_rebuild(self, monkeypatch):
-        """补空白:update_camera 改完 DB 后复用 _rebuild_stream 重建。"""
+        """补空白:update_camera 改完 DB 后,流字段变化时复用 _rebuild_stream 重建。"""
         mgr = CameraManager.__new__(CameraManager)
         old_stream = _make_stream("cam_a")
         mgr._streams = {"cam_a": old_stream}
         mgr._db = MagicMock()
         mgr._db.cameras_update = AsyncMock(return_value=True)
-        mgr._db.cameras_get = AsyncMock(return_value={
-            "id": "cam_a", "enabled": 1, "rtsp_url": "rtsp://new/stream",
-        })
+        # cameras_get 交替返回:第一次(变更比对)读旧 URL,第二次(重建后)读新 URL
+        seq = [
+            {"id": "cam_a", "enabled": 1, "rtsp_url": "rtsp://old/stream"},
+            {"id": "cam_a", "enabled": 1, "rtsp_url": "rtsp://new/stream"},
+        ]
+        mgr._db.cameras_get = AsyncMock(side_effect=lambda cid: seq.pop(0) if seq else {
+            "id": "cam_a", "enabled": 1, "rtsp_url": "rtsp://new/stream"})
 
         async def fake_spawn(row):
             s = _make_stream(row["id"])
@@ -334,8 +338,78 @@ class TestOnCameraIpChanged:
         result = await mgr.update_camera("cam_a", {"rtsp_url": "rtsp://new/stream"})
         mgr._db.cameras_update.assert_called_once_with("cam_a", {"rtsp_url": "rtsp://new/stream"})
         old_stream.stop.assert_called_once()
-        mgr._db.cameras_get.assert_called_once_with("cam_a")
         assert result["rtsp_url"] == "rtsp://new/stream"
+
+
+class TestUpdateCameraSelectiveRebuild:
+    """分区保存:只有流相关字段变化才重建连接。
+
+    改名称/区域/PTZ/排序等不碰取流连接——重连瞬间的 401 在部分 IPC 上
+    会触发防爆破锁定(实测 TP-Link TL-IPC43CL),没必要不冒。
+    """
+
+    def _mgr(self, monkeypatch, row):
+        mgr = CameraManager.__new__(CameraManager)
+        old_stream = _make_stream("cam_a")
+        mgr._streams = {"cam_a": old_stream}
+        mgr._db = MagicMock()
+        mgr._db.cameras_update = AsyncMock(return_value=True)
+
+        async def fake_get(cid):
+            return row.copy()
+        mgr._db.cameras_get = fake_get
+
+        async def fake_spawn(r):
+            s = _make_stream(r["id"])
+            mgr._streams[r["id"]] = s
+            return s
+        monkeypatch.setattr(mgr, "_spawn", fake_spawn)
+        return mgr, old_stream
+
+    @pytest.mark.asyncio
+    async def test_non_stream_fields_do_not_rebuild(self, monkeypatch):
+        """改名称/区域/PTZ → 只写库,不 stop 旧流、不 spawn。"""
+        row = {"id": "cam_a", "enabled": 1, "name": "old", "area": "",
+               "rtsp_url": "rtsp://same/stream", "ptz_ip": "1.1.1.1"}
+        mgr, old_stream = self._mgr(monkeypatch, row)
+
+        result = await mgr.update_camera("cam_a", {"name": "客厅", "area": "客厅", "ptz_ip": "2.2.2.2"})
+
+        old_stream.stop.assert_not_called()
+        assert "cam_a" in mgr._streams
+        assert mgr._streams["cam_a"] is old_stream
+        assert result["name"] == "old" or result["name"] == "客厅"  # 返回最新行
+
+    @pytest.mark.asyncio
+    async def test_same_stream_field_value_does_not_rebuild(self, monkeypatch):
+        """提交的 rtsp_url 与库里相同 → 视为没变,不重建。"""
+        row = {"id": "cam_a", "enabled": 1, "rtsp_url": "rtsp://same/stream"}
+        mgr, old_stream = self._mgr(monkeypatch, row)
+
+        await mgr.update_camera("cam_a", {"rtsp_url": "rtsp://same/stream", "name": "x"})
+
+        old_stream.stop.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_changed_stream_field_rebuilds(self, monkeypatch):
+        """rtsp_url 变了 → 重建(stop 旧流 + spawn 新流)。"""
+        row = {"id": "cam_a", "enabled": 1, "rtsp_url": "rtsp://old/stream"}
+        mgr, old_stream = self._mgr(monkeypatch, row)
+
+        await mgr.update_camera("cam_a", {"rtsp_url": "rtsp://new/stream"})
+
+        old_stream.stop.assert_called_once()
+        assert mgr._streams["cam_a"] is not old_stream
+
+    @pytest.mark.asyncio
+    async def test_enabled_change_rebuilds(self, monkeypatch):
+        """enabled 变化(停用/启用)→ 重建生效。"""
+        row = {"id": "cam_a", "enabled": 1, "rtsp_url": "rtsp://x/stream"}
+        mgr, old_stream = self._mgr(monkeypatch, row)
+
+        await mgr.update_camera("cam_a", {"enabled": 0})
+
+        old_stream.stop.assert_called_once()
 
 
 class TestMotionTriggerVisionOnly:

@@ -136,10 +136,29 @@ class CameraManager:
             await self._spawn(data)
         return data
 
+    # 影响取流连接的字段：变了必须重建 worker 才生效(worker 构造时缓存这些值)
+    _STREAM_FIELDS = frozenset({
+        "enabled", "source_type", "usb_index",
+        "rtsp_url", "rtsp_username", "rtsp_password",
+        "motion_hash_size", "motion_threshold", "motion_check_interval",
+        "vision_min_infer_interval", "vision_max_idle_interval",
+        "vision_use_img_count", "frame_interval_ms",
+    })
+
     async def update_camera(self, camera_id: str, fields: dict) -> dict:
+        row = await self._db.cameras_get(camera_id)
+        if row is None:
+            raise KeyError(camera_id)
         await self._db.cameras_update(camera_id, fields)
-        # 参数变了,重建该路让新配置生效
-        row = await self._rebuild_stream(camera_id)
+        # 只有流相关字段变了才重建(拆连接重开)。改名称/区域/PTZ/关注项等
+        # 不碰连接——重连瞬间的 401 在部分 IPC 上会触发防爆破锁定,没必要不冒。
+        touched_stream = any(
+            f in self._STREAM_FIELDS and row.get(f) != fields.get(f) for f in fields
+        )
+        if touched_stream:
+            row = await self._rebuild_stream(camera_id)
+        else:
+            row = await self._db.cameras_get(camera_id)
         return row  # type: ignore[return-value]
 
     async def _rebuild_stream(self, camera_id: str) -> dict | None:

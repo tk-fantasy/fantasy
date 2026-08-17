@@ -3,6 +3,9 @@
 保存策略（跟 HA 一致）：用户填了新凭证时，先用候选凭证真连一次服务，
 probe 通过才落盘。杜绝「脏凭证存进去、下次使用才发现不工作」。
 留空字段跳过 probe（表示「不修改」）。
+
+RTSP 源配置已随多摄像头体系移入 cameras 表(「摄像头设置」页 per-camera
+管理,试连走 /api/cameras/{id}/test-stream),本路由不再涉及 RTSP。
 """
 from __future__ import annotations
 
@@ -15,7 +18,7 @@ from ..container import AppContainer, get_container
 from ..core.api_models import ApiResponse
 from ..core.config import get_config, update_config_section, write_secrets
 from ..schema.api_schemas import AdvancedConfigRequest, VisionConfig
-from ..services.config_probes import probe_exa, probe_rtsp
+from ..services.config_probes import probe_exa
 
 logger = logging.getLogger(__name__)
 
@@ -36,26 +39,14 @@ async def get_advanced_config() -> ApiResponse[dict]:
     })
 
 
-def _resolve_rtsp_password_for_probe(new_password: str) -> str:
-    """拿到 probe 要用的密码：优先用户新填的，否则从 .env 读现有的。
-
-    跟 CameraStream._resolve_rtsp_url 一致：config.json 只存变量名，
-    真密码在 .env 的 RTSP_PASSWORD。
-    """
-    pwd = (new_password or "").strip()
-    if pwd:
-        return pwd
-    return os.getenv("RTSP_PASSWORD", "")
-
-
 @router.post("/advanced/config")
 async def set_advanced_config(
     payload: AdvancedConfigRequest,
 ) -> ApiResponse[dict]:
     """保存高级配置。
 
-    凭证类字段（Exa api_key / RTSP url+密码）填了新值时，先用候选值 probe
-    一次，probe 失败拒绝落盘并返回 reason，前端据此展示差异化错误。
+    凭证类字段（Exa api_key）填了新值时，先用候选值 probe 一次，
+    probe 失败拒绝落盘并返回 reason，前端据此展示差异化错误。
     """
     # ---- Exa ----
     if payload.web_search is not None:
@@ -74,51 +65,17 @@ async def set_advanced_config(
         update_config_section("web_search", exa_data)
         logger.info("Web search config updated: api_key_set=%s", bool(new_api_key))
 
-    # ---- Vision / RTSP ----
+    # ---- Vision ----
+    # 注意:此处只存视觉处理参数(分辨率/压缩/运动检测等)。RTSP 源配置
+    # (url/用户名/密码)已随多摄像头体系移入 cameras 表,归「摄像头设置」页
+    # per-camera 管理;vision 段里的 rtsp_* 字段是单摄时代的遗留,不参与任何
+    # 运行时取流,也不再 probe——否则会被一个永不更新的旧 IP 卡死保存。
     if payload.vision is not None:
         vision_data = payload.vision.model_dump()
-        rtsp_url = (vision_data.get("rtsp_url", "") or "").strip()
-        # 配了 RTSP URL 才 probe（留空 = 走 USB，不验证）
-        if rtsp_url:
-            username = (vision_data.get("rtsp_username", "") or "").strip()
-            password = _resolve_rtsp_password_for_probe(payload.rtsp_password)
-            result = await probe_rtsp(rtsp_url, username, password)
-            if not result.ok:
-                # probe 失败：不落盘 URL/用户名（避免脏 config），但密码仍允许写。
-                # 改密码往往是因为连不上，若 probe 失败就拦着密码，会陷入
-                # 「连不上→改不了密码→还是连不上」的死循环。密码是用户明确要改的，
-                # 不该被 probe 拦截，probe 结果只作警告。
-                logger.warning("RTSP probe failed but password will still save: %s (%s)", result.reason, result.detail)
-                if payload.rtsp_password:
-                    write_secrets({"RTSP_PASSWORD": payload.rtsp_password})
-                    update_config_section("vision", {"rtsp_password_env": "RTSP_PASSWORD"})
-                    logger.info("RTSP password saved to .env despite probe failure")
-                return ApiResponse(
-                    code="probe_failed",
-                    message=result.detail,
-                    data={"saved": False, "section": "rtsp", "password_saved": bool(payload.rtsp_password), **result.to_dict()},
-                )
-            # 固定变量名，保证 _resolve_rtsp_url 能读到
-            vision_data["rtsp_password_env"] = "RTSP_PASSWORD"
-            # 自动从 RTSP URL 提取 IP → 同步到 ptz.ip（同一摄像头）
-            from ..services.ptz_service import extract_host_from_url
-
-            host = extract_host_from_url(rtsp_url)
-            if host:
-                update_config_section("ptz", {"ip": host})
-                logger.info("PTZ ip auto-synced from RTSP URL: %s", host)
         update_config_section("vision", vision_data)
-        logger.info(
-            "Vision config updated: rtsp_url_set=%s",
-            bool(rtsp_url),
-        )
+        logger.info("Vision config updated")
 
-    # RTSP 密码：留空表示不修改，非空才写 .env
-    if payload.rtsp_password:
-        write_secrets({"RTSP_PASSWORD": payload.rtsp_password})
-        # 确保 config.json 记住变量名（_resolve_rtsp_url 靠它取密码）
-        update_config_section("vision", {"rtsp_password_env": "RTSP_PASSWORD"})
-        logger.info("RTSP password updated in .env")
+    # 兼容旧前端/脚本:rtsp_password 一律忽略(凭证请在摄像头设置里改)。
 
     if payload.rag is not None:
         update_config_section("rag", payload.rag.model_dump())
@@ -137,32 +94,6 @@ async def test_exa_connection() -> ApiResponse[dict]:
     result = await probe_exa(api_key)
     if not result.ok:
         logger.warning("Exa test failed: %s (%s)", result.reason, result.detail)
-    return ApiResponse(
-        code="probe_failed" if not result.ok else "ok",
-        message=result.detail,
-        data={"connected": result.ok, **result.to_dict()},
-    )
-
-
-@router.post("/advanced/test/rtsp")
-async def test_rtsp_connection() -> ApiResponse[dict]:
-    """测试 RTSP 连接（用当前已保存的 url/username/password）。
-
-    前端「测试连接」按钮调用。注意：probe 会临时占一路流，如果当前
-    摄像头 worker 已在拉同一路流（单流摄像头），probe 可能失败。
-    """
-    rtsp_url = str(get_config("vision.rtsp_url", "") or "").strip()
-    if not rtsp_url:
-        return ApiResponse(
-            code="probe_failed",
-            message="未配置 RTSP URL",
-            data={"connected": False, "reason": "bad_format", "detail": "未配置 RTSP URL"},
-        )
-    username = str(get_config("vision.rtsp_username", "") or "").strip()
-    password = os.getenv("RTSP_PASSWORD", "")
-    result = await probe_rtsp(rtsp_url, username, password)
-    if not result.ok:
-        logger.warning("RTSP test failed: %s (%s)", result.reason, result.detail)
     return ApiResponse(
         code="probe_failed" if not result.ok else "ok",
         message=result.detail,

@@ -119,6 +119,14 @@ class CameraStream:
         self._release_cooldown = max(0.1, float(get_config("vision.release_cooldown_seconds", 0.8)))
         # 指数退避上限
         self._max_backoff = max(self._release_cooldown, float(get_config("vision.max_backoff_seconds", 15.0)))
+        # 冷启动退避：worker 起来后从未成功开过流(设备断电/IP 漂移/凭证被拒)，
+        # 连续失败达到阈值后降到分钟级重试。部分 IPC(如实测 TP-Link TL-IPC43CL)
+        # 的 RTSP 有防爆破锁定，秒级重试风暴会把瞬态 401 恶化成"正确密码也 401"，
+        # 直到设备断电重启才解锁。
+        self._cold_open_backoff = max(
+            self._max_backoff, float(get_config("vision.cold_open_backoff_seconds", 60.0))
+        )
+        self._ever_opened = False
 
         # 慢读降级检测：DSHOW 捕获图损坏后会持续返回 ok=True 但 read≈1000ms，
         # 上面的恢复逻辑只在 ok=False 时拆设备，慢读会永久卡死在 1fps。
@@ -616,6 +624,10 @@ class CameraStream:
                             self._release_cooldown * (2 ** min(self._consecutive_open_failures - 1, 4)),
                             self._max_backoff,
                         )
+                        # 从未成功开过流还连续失败:大概率是设备不在线或凭证被拒，
+                        # 快重试无意义且有防爆破风险，直接降到冷启动节奏
+                        if not self._ever_opened and self._consecutive_open_failures >= 5:
+                            backoff = self._cold_open_backoff
                         # 保留最后一帧给前端宽限期，不立即清空画面
                         self._mark_camera_closed("无法打开电脑摄像头", keep_cache=True)
                         logger.error(
@@ -657,6 +669,7 @@ class CameraStream:
                         continue
                     # 成功打开，重置失败计数
                     self._consecutive_open_failures = 0
+                    self._ever_opened = True
 
                 _t_read = time.time()
                 ok, frame = self._cap.read()

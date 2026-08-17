@@ -22,7 +22,6 @@ const {
 const editing = ref(null)        // 当前编辑对象(null=列表态)
 const editingFocuses = ref([])   // 当前编辑摄像头的关注项
 const newFocusText = ref('')
-const saving = ref(false)
 const testing = ref(false)
 const testResult = ref(null)     // null | { ok, error }
 const discovering = ref(false)
@@ -72,33 +71,72 @@ function cancelEdit() {
   editingFocuses.value = []
 }
 
-async function save() {
-  if (!editing.value.name.trim()) {
+// —— 分区保存:四个区块各自独立提交,互不牵连 ——
+// 保存"视觉关注项"等非流字段时后端不再重建取流连接(见 update_camera
+// 的 _STREAM_FIELDS 判定),RTSP/PTZ/基本信息也各存各的。
+const sectionSaved = ref('')   // 刚保存成功的分区 key,2s 后清除
+const sectionBusy = ref('')    // 保存中的分区 key
+
+async function saveSection(key) {
+  if (!editing.value) return
+  if (key === 'basic' && !editing.value.name.trim()) {
     alert('请填写摄像头名称')
     return
   }
-  saving.value = true
+  sectionBusy.value = key
   try {
-    if (editing.value.id) {
-      // 更新:rtsp_password/ptz_password 留空表示不改,后端 cameras_update 直接覆盖
-      // 前端若留空则不传密码字段(避免清空已有密码)
-      const fields = { ...editing.value }
-      if (!fields.rtsp_password) delete fields.rtsp_password
-      if (!fields.ptz_password) delete fields.ptz_password
-      delete fields.created_at
-      delete fields.updated_at
-      await updateCamera(editing.value.id, fields)
-    } else {
-      await createCamera(editing.value)
+    if (!editing.value.id) {
+      // 新建:仍走整卡提交(还没有分区可言)
+      await createCamera(pickCreateFields())
+      editing.value = null
+      return
     }
-    editing.value = null
+    const fields = sectionFields(key)
+    if (!Object.keys(fields).length) return
+    await updateCamera(editing.value.id, fields)
+    sectionSaved.value = key
+    setTimeout(() => { if (sectionSaved.value === key) sectionSaved.value = '' }, 2000)
+    await loadCameras()
   } catch (e) {
-    console.error('save failed:', e)
+    console.error(`saveSection(${key}) failed:`, e)
     alert('保存失败: ' + (e?.message || String(e)))
   } finally {
-    saving.value = false
+    sectionBusy.value = ''
   }
 }
+
+function pickCreateFields() {
+  const { ...all } = editing.value
+  delete all.created_at
+  delete all.updated_at
+  if (!all.rtsp_password) delete all.rtsp_password
+  if (!all.ptz_password) delete all.ptz_password
+  return all
+}
+
+// 各分区提交的字段(密码留空=不传,沿用"留空不改"语义)
+function sectionFields(key) {
+  const e = editing.value
+  if (key === 'basic') {
+    return { name: e.name, area: e.area, source_type: e.source_type, enabled: e.enabled, display_enabled: e.display_enabled }
+  }
+  if (key === 'rtsp') {
+    const f = { rtsp_url: e.rtsp_url, rtsp_username: e.rtsp_username }
+    if (e.rtsp_password) f.rtsp_password = e.rtsp_password
+    return f
+  }
+  if (key === 'usb') {
+    return { source_type: e.source_type, usb_index: e.usb_index }
+  }
+  if (key === 'ptz') {
+    const f = { ptz_enabled: e.ptz_enabled, ptz_ip: e.ptz_ip, ptz_port: e.ptz_port, ptz_username: e.ptz_username }
+    if (e.ptz_password) f.ptz_password = e.ptz_password
+    return f
+  }
+  return {}
+}
+
+// 视觉关注项走独立 CRUD,不进 cameras 表字段,无"保存"按钮
 
 async function remove(id) {
   if (!confirm('删除该摄像头?关联规则将解绑,关注项将删除。')) return
@@ -297,7 +335,12 @@ const areaOptions = computed(() => [
             <div class="cam-modal-body">
               <!-- 基本信息 -->
               <section class="cam-section">
-                <h3 class="cam-section-title">基本信息</h3>
+                <div class="cam-section-head">
+                  <h3 class="cam-section-title">基本信息</h3>
+                  <button v-if="isEdit" class="btn-section-save" :disabled="sectionBusy === 'basic'" @click="saveSection('basic')">
+                    {{ sectionBusy === 'basic' ? '保存中...' : sectionSaved === 'basic' ? '已保存 ✓' : '保存' }}
+                  </button>
+                </div>
                 <div class="cam-field">
                   <label>名称</label>
                   <input v-model="editing.name" class="cam-input" placeholder="如:客厅、门口" />
@@ -322,7 +365,12 @@ const areaOptions = computed(() => [
 
               <!-- RTSP -->
               <section v-if="editing.source_type === 'rtsp'" class="cam-section">
-                <h3 class="cam-section-title">RTSP 配置</h3>
+                <div class="cam-section-head">
+                  <h3 class="cam-section-title">RTSP 配置</h3>
+                  <button v-if="isEdit" class="btn-section-save" :disabled="sectionBusy === 'rtsp'" @click="saveSection('rtsp')">
+                    {{ sectionBusy === 'rtsp' ? '保存中...' : sectionSaved === 'rtsp' ? '已保存 ✓' : '保存' }}
+                  </button>
+                </div>
                 <div class="cam-field">
                   <label>RTSP 地址</label>
                   <input v-model="editing.rtsp_url" class="cam-input" placeholder="rtsp://192.168.1.100:554/stream" />
@@ -346,7 +394,12 @@ const areaOptions = computed(() => [
 
               <!-- USB -->
               <section v-else class="cam-section">
-                <h3 class="cam-section-title">USB 配置</h3>
+                <div class="cam-section-head">
+                  <h3 class="cam-section-title">USB 配置</h3>
+                  <button v-if="isEdit" class="btn-section-save" :disabled="sectionBusy === 'usb'" @click="saveSection('usb')">
+                    {{ sectionBusy === 'usb' ? '保存中...' : sectionSaved === 'usb' ? '已保存 ✓' : '保存' }}
+                  </button>
+                </div>
                 <div class="cam-field">
                   <label>设备序号</label>
                   <input v-model.number="editing.usb_index" type="number" class="cam-input narrow" placeholder="0" />
@@ -355,7 +408,12 @@ const areaOptions = computed(() => [
 
               <!-- PTZ 云台 -->
               <section class="cam-section">
-                <h3 class="cam-section-title">云台(PTZ)</h3>
+                <div class="cam-section-head">
+                  <h3 class="cam-section-title">云台(PTZ)</h3>
+                  <button v-if="isEdit" class="btn-section-save" :disabled="sectionBusy === 'ptz'" @click="saveSection('ptz')">
+                    {{ sectionBusy === 'ptz' ? '保存中...' : sectionSaved === 'ptz' ? '已保存 ✓' : '保存' }}
+                  </button>
+                </div>
                 <label class="cam-check">
                   <input type="checkbox" v-model="editing.ptz_enabled" :true-value="1" :false-value="0" /> 启用云台
                 </label>
@@ -383,7 +441,10 @@ const areaOptions = computed(() => [
 
               <!-- 关注项 -->
               <section v-if="isEdit" class="cam-section">
-                <h3 class="cam-section-title">视觉关注项</h3>
+                <div class="cam-section-head">
+                  <h3 class="cam-section-title">视觉关注项</h3>
+                  <span class="cam-section-hint">添加/删除/开关即时生效</span>
+                </div>
                 <div class="focus-add-row">
                   <input v-model="newFocusText" class="cam-input" placeholder="关注什么?如:是否有人、是否有快递" @keydown.enter="doAddFocus" />
                   <button class="btn-test" @click="doAddFocus">添加</button>
@@ -400,10 +461,7 @@ const areaOptions = computed(() => [
             </div>
 
             <div class="cam-modal-footer">
-              <button class="btn-cancel" @click="cancelEdit">取消</button>
-              <button class="btn-save" :disabled="saving" @click="save">
-                {{ saving ? '保存中...' : '保存' }}
-              </button>
+              <button class="btn-cancel" @click="cancelEdit">关闭</button>
             </div>
           </div>
         </div>
@@ -598,6 +656,41 @@ const areaOptions = computed(() => [
   letter-spacing: 0.5px;
 }
 
+.cam-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-6);
+}
+
+.cam-section-hint {
+  font-size: var(--text-xs);
+  color: var(--color-text-tertiary);
+}
+
+.btn-section-save {
+  padding: var(--space-2) var(--space-10);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+  background: transparent;
+  color: var(--color-primary);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.btn-section-save:hover:not(:disabled) {
+  background: var(--color-primary);
+  color: #fff;
+  border-color: var(--color-primary);
+}
+
+.btn-section-save:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .cam-field {
   display: flex;
   flex-direction: column;
@@ -752,22 +845,6 @@ const areaOptions = computed(() => [
   color: var(--color-text-secondary);
   font-size: var(--text-sm);
   cursor: pointer;
-}
-
-.btn-save {
-  padding: var(--space-5) var(--space-16);
-  border-radius: var(--radius-md);
-  border: none;
-  background: var(--color-primary);
-  color: #fff;
-  font-size: var(--text-sm);
-  font-weight: var(--weight-semibold);
-  cursor: pointer;
-}
-
-.btn-save:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
 }
 
 .modal-enter-active,

@@ -522,3 +522,46 @@ class TestApplyFoundIpByCameraId:
         fields = db_mock.cameras_update.call_args[0][1]
         assert fields == {"ptz_ip": "2.2.2.2"}
 
+    @pytest.mark.asyncio
+    async def test_apply_same_ip_skips_update_and_callback(self):
+        """IP 没变 → 不写库、不触发重建回调。
+
+        发现循环周期性重复命中同一台设备是常态;每次都重建会拆掉正常流,
+        且反复重连会触发部分 IPC 的 RTSP 防爆破锁定(实测 TP-Link)。
+        """
+        svc = CameraDiscoveryService()
+        db_mock = MagicMock()
+        db_mock.cameras_update = AsyncMock()
+        svc.set_db(db_mock)
+
+        async def fake_get(cid):
+            return {"id": "cam_a", "rtsp_url": "rtsp://192.168.1.50:554/stream",
+                    "ptz_ip": "192.168.1.50"}
+        svc._db.cameras_get = fake_get
+
+        calls = []
+        svc.set_on_ip_changed(lambda cid, ip: calls.append((cid, ip)))
+
+        await svc.apply_found_ip("cam_a", "192.168.1.50")
+        db_mock.cameras_update.assert_not_called()
+        assert calls == []
+
+    @pytest.mark.asyncio
+    async def test_apply_usb_same_ip_still_updates_ptz(self):
+        """USB 路(无 rtsp_url)无法比对 → 沿用旧行为,更新 ptz_ip。"""
+        svc = CameraDiscoveryService()
+        db_mock = MagicMock()
+        db_mock.cameras_update = AsyncMock()
+        svc.set_db(db_mock)
+
+        async def fake_get(cid):
+            return {"id": "cam_a", "rtsp_url": "", "ptz_ip": "192.168.1.50"}
+        svc._db.cameras_get = fake_get
+
+        calls = []
+        svc.set_on_ip_changed(lambda cid, ip: calls.append((cid, ip)))
+
+        await svc.apply_found_ip("cam_a", "192.168.1.50")
+        db_mock.cameras_update.assert_called_once()
+        assert calls == [("cam_a", "192.168.1.50")]
+

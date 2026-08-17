@@ -59,11 +59,7 @@ const visionConfig = ref({
   max_idle_interval_seconds: 60.0,
   vision_use_img_count: 3,
   frame_interval_ms: 1000,
-  rtsp_url: '',
-  rtsp_username: '',
-  has_rtsp_password: false,
 })
-const rtspPassword = ref('')
 
 // 自动化（dhash 事件触发(仅视觉) + 视觉/非视觉双静默兜底；dhash 阈值滑块留 P1）
 const automationConfig = ref({
@@ -312,53 +308,9 @@ async function testExa() {
   }
 }
 
-// ===== 视觉保存 =====
-const visionSaving = ref(false)
-const visionSaved = ref(false)
-const visionProbeResult = ref(null)
-async function saveVision() {
-  visionSaving.value = true
-  visionSaved.value = false
-  visionProbeResult.value = null
-  try {
-    const data = await apiPost('/api/advanced/config', {
-      vision: visionConfig.value,
-      rtsp_password: rtspPassword.value,
-    })
-    if (data && data.saved === false) {
-      visionProbeResult.value = { status: 'fail', reason: data.reason || 'error', detail: data.detail || '' }
-      return
-    }
-    rtspPassword.value = ''
-    await loadAll()
-    visionSaved.value = true
-    setTimeout(() => { visionSaved.value = false }, 2000)
-  } catch (e) {
-    visionProbeResult.value = { status: 'fail', reason: 'bad_format', detail: e?.message || String(e) }
-    console.error('Failed to save vision config:', e)
-  } finally {
-    visionSaving.value = false
-  }
-}
-
-// ===== 视觉/RTSP 测试连接 =====
-const visionTesting = ref(false)
-async function testVision() {
-  visionTesting.value = true
-  visionProbeResult.value = null
-  try {
-    const data = await apiPost('/api/advanced/test/rtsp', {})
-    if (data && data.connected) {
-      visionProbeResult.value = { status: 'success' }
-    } else {
-      visionProbeResult.value = { status: 'fail', reason: data?.reason || 'error', detail: data?.detail || '' }
-    }
-  } catch (e) {
-    visionProbeResult.value = { status: 'fail', reason: 'error', detail: String(e) }
-  } finally {
-    visionTesting.value = false
-  }
-}
+// ===== 视觉/RTSP 配置已随多摄像头体系移入「摄像头设置」页 =====
+// 此处仅保留视觉处理参数;RTSP 源(url/用户名/密码)的试连与保存走
+// /api/cameras/{id}/test-stream 和 PUT /api/cameras/{id}。
 
 
 // ===== 自动化保存 =====
@@ -429,9 +381,11 @@ async function saveCamParams() {
   camParamsSaving.value = true
   camParamsSaved.value = false
   try {
-    // vision 段:只改 motion_threshold + min_infer_interval_seconds,其余字段原样回传
+    // vision 段:只提交视觉处理参数,不含 RTSP 源字段(已归摄像头设置页),
+    // 避免遗留旧 URL 触发无关 probe 卡死保存
+    const { rtsp_url, rtsp_username, has_rtsp_password, ...visionParams } = visionConfig.value
     await apiPost('/api/advanced/config', {
-      vision: { ...visionConfig.value },
+      vision: visionParams,
     })
     await loadAll()
     camParamsSaved.value = true

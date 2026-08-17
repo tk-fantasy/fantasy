@@ -378,6 +378,11 @@ class CameraDiscoveryService:
             if not row:
                 return
             old_rtsp = str(row.get("rtsp_url", "") or "").strip()
+            if old_rtsp and self._extract_ip_from_rtsp_url(old_rtsp) == new_ip:
+                # IP 没变:不写库、不重建(重建会拆掉正常流,且反复重连
+                # 会触发部分 IPC 的 RTSP 防爆破锁定)。发现循环周期性
+                # 重复命中同一台设备是常态,必须在此静默收敛。
+                return
             fields: dict = {"ptz_ip": new_ip}
             if old_rtsp:
                 fields["rtsp_url"] = self._replace_url_host(old_rtsp, new_ip)
