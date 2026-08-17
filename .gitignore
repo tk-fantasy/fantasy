@@ -1,8 +1,7 @@
 # 密钥与本地配置
 .env
 .env.local
-config.json
-config.json.bak
+config.json*
 *.bak
 *.bak[0-9]*
 app/data/.jwt_secret
