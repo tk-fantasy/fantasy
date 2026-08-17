@@ -5,6 +5,7 @@ import EmojiPicker from '../components/EmojiPicker.vue'
 import ReviseChatModal from '../components/ReviseChatModal.vue'
 import FlowSelect from '../components/FlowSelect.vue'
 import { apiGet } from '../utils/api'
+import { getRuleMismatch } from '../utils/ruleMismatch'
 import { useCamera } from '../composables/useCamera'
 import { useEmojiPref } from '../composables/useEmojiPref'
 
@@ -288,6 +289,13 @@ const filteredRules = computed(() => {
   })
 })
 
+// 错配标色：red=全局视觉规则(任意摄像头触发,危险)；orange=定时/天气绑定摄像头(绑定无效,无害)
+const mismatch = (rule) => getRuleMismatch(rule)
+const mismatchBadgeText = {
+  red: '⚠️ 视觉规则未绑定摄像头',
+  orange: '💡 定时/天气规则不依赖摄像头',
+}
+
 // 摄像头 id → name 映射(卡片标签用)
 function cameraName(cid) {
   if (!cid) return '全局'
@@ -341,7 +349,13 @@ onMounted(() => {
     <div v-if="loading" class="loading-state">加载中...</div>
 
     <div v-else class="rules-list">
-      <div v-for="rule in filteredRules" :key="rule.id" class="rule-card" @click="openRuleDetail(rule)">
+      <div
+        v-for="rule in filteredRules"
+        :key="rule.id"
+        class="rule-card"
+        :class="mismatch(rule) ? `rule-card--${mismatch(rule)}` : ''"
+        @click="openRuleDetail(rule)"
+      >
         <div class="rule-toggle-col" @click.stop>
           <BaseToggle :modelValue="rule.enabled" @update:modelValue="toggleRule(rule.id)" />
         </div>
@@ -349,6 +363,11 @@ onMounted(() => {
         <div class="rule-flow">
           <div class="rule-header-row">
             <h3>{{ rule.name || rule.condition || `规则 #${rule.id}` }}</h3>
+            <span
+              v-if="mismatch(rule)"
+              class="rule-mismatch-badge"
+              :class="`rule-mismatch-badge--${mismatch(rule)}`"
+            >{{ mismatchBadgeText[mismatch(rule)] }}</span>
             <span class="rule-camera-tag" :class="{ global: !rule.camera_id }">
               {{ cameraName(rule.camera_id) }}
             </span>
@@ -740,5 +759,35 @@ onMounted(() => {
     min-width: 0;
     width: 100%;
   }
+}
+
+/* 错配徽标 + 卡片配色 */
+.rule-card--red {
+  border-color: var(--color-danger, #e74c3c);
+  background: rgba(231, 76, 60, 0.06);
+}
+
+.rule-card--orange {
+  border-color: #e67e22;
+  background: rgba(230, 126, 34, 0.06);
+}
+
+.rule-mismatch-badge {
+  font-size: var(--text-xs);
+  padding: var(--space-1) var(--space-5);
+  border-radius: var(--radius-sm);
+  font-weight: var(--weight-medium);
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.rule-mismatch-badge--red {
+  background: rgba(231, 76, 60, 0.15);
+  color: var(--color-danger, #e74c3c);
+}
+
+.rule-mismatch-badge--orange {
+  background: rgba(230, 126, 34, 0.15);
+  color: #e67e22;
 }
 </style>
