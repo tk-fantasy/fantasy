@@ -83,6 +83,30 @@ const automationConfig = ref({
 const automationSaving = ref(false)
 const automationSaved = ref(false)
 
+// 兜底间隔:数字输入 + 即时校验(非法红字提示) + 回车/失焦即生效
+const isValidInterval = (v) => Number.isInteger(v) && v >= 5 && v <= 3600
+const silentIntervalValid = computed(() => isValidInterval(automationConfig.value.silent_eval_interval_seconds))
+const nonvisionIntervalValid = computed(() => isValidInterval(automationConfig.value.nonvision_silent_interval_seconds))
+// 最近一次已生效的值:未变化时失焦不重发请求
+const appliedIntervals = ref({ vision: 60, nonvision: 30 })
+const intervalApplied = ref({ vision: false, nonvision: false })
+const silentIntervalApplied = computed(() => intervalApplied.value.vision)
+const nonvisionIntervalApplied = computed(() => intervalApplied.value.nonvision)
+
+async function applySilentInterval(scope) {
+  const key = scope === 'nonvision' ? 'nonvision_silent_interval_seconds' : 'silent_eval_interval_seconds'
+  const value = automationConfig.value[key]
+  if (!isValidInterval(value) || value === appliedIntervals.value[scope]) return
+  try {
+    await apiPost('/api/automation/silent', { interval_seconds: value, scope })
+    appliedIntervals.value[scope] = value
+    intervalApplied.value[scope] = true
+    setTimeout(() => { intervalApplied.value[scope] = false }, 1500)
+  } catch (e) {
+    console.error('Failed to apply silent interval:', e)
+  }
+}
+
 // HA 配置
 const haConfig = ref({ url: '', token_set: false, token_preview: '' })
 const haTokenInput = ref('')
@@ -161,6 +185,10 @@ async function loadAll() {
         running: data.running ?? false,
         eval_count: data.eval_count ?? 0,
         nonvision_eval_count: data.nonvision_eval_count ?? 0,
+      }
+      appliedIntervals.value = {
+        vision: automationConfig.value.silent_eval_interval_seconds,
+        nonvision: automationConfig.value.nonvision_silent_interval_seconds,
       }
     }
   } catch (e) {
@@ -312,6 +340,8 @@ async function testVision() {
 
 // ===== 自动化保存 =====
 async function saveAutomation() {
+  // 间隔非法时不保存(输入框旁已红字提示),修复后再点
+  if (!silentIntervalValid.value || !nonvisionIntervalValid.value) return
   automationSaving.value = true
   automationSaved.value = false
   try {
@@ -1044,11 +1074,16 @@ onUnmounted(() => {
         <div class="setting-row">
           <label class="setting-label">
             <span class="label-text">全局兜底间隔（秒）</span>
-            <span class="label-desc">5~3600，时间规则触发精度=此间隔；条件未满足时每 tick 每条一次 LLM</span>
+            <span class="label-desc">输入 5~3600 的整数，回车或失焦即生效；时间规则触发精度=此间隔</span>
           </label>
-          <div class="slider-row">
-            <input type="range" min="5" max="3600" step="1" v-model.number="automationConfig.nonvision_silent_interval_seconds" />
-            <span class="slider-value">{{ automationConfig.nonvision_silent_interval_seconds }}s</span>
+          <div class="interval-input-group">
+            <input type="number" min="5" max="3600" step="1" class="setting-input narrow"
+                   v-model.number="automationConfig.nonvision_silent_interval_seconds"
+                   :class="{ 'input-invalid': !nonvisionIntervalValid }"
+                   @keydown.enter="$event.target.blur()"
+                   @blur="applySilentInterval('nonvision')" />
+            <span v-if="!nonvisionIntervalValid" class="field-error">需为 5~3600 的整数</span>
+            <span v-else-if="nonvisionIntervalApplied" class="field-ok">已生效</span>
           </div>
         </div>
         <div class="setting-row">
@@ -1061,11 +1096,16 @@ onUnmounted(() => {
         <div class="setting-row">
           <label class="setting-label">
             <span class="label-text">摄像头兜底间隔（秒）</span>
-            <span class="label-desc">5~3600，无运动时按此周期评估视觉规则</span>
+            <span class="label-desc">输入 5~3600 的整数，回车或失焦即生效；无运动时按此周期评估视觉规则</span>
           </label>
-          <div class="slider-row">
-            <input type="range" min="5" max="3600" step="1" v-model.number="automationConfig.silent_eval_interval_seconds" />
-            <span class="slider-value">{{ automationConfig.silent_eval_interval_seconds }}s</span>
+          <div class="interval-input-group">
+            <input type="number" min="5" max="3600" step="1" class="setting-input narrow"
+                   v-model.number="automationConfig.silent_eval_interval_seconds"
+                   :class="{ 'input-invalid': !silentIntervalValid }"
+                   @keydown.enter="$event.target.blur()"
+                   @blur="applySilentInterval('vision')" />
+            <span v-if="!silentIntervalValid" class="field-error">需为 5~3600 的整数</span>
+            <span v-else-if="silentIntervalApplied" class="field-ok">已生效</span>
           </div>
         </div>
         <div class="setting-row">
@@ -1222,6 +1262,30 @@ onUnmounted(() => {
   white-space: nowrap;
   min-width: 60px;
   text-align: right;
+}
+
+/* 自动化 modal 的间隔数字输入 */
+.interval-input-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 220px;
+}
+.interval-input-group .setting-input {
+  width: 110px;
+}
+.input-invalid {
+  border-color: var(--color-danger, #e5484d) !important;
+}
+.field-error {
+  font-size: var(--text-xs, 12px);
+  color: var(--color-danger, #e5484d);
+  white-space: nowrap;
+}
+.field-ok {
+  font-size: var(--text-xs, 12px);
+  color: var(--color-success, #46a758);
+  white-space: nowrap;
 }
 
 .setting-textarea {
