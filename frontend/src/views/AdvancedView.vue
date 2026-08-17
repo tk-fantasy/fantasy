@@ -83,27 +83,48 @@ const automationConfig = ref({
 const automationSaving = ref(false)
 const automationSaved = ref(false)
 
-// 兜底间隔:数字输入 + 即时校验(非法红字提示) + 回车/失焦即生效
-const isValidInterval = (v) => Number.isInteger(v) && v >= 5 && v <= 3600
+// 自动化数字输入:即时校验(非法红字提示,阻止保存) + 回车/失焦即生效(未变化不重发)
+const makeValidator = (min, max) => (v) => Number.isInteger(v) && v >= min && v <= max
+const isValidInterval = makeValidator(5, 3600)
+const isValidCooldown = makeValidator(1, 3600)
+const isValidThreshold = (v) => makeValidator(1, automationConfig.value.motion_threshold_max)(v)
 const silentIntervalValid = computed(() => isValidInterval(automationConfig.value.silent_eval_interval_seconds))
 const nonvisionIntervalValid = computed(() => isValidInterval(automationConfig.value.nonvision_silent_interval_seconds))
-// 最近一次已生效的值:未变化时失焦不重发请求
-const appliedIntervals = ref({ vision: 60, nonvision: 30 })
-const intervalApplied = ref({ vision: false, nonvision: false })
-const silentIntervalApplied = computed(() => intervalApplied.value.vision)
-const nonvisionIntervalApplied = computed(() => intervalApplied.value.nonvision)
+const cooldownValid = computed(() => isValidCooldown(automationConfig.value.default_cooldown_seconds))
+const thresholdValid = computed(() => isValidThreshold(automationConfig.value.motion_threshold))
+const automationFieldsValid = () =>
+  silentIntervalValid.value && nonvisionIntervalValid.value && cooldownValid.value && thresholdValid.value
+// 各字段最近一次已生效的值(键→发送体构造器)
+const appliedValues = ref({ vision: 60, nonvision: 30, cooldown: 5, threshold: 15 })
+const appliedFeedback = ref({ vision: false, nonvision: false, cooldown: false, threshold: false })
 
 async function applySilentInterval(scope) {
   const key = scope === 'nonvision' ? 'nonvision_silent_interval_seconds' : 'silent_eval_interval_seconds'
   const value = automationConfig.value[key]
-  if (!isValidInterval(value) || value === appliedIntervals.value[scope]) return
+  if (!isValidInterval(value) || value === appliedValues.value[scope]) return
+  await applyAutomationField(scope, '/api/automation/silent', { interval_seconds: value, scope }, value)
+}
+
+async function applyCooldown() {
+  const value = automationConfig.value.default_cooldown_seconds
+  if (!isValidCooldown(value) || value === appliedValues.value.cooldown) return
+  await applyAutomationField('cooldown', '/api/automation/cooldown', { cooldown_seconds: value }, value)
+}
+
+async function applyThreshold() {
+  const value = automationConfig.value.motion_threshold
+  if (!isValidThreshold(value) || value === appliedValues.value.threshold) return
+  await applyAutomationField('threshold', '/api/automation/dhash-threshold', { threshold: value }, value)
+}
+
+async function applyAutomationField(key, endpoint, body, value) {
   try {
-    await apiPost('/api/automation/silent', { interval_seconds: value, scope })
-    appliedIntervals.value[scope] = value
-    intervalApplied.value[scope] = true
-    setTimeout(() => { intervalApplied.value[scope] = false }, 1500)
+    await apiPost(endpoint, body)
+    appliedValues.value[key] = value
+    appliedFeedback.value[key] = true
+    setTimeout(() => { appliedFeedback.value[key] = false }, 1500)
   } catch (e) {
-    console.error('Failed to apply silent interval:', e)
+    console.error('Failed to apply automation field:', key, e)
   }
 }
 
@@ -186,9 +207,11 @@ async function loadAll() {
         eval_count: data.eval_count ?? 0,
         nonvision_eval_count: data.nonvision_eval_count ?? 0,
       }
-      appliedIntervals.value = {
+      appliedValues.value = {
         vision: automationConfig.value.silent_eval_interval_seconds,
         nonvision: automationConfig.value.nonvision_silent_interval_seconds,
+        cooldown: automationConfig.value.default_cooldown_seconds,
+        threshold: automationConfig.value.motion_threshold,
       }
     }
   } catch (e) {
@@ -340,8 +363,8 @@ async function testVision() {
 
 // ===== 自动化保存 =====
 async function saveAutomation() {
-  // 间隔非法时不保存(输入框旁已红字提示),修复后再点
-  if (!silentIntervalValid.value || !nonvisionIntervalValid.value) return
+  // 任一数字输入非法时不保存(输入框旁已红字提示),修复后再点
+  if (!automationFieldsValid()) return
   automationSaving.value = true
   automationSaved.value = false
   try {
@@ -1083,7 +1106,7 @@ onUnmounted(() => {
                    @keydown.enter="$event.target.blur()"
                    @blur="applySilentInterval('nonvision')" />
             <span v-if="!nonvisionIntervalValid" class="field-error">需为 5~3600 的整数</span>
-            <span v-else-if="nonvisionIntervalApplied" class="field-ok">已生效</span>
+            <span v-else-if="appliedFeedback.nonvision" class="field-ok">已生效</span>
           </div>
         </div>
         <div class="setting-row">
@@ -1105,27 +1128,38 @@ onUnmounted(() => {
                    @keydown.enter="$event.target.blur()"
                    @blur="applySilentInterval('vision')" />
             <span v-if="!silentIntervalValid" class="field-error">需为 5~3600 的整数</span>
-            <span v-else-if="silentIntervalApplied" class="field-ok">已生效</span>
+            <span v-else-if="appliedFeedback.vision" class="field-ok">已生效</span>
           </div>
         </div>
         <div class="setting-row">
           <label class="setting-label">
             <span class="label-text">默认冷却（秒）</span>
-            <span class="label-desc">1~3600，只影响新建/无显式 cooldown 的规则</span>
+            <span class="label-desc">输入 1~3600 的整数，回车或失焦即生效；只影响新建/无显式 cooldown 的规则</span>
           </label>
-          <div class="slider-row">
-            <input type="range" min="1" max="3600" step="1" v-model.number="automationConfig.default_cooldown_seconds" />
-            <span class="slider-value">{{ automationConfig.default_cooldown_seconds }}s</span>
+          <div class="interval-input-group">
+            <input type="number" min="1" max="3600" step="1" class="setting-input narrow"
+                   v-model.number="automationConfig.default_cooldown_seconds"
+                   :class="{ 'input-invalid': !cooldownValid }"
+                   @keydown.enter="$event.target.blur()"
+                   @blur="applyCooldown" />
+            <span v-if="!cooldownValid" class="field-error">需为 1~3600 的整数</span>
+            <span v-else-if="appliedFeedback.cooldown" class="field-ok">已生效</span>
           </div>
         </div>
         <div class="setting-row">
           <label class="setting-label">
             <span class="label-text">dhash 阈值</span>
-            <span class="label-desc">运动检测灵敏度（1~{{ automationConfig.motion_threshold_max }}），拉满=关 dhash 降级定时器</span>
+            <span class="label-desc">输入 1~{{ automationConfig.motion_threshold_max }} 的整数，回车或失焦即生效；拉满=关 dhash 降级定时器</span>
           </label>
-          <div class="slider-row">
-            <input type="range" min="1" :max="automationConfig.motion_threshold_max" step="1" v-model.number="automationConfig.motion_threshold" />
-            <span class="slider-value">{{ automationConfig.motion_threshold }} / {{ automationConfig.motion_threshold_max }}</span>
+          <div class="interval-input-group">
+            <input type="number" min="1" :max="automationConfig.motion_threshold_max" step="1" class="setting-input narrow"
+                   v-model.number="automationConfig.motion_threshold"
+                   :class="{ 'input-invalid': !thresholdValid }"
+                   @keydown.enter="$event.target.blur()"
+                   @blur="applyThreshold" />
+            <span v-if="!thresholdValid" class="field-error">需为 1~{{ automationConfig.motion_threshold_max }} 的整数</span>
+            <span v-else-if="appliedFeedback.threshold" class="field-ok">已生效</span>
+            <span v-else class="slider-value">{{ automationConfig.motion_threshold }} / {{ automationConfig.motion_threshold_max }}</span>
           </div>
         </div>
         <div class="setting-row">
@@ -1138,7 +1172,7 @@ onUnmounted(() => {
         <div class="setting-row">
           <label class="setting-label">
             <span class="label-text">运行状态</span>
-            <span class="label-desc">视觉 / 定时天气评估次数</span>
+            <span class="label-desc">视觉(含运动触发) / 定时天气 评估次数，重启后清零</span>
           </label>
           <span class="slider-value">{{ automationConfig.running ? '运行中' : '已停' }} · {{ automationConfig.eval_count }} / {{ automationConfig.nonvision_eval_count }} 次</span>
         </div>

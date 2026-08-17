@@ -39,9 +39,24 @@ async def automation_status(container: AppContainer = Depends(get_container)) ->
         "min_trigger_interval": float(get_config("vision.min_infer_interval_seconds", 3.0)),
         "camera_vl_display_enabled": bool(get_config("automation.camera_vl_display_enabled", True)),
         "running": bool(agent._running) if agent else False,
-        "eval_count": int(agent._eval_count) if agent else 0,
-        "nonvision_eval_count": int(agent._nonvision_eval_count) if agent else 0,
+        # 管道评估次数:读 service 计数(含运动触发);无 service 时退回 agent 循环轮数
+        "eval_count": _vision_eval_count(container, agent),
+        "nonvision_eval_count": _context_eval_count(container, agent),
     })
+
+
+def _vision_eval_count(container: AppContainer, agent) -> int:
+    svc = getattr(container, "automation_service", None)
+    if svc is not None:
+        return int(getattr(svc, "_vision_eval_count", 0))
+    return int(agent._eval_count) if agent else 0
+
+
+def _context_eval_count(container: AppContainer, agent) -> int:
+    svc = getattr(container, "automation_service", None)
+    if svc is not None:
+        return int(getattr(svc, "_context_eval_count", 0))
+    return int(agent._nonvision_eval_count) if agent else 0
 
 
 @router.post("/automation/silent")

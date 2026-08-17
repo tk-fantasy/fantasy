@@ -736,3 +736,18 @@ class TestEvaluateFiltersByRuleTypes:
 
 async def _vl_zero():
     return 0
+
+
+class TestPipelineEvalCounters:
+    """运行状态计数:evaluate() 入口按 rule_types 分管道计数(None 计两侧)。"""
+
+    @pytest.mark.asyncio
+    async def test_counters_by_rule_types(self):
+        reg = MagicMock()
+        reg.list_rules.return_value = []
+        svc = AutomationService(reg, vision_service=MagicMock(), ha_service=None)
+        await svc.evaluate(frames=None, rule_types=("vision",))
+        await svc.evaluate(frames=None, rule_types=("time", "weather"))
+        await svc.evaluate(frames=None, rule_types=None)
+        assert svc._vision_eval_count == 2   # vision + None
+        assert svc._context_eval_count == 2  # time/weather + None

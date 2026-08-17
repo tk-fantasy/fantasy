@@ -32,6 +32,10 @@ class AutomationService:
         self._weather_cache_at: float = 0.0
         # 缓存 chat LLM 客户端，避免每次规则评估都重新读取配置和解析 API key
         self._chat_client = None
+        # 运行状态计数(按管道,含运动触发;/automation/status 展示用)。
+        # agent 侧另有循环轮数计数,只含兜底不含运动触发,勿混用。
+        self._vision_eval_count = 0
+        self._context_eval_count = 0
 
     async def evaluate(
         self,
@@ -59,6 +63,12 @@ class AutomationService:
         applied: list[dict] = []
         now = time.time()
         rules = self._rule_registry.list_rules()
+        # 管道计数:None=全部(兼容旧调用),计两侧
+        counted_types = rule_types if rule_types is not None else ("vision", "time", "weather")
+        if "vision" in counted_types:
+            self._vision_eval_count += 1
+        if "time" in counted_types or "weather" in counted_types:
+            self._context_eval_count += 1
 
         # 一次性拉 HA 状态快照（5s 缓存，命中 0 网络），供设备门控复用
         state_map: dict[str, dict] = {}
