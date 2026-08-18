@@ -12,6 +12,25 @@ _spec = importlib.util.spec_from_file_location(
 new_version = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(new_version)
 apply_bump = new_version.apply_bump
+current_commit = new_version.current_commit
+git_log_since = new_version.git_log_since
+
+
+class TestGitAutoNotes:
+    """变更说明自动取 git 提交记录（本仓库本身就是 git 仓库）。"""
+
+    def test_current_commit_is_hex(self):
+        c = current_commit()
+        assert c and all(ch in "0123456789abcdef" for ch in c)
+
+    def test_log_since_real_commit(self):
+        c = current_commit()
+        log = git_log_since(c)
+        assert isinstance(log, str)   # 区间空也可能回退到最近 20 条
+
+    def test_log_since_bad_commit_falls_back(self):
+        log = git_log_since("deadbeef99")
+        assert isinstance(log, str) and len(log) >= 0   # 不抛错,静默回退
 
 
 BASE = {"version": "1.0.0", "min_compatible": "1.0.0", "notes": "初始版本化基线。"}

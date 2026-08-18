@@ -556,28 +556,6 @@ Exa 搜索 Key 在此页配置（**不是** `/models` 页），无环境变量�
 
 **升级流程**：上传 → 校验 sha256 → docker load → 切换 tag → 健康检查（180s）→ 失败自动回滚
 
-### 在线更新
-
-| 方法 | 路径 | 认证 | 说明 |
-| --- | --- | --- | --- |
-| GET | `/api/ops/update/settings` | JWT + 管理员 | 读更新源地址 |
-| POST | `/api/ops/update/settings` | JWT + 管理员 | 写更新源地址 |
-| GET | `/api/ops/update/check` | JWT + 管理员 | 检查是否有新版本 |
-| POST | `/api/ops/update/apply` | JWT + 管理员 | 一键升级（下载 → 校验 → 升级） |
-
-```jsonc
-// 更新源配置
-{ "manifest_url": "https://your-server.com/update-channel.json" }
-
-// GET /api/ops/update/check 返回
-{
-  "has_update": true,
-  "latest_version": "1.1.0",
-  "current_version": "1.0.0",
-  "changelog": "### Added\n- 新功能 A\n- 新功能 B"
-}
-```
-
 ### 备份与恢复
 
 | 方法 | 路径 | 认证 | 说明 |
