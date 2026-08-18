@@ -14,9 +14,7 @@ aether-update-*.tar.gz 时自动安装——校验 → load → 重启 → 删�
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import tarfile
 import time
 from pathlib import Path
 
@@ -37,18 +35,6 @@ def auto_upgrade_enabled() -> bool:
     return bool(get_config("update.auto_upgrade", True))
 
 
-def _peek_manifest_version(path: Path) -> str | None:
-    """读包内 manifest.json 的 version（包损坏/缺 manifest 返回 None）。"""
-    try:
-        with tarfile.open(path, "r:gz") as tf:
-            fobj = tf.extractfile("manifest.json")
-            if fobj is None:
-                return None
-            return str(json.loads(fobj.read().decode("utf-8")).get("version") or "")
-    except (tarfile.TarError, KeyError, OSError, json.JSONDecodeError, UnicodeDecodeError):
-        return None
-
-
 def find_candidate() -> tuple[Path, str] | None:
     """挑出应自动安装的包：合法名 + 已落稳 + 版本严格高于当前，取最新版本。
 
@@ -65,7 +51,8 @@ def find_candidate() -> tuple[Path, str] | None:
             continue
         if now - p.stat().st_mtime < SETTLE_SECONDS:
             continue   # 还在拷贝/刚放入，等下一轮
-        version = _peek_manifest_version(p)
+        meta = pack_export.peek_pack_meta(p)
+        version = meta.get("version") if meta else ""
         if not version:
             continue   # 拷了一半或坏包：静默跳过，不动它（人工排查）
         if _version_key(version) <= _version_key(current):

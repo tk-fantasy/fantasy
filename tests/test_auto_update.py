@@ -36,17 +36,19 @@ class TestPeekManifest:
     def test_reads_version(self, tmp_path):
         p = tmp_path / "aether-update-2.0.0.tar.gz"
         _make_pack(p, "2.0.0")
-        assert au._peek_manifest_version(p) == "2.0.0"
+        meta = pe.peek_pack_meta(p)
+        assert meta["version"] == "2.0.0"
+        assert meta["min_compatible"] == "1.0.0"
 
     def test_missing_manifest_returns_none(self, tmp_path):
         p = tmp_path / "aether-update-2.0.0.tar.gz"
         _make_pack(p, "2.0.0", with_manifest=False)
-        assert au._peek_manifest_version(p) is None
+        assert pe.peek_pack_meta(p) is None
 
     def test_corrupt_returns_none(self, tmp_path):
         p = tmp_path / "aether-update-2.0.0.tar.gz"
         _make_pack(p, "2.0.0", corrupt=True)
-        assert au._peek_manifest_version(p) is None
+        assert pe.peek_pack_meta(p) is None
 
 
 class TestFindCandidate:

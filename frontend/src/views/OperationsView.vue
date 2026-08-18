@@ -233,13 +233,30 @@ async function applyUpdate() {
 // ============ 升级包分发（导出 / 本地安装） ============
 // 发布方：导出当前运行版本为升级包，浏览器下载后微信/网盘发给接收方
 const packExport = ref(null)        // /update-pack/export/status
+const packNotes = ref('')           // 本版变更说明（随包发布，接收方可见）
 let packExportTimer = null
+
+const packNotesInputVisible = computed(
+  () => packExport.value?.status !== 'done' && packExport.value?.status !== 'running'
+)
 
 const packExportPercent = computed(() => {
   const s = packExport.value
   if (!s?.total_bytes) return 0
   return Math.min(100, Math.round((s.staged_bytes / s.total_bytes) * 100))
 })
+
+/** 版本比较：1 a>b / 0 相同 / -1 a<b（与后端 _version_key 同口径） */
+function verCompare(a, b) {
+  const key = (v) => (v || '').split(/[.-]/).map((x) => parseInt(x) || 0)
+  const ka = key(a)
+  const kb = key(b)
+  for (let i = 0; i < Math.max(ka.length, kb.length); i++) {
+    const d = (ka[i] || 0) - (kb[i] || 0)
+    if (d) return d > 0 ? 1 : -1
+  }
+  return 0
+}
 
 async function pollPackExport() {
   try {
@@ -258,7 +275,7 @@ async function pollPackExport() {
 
 async function startPackExport() {
   try {
-    await apiPost('/api/ops/update-pack/export', {})
+    await apiPost('/api/ops/update-pack/export', { notes: packNotes.value.trim() })
     pollPackExport()
   } catch (e) {
     upgradeMessage.value = e?.message || '导出启动失败'
@@ -604,6 +621,14 @@ onMounted(() => {
             >{{ packExport?.status === 'running' ? `导出中 ${packExportPercent}%` : '一键导出升级包' }}</button>
           </div>
         </div>
+        <div v-if="packNotesInputVisible" class="pack-notes-row">
+          <input
+            v-model="packNotes"
+            type="text"
+            class="update-url-input"
+            placeholder="变更说明（可选）：这一版改了什么，随包展示给接收方；留空则用 version.json 的 notes"
+          />
+        </div>
         <div v-if="packExport?.status === 'running'" class="upload-progress">
           <div class="upload-bar"><div class="upload-fill" :style="{ width: packExportPercent + '%' }"></div></div>
           <span class="upload-text">正在导出镜像（{{ fmtSize(packExport.staged_bytes) }}{{ packExport.total_bytes ? ' / ' + fmtSize(packExport.total_bytes) : '' }}），导出+压缩约需数分钟，请勿关闭页面</span>
@@ -627,10 +652,22 @@ onMounted(() => {
         </div>
         <div v-if="localPacks.length" class="diag-table-wrap">
           <table class="diag-table">
-            <thead><tr><th>升级包</th><th>大小</th><th>放入时间</th><th style="width:120px">操作</th></tr></thead>
+            <thead><tr><th>升级包</th><th>版本比对</th><th>大小</th><th>放入时间</th><th style="width:120px">操作</th></tr></thead>
             <tbody>
               <tr v-for="p in localPacks" :key="p.name">
-                <td>{{ p.name }}</td>
+                <td>
+                  {{ p.name }}
+                  <div v-if="p.notes" class="advice">{{ p.notes }}</div>
+                </td>
+                <td>
+                  <template v-if="p.version">
+                    v{{ p.version }}
+                    <span v-if="verCompare(p.version, versionInfo?.version) > 0" class="ver-badge up">可自动升级</span>
+                    <span v-else-if="verCompare(p.version, versionInfo?.version) === 0" class="ver-badge same">相同版本</span>
+                    <span v-else class="ver-badge low">低于当前</span>
+                  </template>
+                  <span v-else class="ver-badge same">版本未知</span>
+                </td>
                 <td>{{ fmtSize(p.size_bytes) }}</td>
                 <td>{{ p.created_at }}</td>
                 <td>
@@ -875,6 +912,18 @@ onMounted(() => {
 }
 .upload-text { font-size: var(--text-xs); color: var(--color-text-secondary); }
 .diag-table-wrap { margin-top: var(--space-8); overflow-x: auto; }
+.pack-notes-row { margin-top: var(--space-8); }
+.ver-badge {
+  display: inline-block;
+  margin-left: var(--space-6);
+  font-size: var(--text-xs);
+  padding: 1px var(--space-10);
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.ver-badge.up { color: var(--color-success); background: var(--color-primary-light); }
+.ver-badge.same { color: var(--color-text-tertiary); background: var(--color-bg); }
+.ver-badge.low { color: var(--color-warning); background: var(--color-bg); }
 
 /* 重启遮罩 */
 .restart-overlay {

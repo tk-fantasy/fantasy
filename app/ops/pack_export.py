@@ -15,6 +15,7 @@ import hashlib
 import json
 import logging
 import re
+import tarfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -44,6 +45,15 @@ def _read_min_compatible() -> str:
         return str(data.get("min_compatible") or get_version())
     except (OSError, json.JSONDecodeError):
         return get_version()
+
+
+def _read_version_notes() -> str:
+    """version.json 的 notes 字段：本版本变更汇总（发版时写入）。"""
+    try:
+        data = json.loads((BASE_DIR / "version.json").read_text(encoding="utf-8"))
+        return str(data.get("notes") or "")
+    except (OSError, json.JSONDecodeError):
+        return ""
 
 
 def export_status() -> dict:
@@ -111,7 +121,7 @@ async def _export_job(operator: str, notes: str) -> None:
             "version": version,
             "min_compatible": _read_min_compatible(),
             "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "notes": notes,
+            "notes": notes or _read_version_notes(),
             "images": [{
                 "name": upgrade.IMAGE_REPO, "tag": version,
                 "file": "images/aether.tar",
@@ -139,8 +149,6 @@ async def _export_job(operator: str, notes: str) -> None:
 
 
 def _make_tar_gz(staging: Path, out: Path) -> None:
-    import tarfile
-
     with tarfile.open(out, "w:gz", compresslevel=GZIP_LEVEL) as tf:
         tf.add(staging / "manifest.json", arcname="manifest.json")
         tf.add(staging / "images" / "aether.tar", arcname="images/aether.tar")
@@ -148,18 +156,41 @@ def _make_tar_gz(staging: Path, out: Path) -> None:
 
 # ==================== 接收方：本地包扫描与安装 ====================
 
+def peek_pack_meta(path: Path) -> dict | None:
+    """读包内 manifest（版本/兼容/变更说明）；损坏、缺 manifest 或拷贝一半返回 None。"""
+    try:
+        with tarfile.open(path, "r:gz") as tf:
+            fobj = tf.extractfile("manifest.json")
+            if fobj is None:
+                return None
+            m = json.loads(fobj.read().decode("utf-8"))
+            return {
+                "version": str(m.get("version") or ""),
+                "min_compatible": str(m.get("min_compatible") or ""),
+                "notes": str(m.get("notes") or ""),
+            }
+    except (tarfile.TarError, KeyError, OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return None
+
+
 def scan_local_packs() -> list[dict]:
-    """扫描 backups/ 下已投放的升级包（接收方把微信收的文件放这里）。"""
+    """扫描 backups/ 下已投放的升级包（接收方把微信收的文件放这里）。
+
+    附带包内 manifest 的版本与变更说明，供前端做版本比对展示。
+    """
     if not PACK_DIR.exists():
         return []
     packs = []
     for p in sorted(PACK_DIR.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True):
         if p.is_file() and PACK_NAME_RE.match(p.name):
             st = p.stat()
+            meta = peek_pack_meta(p) or {}
             packs.append({
                 "name": p.name,
                 "size_bytes": st.st_size,
                 "created_at": datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M"),
+                "version": meta.get("version", ""),
+                "notes": meta.get("notes", ""),
             })
     return packs
 

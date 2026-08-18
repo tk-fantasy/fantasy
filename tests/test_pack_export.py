@@ -55,6 +55,23 @@ class TestScanLocalPacks:
         packs = pe.scan_local_packs()
         assert [p["name"] for p in packs] == ["aether-update-1.1.0.tar.gz", "aether-update-1.0.0.tar.gz"]
         assert packs[0]["size_bytes"] == 1
+        # 无 manifest 的假包：version 为空串而不是报错（前端显示"版本未知"）
+        assert packs[0]["version"] == ""
+
+    def test_scan_peeks_version_and_notes(self, tmp_path, monkeypatch):
+        import io
+        import json as _json
+        import tarfile as _tar
+        monkeypatch.setattr(pe, "PACK_DIR", tmp_path)
+        p = tmp_path / "aether-update-1.5.0.tar.gz"
+        with _tar.open(p, "w:gz") as tf:
+            data = _json.dumps({"version": "1.5.0", "notes": "修复摄像头"}).encode()
+            info = _tar.TarInfo("manifest.json")
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+        packs = pe.scan_local_packs()
+        assert packs[0]["version"] == "1.5.0"
+        assert packs[0]["notes"] == "修复摄像头"
 
     def test_scan_missing_dir_returns_empty(self, tmp_path, monkeypatch):
         monkeypatch.setattr(pe, "PACK_DIR", tmp_path / "nope")
