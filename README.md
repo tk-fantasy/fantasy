@@ -8,6 +8,7 @@
 
 [English](README.en.md) | 中文
 
+[![CI](https://github.com/tk-fantasy/fantasy/actions/workflows/test.yml/badge.svg)](https://github.com/tk-fantasy/fantasy/actions/workflows/test.yml)
 [![Docker](https://img.shields.io/badge/Docker-一键部署-2496ED?logo=docker&logoColor=white)](#-快速开始docker推荐)
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)](requirements.txt)
 [![Vue](https://img.shields.io/badge/Vue_3-前端-4FC08D?logo=vue.js&logoColor=white)](frontend)
@@ -122,7 +123,7 @@ AI 回复采用流式输出，逐字显示如同真人打字。支持 Markdown �
 - **📊 语义知识图谱（RAG）** —— 文档向量化 + faiss 检索 + 实体共现构图，3D 可视化，embed 模型变更后自动检测 + 一键重建
 - **🔌 MCP 工具生态** —— 内置天气 / 网页搜索 / 设备控制工具，可接外部 MCP Server
 - **🔐 JWT 鉴权 + 独立配置** —— 登录态走 JWT，LLM Key 独立管理、会话独立，支持一键清空历史会话
-- **🛠️ 运维中心** —— 诊断包导出、部署体检、在线升级、备份恢复，所有运维功能按钮化，无需登录主机操作
+- **🛠️ 运维中心** —— 诊断包导出、部署体检、备份恢复、升级包一键导出/投放安装，所有运维功能按钮化，无需登录主机操作
 - **👑 管理员分级** —— 首注册用户自动成为管理员，危险接口（插件上传/运维操作等）需管理员权限
 
 ## 🏗️ 架构与端口
@@ -282,7 +283,7 @@ app/
 frontend/                # Vue 3 + Vite 前端
 ha_config/               # Home Assistant 配置（挂载到 HA 容器 /config；只跟踪配置模板，运行时状态由 HA 生成）
 mosquitto/               # Mosquitto MQTT 配置
-tests/                   # 后端 pytest（740+ 测试）
+tests/                   # 后端 pytest（1300+ 测试）
 frontend/tests/          # 前端 vitest
 docs/                    # 用户层 + 技术层文档（按功能分类）
 ```
@@ -291,15 +292,15 @@ docs/                    # 用户层 + 技术层文档（按功能分类）
 
 ```bash
 # 后端
-pytest                      # 全部
-pytest -m "not slow"        # 跳过需要真实 API 调用的慢测试
+pytest                      # 默认跳过 slow 标记（见 pytest.ini）
+pytest -m slow              # 显式运行慢测试（真实拉起插件子进程/RPC e2e，约 3 分钟）
 pytest tests/test_dispatcher.py   # 单个模块
 
 # 前端
 cd frontend && npm test
 ```
 
-CI 通过 GitHub Actions 在每次 push 和 pull request 时自动运行 `pytest -m "not slow"`。
+CI 通过 GitHub Actions 在每次 push 和 pull request 时自动运行 `pytest`（默认即 `not slow`）。
 
 ## 📚 文档
 
@@ -345,6 +346,12 @@ CI 通过 GitHub Actions 在每次 push 和 pull request 时自动运行 `pytest
 ## 🤝 贡献
 
 欢迎提交 Issue 和 PR。如果你也想出现在贡献者列表里，提个 PR 即可——GitHub 会根据 commit 邮箱自动识别。
+
+## 📄 开源协议
+
+[MIT](LICENSE) © 2026 Aether
+
+> 本项目涉及摄像头画面分析与家庭设备控制，部署与使用风险请参阅 [`docs/10-交付物料/免责声明模板.md`](docs/10-交付物料/免责声明模板.md)。
 
 ---
 
