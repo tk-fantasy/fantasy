@@ -62,15 +62,18 @@ class LlmVisionClient(LlmBaseClient):
         self._jpeg_quality = int(get_config("vision.jpeg_quality", 70))
         self._timeout = int(get_config("llm.vision_timeout_seconds", 30))
 
-    async def classify_frame(self, frame_bgr, timeout: int | None = None, focus: str = "画面中的人和他们的行为") -> dict[str, Any]:
+    async def classify_frame(self, frame_bgr, timeout: int | None = None, focus: str = "") -> dict[str, Any]:
         if not self.enabled:
             return {"enabled": False, "event": "no_event", "feedback": "视觉模型未启用。"}
 
         prompt_text = (
             "分析画面，只输出 JSON，不要任何额外文字。\n"
             "格式: {\"event\": \"snake_case事件名或no_event\", \"observation\": \"简短中文描述\"}\n"
-            f"关注: {focus}\n"
         )
+        # focus 为空时不拼"关注"行：由模型自由判断画面中的显著事件，
+        # 不预设任何关注方向（用户未配置关注项时的预期行为）。
+        if focus:
+            prompt_text += f"关注: {focus}\n"
         # OpenAI 多模态格式:有图时 content 为 parts 列表
         if self.multimodal_enabled:
             # imencode + base64 是 CPU 密集操作，持 GIL 会饿死摄像头采集线程。

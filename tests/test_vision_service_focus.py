@@ -74,6 +74,20 @@ class TestPerCameraFocuses:
         assert vs._get_combined_focus(camera_id="cam_a") == "人"
         assert vs._get_combined_focus(camera_id="cam_b") == "车"
 
+    def test_combined_focus_empty_when_no_config(self):
+        """未配置关注项时返回空串——不再兜底"画面中的人和他们的行为"。
+
+        空 focus 由 LlmVisionClient.classify_frame 跳过"关注"行,
+        模型自由判断画面显著事件,不预设关注方向。
+        """
+        vs = VisionService(client=MagicMock())
+        assert vs._get_combined_focus(camera_id="cam_a") == ""
+        # 全部禁用同样视为未配置
+        vs.add_focus("人", camera_id="cam_a")
+        vs.update_focus(vs.get_vision_focuses(camera_id="cam_a")[0]["id"],
+                        enabled=False, camera_id="cam_a")
+        assert vs._get_combined_focus(camera_id="cam_a") == ""
+
     def test_get_all_focuses_flat(self):
         """get_all_focuses_flat 拍平所有 bucket,每条含 camera_id(持久化用)。"""
         vs = VisionService(client=MagicMock())
@@ -100,9 +114,16 @@ class TestGetVisionFocusLegacy:
     """
 
     def test_empty_returns_empty_string(self):
-        """未配置任何关注时返回空字符串（默认描述由推理侧 _get_combined_focus 兜底）。"""
+        """未配置任何关注时返回空字符串（推理侧对空 focus 不拼"关注"行）。"""
         vs = VisionService(client=MagicMock())
         assert vs.get_vision_focus() == ""
+
+    def test_set_vision_focus_empty_is_noop(self):
+        """旧接口传入空串不落库——不再虚构默认关注项。"""
+        vs = VisionService(client=MagicMock())
+        vs.set_vision_focus("")
+        vs.set_vision_focus("   ")
+        assert vs.get_all_focuses_flat() == []
 
     def test_non_empty_returns_first_bucket_first_item_text(self):
         """非空时取第一个 bucket 的第一项 text（不再 KeyError）。"""
