@@ -16,11 +16,23 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _init_db(tmp_path, monkeypatch):
-    """每个测试一个临时 DB 单例（entity_operable/entity_note 写入用）。"""
+    """每个测试一个临时 DB 单例（entity_operable/entity_note 写入用）。
+
+    teardown 必须关闭连接：aiosqlite 每个连接带工作线程，泄漏会在整个
+    测试会话结束后阻塞解释器退出。
+    """
+    import asyncio
+
     from app.core.database import Database
     Database._instance = None
     Database._db = None
     monkeypatch.setattr("app.core.database.DB_PATH", tmp_path / "t.db")
+    yield
+    if Database._db:
+        try:
+            asyncio.new_event_loop().run_until_complete(Database._db.close())
+        except Exception:
+            pass
 
 
 # ckcper 五开关：A灯，多可控实体，子实体名带父设备名前缀（真实命名形态）
