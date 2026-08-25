@@ -45,11 +45,22 @@ class TestBuildSystemPrompt:
 
 
 @pytest.mark.asyncio
-async def test_system_prompt_includes_operable_constraint():
-    """注入 device_catalog 时，system prompt 含白名单权限约束文案。"""
+async def test_system_prompt_subname_guidance_no_forbid_marker():
+    """注入 device_catalog 时含子功能名指引；禁止设备已改为渲染层隐藏，
+    prompt 不再输出 ⛔ 权限文案。"""
     from app.services.prompt_service import build_system_prompt
     prompt = await build_system_prompt(
-        device_catalog="# 童锁\n- lock.tong_suo (类型:lock, 状态:locked) 名称:童锁 ⛔AI禁操作"
+        device_catalog="# A灯\n- switch.a_on_p2 (类型:switch, 状态:off) 名称:A灯 会客厅灯 左键"
     )
-    assert "⛔" in prompt
-    assert "多候选" in prompt or "优先" in prompt
+    # 子功能名仅供匹配指称的指引存在
+    assert "子功能名" in prompt
+    # ⛔ 权限文案不再输出（禁止=隐藏，由渲染层保证）
+    assert "⛔" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_system_prompt_candidate_retry_guideline():
+    """GUIDELINES：报错附候选时允许重试一次，无候选才停下。"""
+    from app.services.prompt_service import GUIDELINES
+    assert "候选" in GUIDELINES
+    assert "重试一次" in GUIDELINES

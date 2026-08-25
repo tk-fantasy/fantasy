@@ -204,7 +204,10 @@ def _concept_match(words: list[str], attr_names: set, domain: str, domain_svcs: 
     return True
 
 
-def controls_to_text(entity: dict, controls: dict, indent: int = 0, note: str | None = None) -> str:
+def controls_to_text(
+    entity: dict, controls: dict, indent: int = 0, note: str | None = None,
+    sub_name: str | None = None,
+) -> str:
     """把 resolve_controls 的结果转成给 LLM 看的中文可控项文本。
 
     Args:
@@ -217,6 +220,9 @@ def controls_to_text(entity: dict, controls: dict, indent: int = 0, note: str | 
             插入「备注」行，让 LLM 看到设备的怪癖；为空（None/空串/纯空白）时不输出
             （保持现状，零回归）。三条消费链路（后台预编译/规则生成/get_entities）
             经此一处同时注入。
+        sub_name: 子实体短名（剥掉父设备名前缀，如「会客厅灯 左键」）。仅多可控
+            实体的设备传入——用户用子功能名指称设备（「打开会客厅的灯」）时 LLM
+            靠它定位到具体 entity_id。为空时不显示（单可控实体设备无歧义）。
     """
     eid = entity["entity_id"]
     pad = "  " * indent
@@ -224,7 +230,10 @@ def controls_to_text(entity: dict, controls: dict, indent: int = 0, note: str | 
         name = (entity.get("attributes") or {}).get("friendly_name", "") or eid
         lines = [f"{name} ({eid})"]
     else:
-        lines = [f"{pad}子功能 {eid}:"]
+        header = f"{pad}子功能 {eid}"
+        if sub_name:
+            header += f"（{sub_name}）"
+        lines = [header + ":"]
     # 备注行：在标题之后、可控项之前。多行备注逐行带前缀（缩进对齐可控项层级）。
     if note and note.strip():
         for ln in note.split("\n"):

@@ -101,8 +101,8 @@ async def test_refresh_catalog_no_notes_no_change(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_refresh_catalog_marks_disabled_and_skips_controls(tmp_path):
-    """禁用实体行尾标 ⛔，且不出现在 controls 明细里。"""
+async def test_refresh_catalog_hides_disabled_and_skips_controls(tmp_path):
+    """禁用实体对 AI 不可见：catalog 无该行（不再标 ⛔），controls 明细也不含。"""
     from app.core.database import Database
     Database._instance = None
     Database._db = None
@@ -112,11 +112,14 @@ async def test_refresh_catalog_marks_disabled_and_skips_controls(tmp_path):
 
     fake_dev = {
         "entity_id": "lock.tong_suo", "state": "locked", "domain": "lock",
-        "attributes": {"friendly_name": "童锁"},
+        "attributes": {"friendly_name": "童锁"}, "name": "童锁",
+        "area_id": "a1", "area_name": "儿童房",
     }
     mock_ha_service = MagicMock()
     mock_ha_service.get_all_devices_grouped = AsyncMock(return_value={"devices": [
-        {"name": "童锁", "model": None, "area_name": None, "entities": [fake_dev]},
+        {"name": "童锁", "model": None, "manufacturer": None, "sw_version": None,
+         "area_id": "a1", "area_name": "儿童房", "summary": "童锁",
+         "entities": [fake_dev]},
     ]})
     mock_ha_service.get_all_devices = AsyncMock(return_value=[fake_dev])
     mock_ha_service.get_service_defs = AsyncMock(return_value={
@@ -132,7 +135,8 @@ async def test_refresh_catalog_marks_disabled_and_skips_controls(tmp_path):
     from app.main import _ha_catalog_cache_ref, _ha_controls_cache_ref
     catalog = _ha_catalog_cache_ref[0]
     controls = _ha_controls_cache_ref[0]
-    assert "⛔AI禁操作" in catalog
-    assert "lock.tong_suo" in catalog
+    # 禁止 = 隐藏：实体行不出现，也不再输出 ⛔ 标记
+    assert "lock.tong_suo" not in catalog
+    assert "⛔" not in catalog
     # controls 明细不含禁用项
     assert "lock.tong_suo" not in controls

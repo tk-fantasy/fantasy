@@ -72,8 +72,8 @@ async def test_call_service_allows_enabled_entity(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_get_entities_returns_ai_operable(tmp_path, monkeypatch):
-    """get_entities 返回 ai_operable：黑名单内 false，其余 true。"""
+async def test_get_entities_hides_disabled_entity(tmp_path, monkeypatch):
+    """禁止设备对 AI 不可见：get_entities 不返回黑名单内实体（隐藏而非标记）。"""
     from app.core.database import Database
     Database._instance = None
     Database._db = None
@@ -86,10 +86,21 @@ async def test_get_entities_returns_ai_operable(tmp_path, monkeypatch):
     mgr = MCPClientManager()
     ha_service = MagicMock()
     ha_service.get_all_devices = AsyncMock(return_value=[
-        {"entity_id": "lock.tong_suo", "domain": "lock", "state": "locked", "attributes": {}},
-        {"entity_id": "light.bed", "domain": "light", "state": "off", "attributes": {}},
+        {"entity_id": "lock.tong_suo", "domain": "lock", "state": "locked",
+         "name": "童锁", "attributes": {}, "area_id": "a1", "area_name": "儿童房"},
+        {"entity_id": "light.bed", "domain": "light", "state": "off",
+         "name": "床头灯", "attributes": {}, "area_id": "a1", "area_name": "卧室"},
     ])
-    ha_service.get_all_devices_grouped = AsyncMock(return_value={"devices": []})
+    ha_service.get_all_devices_grouped = AsyncMock(return_value={"devices": [
+        {"device_id": "d1", "name": "童锁", "model": None, "manufacturer": None,
+         "sw_version": None, "area_id": "a1", "area_name": "儿童房", "summary": "童锁",
+         "entities": [{"entity_id": "lock.tong_suo", "domain": "lock", "name": "童锁",
+                       "state": "locked", "attributes": {}}]},
+        {"device_id": "d2", "name": "床头灯", "model": None, "manufacturer": None,
+         "sw_version": None, "area_id": "a1", "area_name": "卧室", "summary": "床头灯",
+         "entities": [{"entity_id": "light.bed", "domain": "light", "name": "床头灯",
+                       "state": "off", "attributes": {}}]},
+    ]})
     ha_service.get_service_defs = AsyncMock(return_value={})
     deps = ToolDeps(
         mcp_client_manager=mgr, vision_client=MagicMock(),
@@ -99,6 +110,8 @@ async def test_get_entities_returns_ai_operable(tmp_path, monkeypatch):
     tool = mgr.get_tool("ha_devices___get_entities")
     with patch("app.services.entity_controls.resolve_controls", return_value={}):
         result = await tool.handler({}, MagicMock())
-    by_id = {e["entity_id"]: e for e in result["entities"]}
-    assert by_id["lock.tong_suo"]["ai_operable"] is False
-    assert by_id["light.bed"]["ai_operable"] is True
+    by_id = {e["entity_id"] for e in result["entities"]}
+    # 黑名单内实体被隐藏；其余正常可见且 ai_operable 恒 True
+    assert "lock.tong_suo" not in by_id
+    assert "light.bed" in by_id
+    assert all(e["ai_operable"] is True for e in result["entities"])

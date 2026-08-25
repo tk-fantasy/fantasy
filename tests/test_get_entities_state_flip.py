@@ -31,10 +31,22 @@ async def test_get_entities_flips_state_for_mapped_device(tmp_path, monkeypatch)
     mgr = MCPClientManager()
     ha_service = MagicMock()
     ha_service.get_all_devices = AsyncMock(return_value=[
-        {"entity_id": "switch.gate", "domain": "switch", "state": "off", "attributes": {}},
-        {"entity_id": "light.bed", "domain": "light", "state": "off", "attributes": {}},
+        {"entity_id": "switch.gate", "domain": "switch", "name": "大门", "state": "off",
+         "attributes": {}, "area_id": "a1", "area_name": "门口"},
+        {"entity_id": "light.bed", "domain": "light", "name": "床头灯", "state": "off",
+         "attributes": {}, "area_id": "a1", "area_name": "卧室"},
     ])
-    ha_service.get_all_devices_grouped = AsyncMock(return_value={"devices": []})
+    # 注册表数据源：entries 从 grouped 视图构建（快照 = flat + grouped 聚合）
+    ha_service.get_all_devices_grouped = AsyncMock(return_value={"devices": [
+        {"device_id": "d1", "name": "大门", "model": None, "manufacturer": None,
+         "sw_version": None, "area_id": "a1", "area_name": "门口", "summary": "大门",
+         "entities": [{"entity_id": "switch.gate", "domain": "switch", "name": "大门",
+                       "state": "off", "attributes": {}}]},
+        {"device_id": "d2", "name": "床头灯", "model": None, "manufacturer": None,
+         "sw_version": None, "area_id": "a1", "area_name": "卧室", "summary": "床头灯",
+         "entities": [{"entity_id": "light.bed", "domain": "light", "name": "床头灯",
+                       "state": "off", "attributes": {}}]},
+    ]})
     ha_service.get_service_defs = AsyncMock(return_value={})
     deps = ToolDeps(
         mcp_client_manager=mgr, vision_client=MagicMock(),

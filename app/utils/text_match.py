@@ -116,6 +116,9 @@ def match_devices(query: str, devices: list[dict[str, Any]]) -> list[dict[str, A
         # 避免先把「到」删了导致正则匹配不到「到70」)。
         for w in link_words:
             q = q.replace(w, "")
+        # 结构助词「的」全局剥：用户口语「会客厅的灯」与设备名「会客厅灯 左键」
+        # 只差一个「的」，不剥则子串匹配失败——候选反查/语义校验都命中不了。
+        q = q.replace("的", "")
         q = q.strip()
     # 原始 query 和剥离后的都尝试：原始用于「客厅吊灯」这种完整名，剥离后用于「开灯」「把灯关了」
     candidates_q = [q, query] if q != query else [query]

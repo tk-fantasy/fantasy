@@ -222,105 +222,21 @@ async def _ws_heartbeat(websocket: WebSocket, interval: int = 30):
 
 
 async def _refresh_ha_catalog() -> None:
-    """后台刷新 HA 设备目录缓存。
+    """后台刷新 HA 设备目录缓存（catalog + controls 双缓存，60 秒循环）。
 
-    catalog 按物理设备分组组织，帮助 AI 以「物理设备」为单位向用户介绍（而不是把
-    同一设备的传感器/诊断属性拆成多个设备念出）。
-
-    关键：每行格式 `- entity_id (类型:domain, 状态:xxx) 名称:xxx` 不能改
-    （rule_service._parse_ha_catalog 的正则依赖此格式抠 entity_id 做自动化校验），
-    但「名称:」部分统一用父设备名（dev_name），不用子实体的 friendly_name——
-    否则「小爱音箱Pro 麦克风 静音」这类子实体名会被 LLM 当独立设备念出。
+    数据源收敛到 device_registry.build_device_snapshot —— 渲染给 AI 的视图与
+    call_service 拒绝时的候选反查共用同一快照，消除「闸门认识、视图不认识」的
+    漂移。catalog 行格式 `- entity_id (类型:domain, 状态:xxx) 名称:xxx` 是
+    rule_service._parse_ha_catalog 的正则契约（名称分组为 (.+)，容忍子功能名）。
+    禁止设备（entity_operable 黑名单）在渲染层直接排除，对 AI 不可见。
     """
     try:
-        from .services.entity_controls import resolve_controls, controls_to_text
-        grouped = await ha_service.get_all_devices_grouped()
-        devices = await ha_service.get_all_devices()
-        raw_svc_defs = await ha_service.get_service_defs(
-            ha_client, domains=set(d.get("domain", "") for d in devices)
+        from .services.device_registry import (
+            build_device_snapshot, render_catalog_text, render_controls_text,
         )
-        # 诊断/属性类 domain：不作为独立设备条目念给用户
-        DIAGNOSTIC_DOMAINS = {"sensor", "binary_sensor"}
-        lines = []
-        controls_lines = []
-        # 用户自定义备注（entity_note scope）：按 entity_id 查 dict 注入 controls。
-        # 不常驻 DB 连接——每 60 秒刷新周期读一次即可（备注变更最多 60 秒生效）。
-        notes_map: dict[str, str] = {}
-        try:
-            from .core.database import Database
-            notes_map = await Database.get().prefs_get_by_scope("entity_note")
-        except Exception:  # noqa: BLE001
-            logger.warning("Failed to load entity notes for catalog")
-        operable_disabled: dict[str, str] = {}
-        try:
-            from .core.database import Database
-            operable_disabled = await Database.get().prefs_get_by_scope("entity_operable")
-        except Exception:  # noqa: BLE001
-            logger.warning("Failed to load entity_operable for catalog")
-        for dev in grouped.get("devices", []):
-            dev_name = dev.get("name", "")
-            area_name = dev.get("area_name")
-            model = dev.get("model")
-            ents = dev.get("entities", [])
-            controllable = [e for e in ents if e["domain"] not in DIAGNOSTIC_DOMAINS]
-            # 纯诊断设备（无可控实体，如网关）：只留标题行让 AI 知道这设备存在，
-            # 不列任何 entity 行（避免把 sensor 的 friendly_name 噪声暴露给 LLM）。
-            # rule_service 的 _parse_ha_catalog 只用于「构建自动化规则时解析可用设备」，
-            # 纯诊断设备本来就不能被 call_service 控制，缺这几行不影响规则生成。
-            if not controllable:
-                header = f"# {dev_name}"
-                if model:
-                    header += f" ({model})"
-                if area_name:
-                    header += f" [{area_name}]"
-                lines.append(header)
-                continue
-
-            header = f"# {dev_name}"
-            if model:
-                header += f" ({model})"
-            if area_name:
-                header += f" [{area_name}]"
-            lines.append(header)
-            # 可控实体：entity_id 必须保留（call_service 要用），但「名称:」统一用
-            # 父设备名，避免子实体 friendly_name 噪声
-            from .services.semantic_map import flip_state_value
-            for e in controllable:
-                eid = e["entity_id"]
-                marker = " ⛔AI禁操作" if eid in operable_disabled else ""
-                # 语义映射：对称翻转对设备预翻转 state（catalog 行 + resolve_controls 都用翻转后的）
-                display_state = e["state"]
-                try:
-                    display_state = await flip_state_value(eid, str(display_state))
-                except Exception:  # noqa: BLE001
-                    pass
-                lines.append(
-                    f"- {eid} (类型:{e['domain']}, 状态:{display_state}) 名称:{dev_name}{marker}"
-                )
-                # 把翻转后的 state 写回 flat entity，resolve_controls 的 current 也跟着对
-                if display_state != e["state"]:
-                    if flat := next((d for d in devices if d["entity_id"] == eid), None):
-                        flat["state"] = display_state
-            # controls（中文可控项，供 call_service）
-            # 按物理设备聚合，标题统一用设备名（dev_name）
-            if raw_svc_defs:
-                dev_controls_lines = [f"{dev_name}:"]
-                for e in controllable:
-                    if e["entity_id"] in operable_disabled:
-                        continue
-                    flat = next((d for d in devices if d["entity_id"] == e["entity_id"]), None)
-                    if flat:
-                        controls = resolve_controls(flat, raw_svc_defs)
-                        if controls:
-                            dev_controls_lines.append(
-                                controls_to_text(flat, controls, indent=1, note=notes_map.get(e["entity_id"]))
-                            )
-                if len(dev_controls_lines) > 1:
-                    controls_lines.append("\n".join(dev_controls_lines))
-        catalog = "\n".join(lines) if lines else "(暂无 HA 设备)"
-        controls_text = "\n\n".join(controls_lines) if controls_lines else ""
-        _ha_catalog_cache_ref[0] = catalog
-        _ha_controls_cache_ref[0] = controls_text
+        snapshot = await build_device_snapshot(ha_service, ha_client)
+        _ha_catalog_cache_ref[0] = render_catalog_text(snapshot)
+        _ha_controls_cache_ref[0] = render_controls_text(snapshot)
     except Exception:  # noqa: BLE001
         logger.warning("HA catalog refresh failed", exc_info=True)
 

@@ -104,69 +104,21 @@ def _register_vision_chat(deps: ToolDeps) -> None:
 
 def _register_ha_get_entities(deps: ToolDeps) -> None:
     async def handler(_: dict, session) -> dict:
+        # 数据源收敛：与 system prompt 的 catalog/controls 共用 device_registry
+        # 快照（此处每次现拉保持实时）。禁止设备在快照层已排除，模型不可见。
         try:
-            devices = await deps.ha_service.get_all_devices()
-            grouped = await deps.ha_service.get_all_devices_grouped()
-            raw_svc_defs = await deps.ha_service.get_service_defs(
-                deps.ha_client_ref[0], domains=set(d.get("domain", "") for d in devices)
+            from .services.device_registry import (
+                build_device_snapshot, render_devices_brief, render_entities_flat,
             )
+            snapshot = await build_device_snapshot(deps.ha_service, deps.ha_client_ref[0])
             services_info = {
                 domain: {svc_name: svc_def["fields"] for svc_name, svc_def in svcs.items()}
-                for domain, svcs in raw_svc_defs.items()
+                for domain, svcs in snapshot["service_defs"].items()
             }
-            # 用户备注：让 LLM 在 get_entities 返回里也能看到设备怪癖
-            notes_map: dict[str, str] = {}
-            try:
-                from .core.database import Database  # app/tools.py 在 app/ 下，用单点
-                notes_map = await Database.get().prefs_get_by_scope("entity_note")
-            except Exception:  # noqa: BLE001
-                logger.warning("get_entities: 备注读取失败", exc_info=True)
-            # 用户「AI 可操作」黑名单：让 LLM 在 get_entities 返回里看到权限
-            operable_disabled: dict[str, str] = {}
-            try:
-                from .core.database import Database
-                operable_disabled = await Database.get().prefs_get_by_scope("entity_operable")
-            except Exception:  # noqa: BLE001
-                logger.warning("get_entities: operable 读取失败", exc_info=True)
-            # 语义映射：对称翻转对设备预翻转 state（让 AI 查询时认知正确）
-            from .services.semantic_map import flip_state_value
-            for device in devices:
-                device["_controls"] = resolve_controls(device, raw_svc_defs)
-                device["note"] = notes_map.get(device["entity_id"], "")
-                device["ai_operable"] = device["entity_id"] not in operable_disabled
-                try:
-                    device["state"] = await flip_state_value(
-                        device["entity_id"], str(device.get("state", ""))
-                    )
-                except Exception:  # noqa: BLE001
-                    logger.warning("get_entities: state 翻转失败", exc_info=True)
-            # 给 grouped devices 的子实体也补 _controls（复用扁平实体的计算结果）
-            ctrl_by_eid = {d["entity_id"]: d.get("_controls", {}) for d in devices}
-            grouped_devices = grouped.get("devices", [])
-
-            # 构造精简的 devices 视图给 AI：每个物理设备只暴露
-            # name / model / area / 可控项摘要 / entity_id 列表，
-            # 不再内联完整子实体对象——否则 LLM 会读到子实体的 friendly_name
-            # （如「小爱音箱Pro 麦克风 静音」）并把它当作独立设备念给用户。
-            # 控制需要的 domain/service/param 在扁平 entities 数组里查得到。
-            devices_brief = []
-            for dev in grouped_devices:
-                ents = dev.get("entities", [])
-                # 只列可控子实体的 entity_id（AI 控制 device 时从这里取）
-                controllable = [
-                    e for e in ents
-                    if e["domain"] not in ("sensor", "binary_sensor")
-                ]
-                devices_brief.append({
-                    "name": dev.get("name", ""),
-                    "model": dev.get("model"),
-                    "area": dev.get("area_name"),
-                    "summary": dev.get("summary", ""),
-                    "entity_ids": [e["entity_id"] for e in controllable],
-                })
+            devices_brief = render_devices_brief(snapshot)
             return {
                 "devices": devices_brief,     # 精简物理设备列表（供回答「有哪些设备」）
-                "entities": devices,          # 扁平实体列表（含 _controls，供 call_service）
+                "entities": render_entities_flat(snapshot),  # 扁平实体列表（含 _controls，供 call_service）
                 "count": len(devices_brief),
                 "services": services_info,
             }
@@ -180,12 +132,14 @@ def _register_ha_get_entities(deps: ToolDeps) -> None:
         description=(
             "获取家中所有智能设备。返回 devices 和 entities 两个字段：\n"
             "- devices：物理设备列表，每项一个物理设备（如「小爱音箱Pro」「大门通断器」），"
-            "含 name/area/summary/entity_ids。向用户介绍「有哪些设备」时，直接用 devices 的 name 逐个列出，"
+            "含 name/area/summary/entity_ids/entity_labels（entity_id → 含子功能短名的显示名，"
+            "如「A灯 会客厅灯 左键」）。向用户介绍「有哪些设备」时，直接用 devices 的 name 逐个列出，"
             "不要把同一物理设备下的传感器/开关/子功能当成多个设备分别念出。\n"
             "- entities：扁平实体列表（含 entity_id/domain/_controls），控制设备时从这里取 "
             "domain/service/entity_id/data 调用 call_service。\n"
             "一个物理设备可能对应多个 entity_id（不同功能点），用户说一个设备名时可能命中其中任意一个——"
-            "按用户意图从 entities 里匹配最合适的。"
+            "用户用子功能名指称（如「打开会客厅的灯」命中某设备的「会客厅灯 左键」子功能）时，"
+            "按 entity_labels 匹配最合适的。"
         ),
         parameters={"type": "object", "properties": {}},
         handler=handler,
@@ -296,13 +250,38 @@ def _register_ha_call_service(deps: ToolDeps) -> None:
                     missing = [e for e in eid_list if e not in real_ids]
                     if missing:
                         logger.info("call_service 拒绝编造 entity_id: %s", missing)
-                        return {
-                            "success": False,
-                            "error": (
-                                f"entity_id '{', '.join(missing)}' 不存在于 Home Assistant，"
-                                "无法控制。请用 get_entities 查看真实设备列表，不要编造 entity_id。"
-                            ),
-                        }
+                        error = (
+                            f"entity_id '{', '.join(missing)}' 不存在于 Home Assistant，"
+                            "无法控制。"
+                        )
+                        # 自愈回路：用注册表快照反查用户指令命中的真实实体，附进
+                        # 报错让 LLM 用候选重试一次（entries 已排除禁止项，与
+                        # 模型视野同源——视图里看得见的才可能成为候选）。
+                        fallback_hint = "请用 get_entities 查看真实设备列表，不要编造 entity_id。"
+                        query = getattr(session, "current_query", "") or ""
+                        if query:
+                            try:
+                                from .services.device_registry import (
+                                    build_device_snapshot, entry_label,
+                                )
+                                snapshot = await build_device_snapshot(deps.ha_service, ha_client)
+                                matched = match_devices(query, snapshot["entries"])[:5]
+                                if matched:
+                                    cand_text = "、".join(
+                                        f"{d['entity_id']}（{entry_label(d)}）" for d in matched
+                                    )
+                                    error += (
+                                        f"用户说的是「{query}」，可能匹配：{cand_text}。"
+                                        "请从候选中选最合适的一个重试一次；都不合适则如实告知设备不存在。"
+                                    )
+                                else:
+                                    error += "用户指令没有匹配到任何真实设备，请如实告知设备不存在，不要编造。"
+                            except Exception:  # noqa: BLE001
+                                logger.warning("call_service: 候选反查失败", exc_info=True)
+                                error += fallback_hint
+                        else:
+                            error += fallback_hint
+                        return {"success": False, "error": error}
                 except Exception:
                     logger.warning("call_service: entity_id 校验失败，放行", exc_info=True)
             # 授权校验：用户可在设备页把危险设备（童锁/门锁）标为禁止 AI 操作。
