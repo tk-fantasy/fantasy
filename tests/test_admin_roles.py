@@ -141,7 +141,7 @@ class TestDangerousRoutesGated:
         ("app.routes.global_config_routes", "reset_global_password"),
         ("app.routes.global_config_routes", "set_global_password"),
         ("app.routes.ops_routes", "restore_backup_route"),
-        ("app.routes.ops_routes", "upload_upgrade"),
+        ("app.routes.ops_routes", "apply_local_pack_route"),
     ])
     def test_admin_dependency_present(self, module_name, func_name):
         import importlib

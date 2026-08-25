@@ -2,8 +2,13 @@
 
 import asyncio
 
+import pytest
+
 from app.integration.manifest_loader import load_manifests
 from app.integration.plugin_supervisor import PluginSupervisor
+
+# 真实拉起插件子进程（含崩溃重试退避），默认跳过（pytest -m slow 显式运行）
+pytestmark = pytest.mark.slow
 
 INTEGRATIONS_TESTS_DIR = "tests/integrations"
 

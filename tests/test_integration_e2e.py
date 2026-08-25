@@ -6,7 +6,12 @@
 
 import asyncio
 
+import pytest
+
 from app.integration.integration_layer import IntegrationLayer
+
+# 真实拉起插件子进程走完整 RPC 链路，单测 30s+（等待子进程握手/超时窗），默认跳过
+pytestmark = pytest.mark.slow
 
 INTEGRATIONS_TESTS_DIR = "tests/integrations"
 

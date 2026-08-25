@@ -81,6 +81,8 @@ app/static/frontend/
 Thumbs.db
 .zcode/
 .qwen/
+# 浏览器调试产物（截图/会话状态，本地排障用）
+.mimosa/
 
 # 语义图构建产物（运行时生成）
 app/sg/output/

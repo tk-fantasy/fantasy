@@ -10,7 +10,12 @@
 import asyncio
 from unittest.mock import AsyncMock
 
+import pytest
+
 from app.integration.integration_layer import IntegrationLayer
+
+# 真实拉起插件子进程走反向 RPC 全链路，默认跳过（pytest -m slow 显式运行）
+pytestmark = pytest.mark.slow
 
 PLUGINS_DIR = "tests/integrations"
 
