@@ -6,9 +6,10 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 
 from .langgraph_agent import session_to_langchain_messages, run_agent_streaming, tool_call_signature, load_model_config_for_user, build_chat_agent
+from .model_family_adapters import get_adapter
 from .validator_agent import ValidatorAgent
 from ..schema.chat_schema import Dialog, Event, Instruction, Template, UI
 from ..services.priority_service import interactive_priority
@@ -477,6 +478,13 @@ class Dispatcher:
         lc_messages = session_to_langchain_messages(session, system_prompt=system_prompt)
         lc_messages.append(HumanMessage(content=query))
 
+        # 模型家族适配节点（通用）：家族行为由 model_adapter 能力插件提供
+        # （integrations/<id>/adapters.py），宿主只查注册表，零家族特判。
+        # 命中当前聊天模型时让适配器改写本轮消息（如混合思考模型
+        # 注入思考软开关降首字延迟）。
+        chat_model = await self._current_chat_model(user_id)
+        self._inject_family_switch(lc_messages, chat_model)
+
         return {
             "session": session,
             "query": query,
@@ -485,7 +493,62 @@ class Dispatcher:
             "vision_focuses": vision_focuses,
             "system_prompt": system_prompt,
             "lc_messages": lc_messages,
+            "chat_model": chat_model,
         }
+
+    async def _current_chat_model(self, user_id: str) -> str:
+        """解析本轮实际使用的聊天模型名（per-user 配置优先，回退全局）。
+
+        模型家族适配节点查询用；失败返回空串（等价无适配器，不影响主流程）。
+        """
+        if user_id:
+            try:
+                cfg = await load_model_config_for_user(user_id)
+                if cfg:
+                    return str(cfg.get("model", ""))
+            except Exception:
+                logger.warning("per-user chat 模型解析失败，回退全局", exc_info=True)
+        from .langgraph_agent import _load_model_config_from_config
+        try:
+            return str(_load_model_config_from_config().get("model", ""))
+        except Exception:
+            logger.debug("全局 chat 模型解析失败（可能未配置 chat key）")
+            return ""
+
+    def _inject_family_switch(self, lc_messages: list, model_name: str,
+                              include_system: bool = True) -> None:
+        """模型家族适配节点：让命中当前模型的适配器改写本轮消息。
+
+        适配器来自 model_adapter 能力插件（integrations/ 下有示例），
+        此处只做通用查表调用，不含任何模型家族特判——具体注入什么
+        开关标记、匹配哪些模型名，全部由插件自己决定。典型用途：
+        混合思考模型在闲聊/控制场景关闭思考降首字延迟（聊天模板以
+        最后一条消息的开关为准，故主轮注入 system+user，重试轮只补
+        最后一条（include_system=False，避免 system 上开关标记叠加））。
+
+        只改发送给模型的副本，不回写 session 历史，避免开关标记
+        污染对话记录。无适配器/异常静默跳过，不影响主流程。
+        """
+        if not model_name or not lc_messages:
+            return
+        try:
+            adapter = get_adapter(model_name)
+        except Exception:
+            logger.warning("模型家族适配器查询失败，跳过本轮注入", exc_info=True)
+            return
+        if adapter is None:
+            return
+        last = lc_messages[-1]
+        if not isinstance(last, HumanMessage):
+            return
+        has_system = isinstance(lc_messages[0], SystemMessage)
+        system_text = str(lc_messages[0].content) if has_system else ""
+        new_system, new_user = adapter.no_think(
+            system_text if include_system else "", str(last.content),
+        )
+        if include_system and has_system:
+            lc_messages[0] = SystemMessage(content=new_system)
+        lc_messages[-1] = HumanMessage(content=new_user)
 
     # ------------------------------------------------------------------
     # 入口：REST（非流式）/ WS（流式）
@@ -668,6 +731,9 @@ class Dispatcher:
                 )
             )
             lc_messages.append(self._build_failure_retry_message(state.failed_tools))
+            # 重试轮补注入家族开关（只补最后一条，system 首轮已注入）
+            self._inject_family_switch(lc_messages, ctx.get("chat_model", ""),
+                                       include_system=False)
             state.reset_for_retry()
             try:
                 async for stream_event in run_agent_streaming(
@@ -699,6 +765,9 @@ class Dispatcher:
                     )
                 )
             lc_messages.append(self._validator.build_retry_message())
+            # Validator 重试轮同样补注入家族开关
+            self._inject_family_switch(lc_messages, ctx.get("chat_model", ""),
+                                       include_system=False)
             state.final_content = ""
             try:
                 async for stream_event in run_agent_streaming(agent, lc_messages, session):

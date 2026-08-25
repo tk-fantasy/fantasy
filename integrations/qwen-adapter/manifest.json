@@ -1,0 +1,21 @@
+{
+    "id": "qwen-adapter",
+    "name": "Qwen 系模型适配",
+    "version": "1.0.0",
+    "aether_api_version": "1",
+    "author": "Aether",
+    "description": "Qwen3 系混合思考模型的 /no_think 注入：闲聊/控制场景关闭思考，大幅降低首字延迟（实测 LM Studio qwen3.8-27b-mlx：22.6s → 5.0s）",
+    "entry": "plugin.py",
+    "capabilities": [
+        {
+            "type": "model_adapter",
+            "id": "qwen_family",
+            "priority": 0,
+            "config_schema": {}
+        }
+    ],
+    "permissions": [],
+    "secrets": [],
+    "ui_contributions": [],
+    "resources": {}
+}

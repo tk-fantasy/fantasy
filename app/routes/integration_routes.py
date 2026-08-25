@@ -415,6 +415,7 @@ async def upload_plugin(file: UploadFile = File(...), admin: dict = Depends(get_
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_bytes(zf.read(n))
         logger.info("插件 %s 上传成功，解压到 %s", manifest.id, target_dir)
+        _refresh_model_adapters()
         return {"success": True,
                 "data": {"id": manifest.id, "name": manifest.name,
                          "message": "上传成功，重启 Aether 后生效"}}
@@ -423,6 +424,18 @@ async def upload_plugin(file: UploadFile = File(...), admin: dict = Depends(get_
         shutil.rmtree(target_dir, ignore_errors=True)
         logger.error("插件 %s 上传解压失败: %s", manifest.id, exc)
         return {"success": False, "message": f"解压失败: {exc}"}
+
+
+def _refresh_model_adapters() -> None:
+    """上传/删除插件后热刷新模型家族适配器注册表（进程内能力即装即用）。
+
+    子进程插件不受影响（其启停仍由 Supervisor 管理）；刷新失败只记日志。
+    """
+    try:
+        from ..agents.model_family_adapters import refresh_plugin_adapters
+        refresh_plugin_adapters()
+    except Exception:
+        logger.warning("模型家族适配器热刷新失败", exc_info=True)
 
 
 @router.delete("/integrations/{plugin_id}")
@@ -448,5 +461,6 @@ async def delete_plugin(plugin_id: str, container=Depends(get_container), admin:
                 logger.warning("停止插件 %s 进程失败: %s", plugin_id, exc)
 
     shutil.rmtree(plugin_dir, ignore_errors=True)
+    _refresh_model_adapters()
     logger.info("插件 %s 已删除", plugin_id)
     return {"success": True, "data": {"id": plugin_id}}

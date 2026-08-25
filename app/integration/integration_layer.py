@@ -101,15 +101,22 @@ class IntegrationLayer:
         reg.register(METHOD_HOST_BROADCAST, _broadcast, required_permission="broadcast")
 
     async def start(self) -> None:
-        """加载清单 + 启动所有插件进程（跳过禁用的）。"""
+        """加载清单 + 启动所有插件进程（跳过禁用的）。
+
+        进程内能力插件（model_adapter 等，manifest.needs_subprocess=False）
+        不 spawn 子进程——其能力由宿主在本进程内加载
+        （model_family_adapters 懒加载），这里只拉需要子进程的。
+        """
         from .config_helper import get_disabled_plugins
         disabled = get_disabled_plugins()
         manifests = load_manifests(self._plugin_dir, api_version=self._api_version,
                                    disabled=disabled)
-        logger.info("发现 %d 个集成插件（%d 个禁用）: %s",
+        subprocess_plugins = [m for m in manifests if m.needs_subprocess]
+        logger.info("发现 %d 个集成插件（%d 个禁用，%d 个进程内）: %s",
                     len(manifests), len(disabled),
+                    len(manifests) - len(subprocess_plugins),
                     [m.id for m in manifests])
-        await self._supervisor.start_all(manifests, self._plugin_dir)
+        await self._supervisor.start_all(subprocess_plugins, self._plugin_dir)
         self._started = True
 
     async def stop(self) -> None:
@@ -171,6 +178,7 @@ class IntegrationLayer:
         """停止并重启一个子进程插件（管理页改配置后让它按新配置 setup）。
 
         禁用态的插件只保证停（不启动）。返回 False=插件不存在。
+        进程内能力插件无进程可重启，直接返回（其行为经注册表懒加载）。
         """
         from .manifest_loader import load_all_manifests
         from .config_helper import get_disabled_plugins
@@ -180,6 +188,8 @@ class IntegrationLayer:
             return False
         await self._supervisor.stop_one(plugin_id)
         if plugin_id in set(get_disabled_plugins()):
+            return True
+        if not manifests[plugin_id].needs_subprocess:
             return True
         return await self._supervisor.start_one(manifests[plugin_id], self._plugin_dir)
 
@@ -219,9 +229,17 @@ class IntegrationLayer:
 
         注意：此方法只持久化状态，不立即停止/启动进程。
         要立即生效用 stop_plugin / 需重启启动。
+        进程内能力插件（model_adapter）无进程可停启，
+        启停即重扫适配器注册表（热生效，无需重启 Aether）。
         """
         from .config_helper import set_plugin_disabled
         set_plugin_disabled(plugin_id, not enabled)
+        try:
+            from ..agents.model_family_adapters import refresh_plugin_adapters
+            refresh_plugin_adapters()
+        except Exception:
+            logger.debug("刷新模型家族适配器失败（可能未启用该能力）",
+                         exc_info=True)
 
     async def stop_plugin(self, plugin_id: str) -> bool:
         """运行时停止某插件进程（禁用时调用，立即生效）。

@@ -10,6 +10,17 @@ class CapabilityType(str, Enum):
     """插件能力类型。"""
     OUTPUT_SINK = "output_sink"
     INBOUND_ROUTER = "inbound_router"
+    # 进程内能力：宿主 import 插件的 adapters.py 注册行为（无子进程）。
+    # 见 app/agents/model_family_adapters.py 的发现与加载逻辑。
+    MODEL_ADAPTER = "model_adapter"
+
+
+# 需要 Supervisor 子进程宿主的能力类型。
+# 未列出的能力（如 model_adapter）为进程内加载，禁止 spawn 占位 entry。
+PROCESS_CAPABILITIES = frozenset({
+    CapabilityType.OUTPUT_SINK,
+    CapabilityType.INBOUND_ROUTER,
+})
 
 
 class Capability(BaseModel):
@@ -61,3 +72,16 @@ class Manifest(BaseModel):
 
     def has_capability(self, cap_type: CapabilityType) -> bool:
         return any(c.type == cap_type for c in self.capabilities)
+
+    @property
+    def needs_subprocess(self) -> bool:
+        """是否需要 Supervisor 拉起子进程。
+
+        进程内能力（如 model_adapter）由宿主在本进程内加载，
+        entry 只是上传校验要求的占位文件，不能 spawn。
+        未声明任何能力的插件（纯反向 RPC 客户端型/测试桩）维持
+        子进程宿主——无能力声明 ≠ 进程内能力。
+        """
+        if not self.capabilities:
+            return True
+        return any(c.type in PROCESS_CAPABILITIES for c in self.capabilities)
