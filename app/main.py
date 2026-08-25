@@ -426,6 +426,7 @@ async def lifespan(_: FastAPI):
         session_store=session_store,
         task_manager=_background_task_mgr,
         llm_chat_client=llm_chat_client,  # reminder kind 直接调 LLM，绕开 ReAct
+        sink_manager=integration_layer.sink_manager if integration_layer else None,  # reminder 语音广播
     )
     await scheduler_service.start()
     _container.scheduler_service = scheduler_service

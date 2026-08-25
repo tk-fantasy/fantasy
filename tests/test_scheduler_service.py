@@ -482,6 +482,168 @@ class TestSchedulerLoadTasksMigration:
 
 
 # ---------------------------------------------------------------------------
+# 播报同步：reminder 语音广播 + 文字 WS 推送 + last_reply + run_now(wait)
+# ---------------------------------------------------------------------------
+
+class TestBroadcastSync:
+    """定时任务执行后语音（sink）与文字（在线 WS）同步出现。"""
+
+    def _make_service_with_sink(self):
+        svc, db, tool_executor, dispatcher, session_store = _make_service()
+        sink = MagicMock()
+        sink.broadcast = AsyncMock()
+        svc._sink_manager = sink
+        return svc, db, dispatcher, session_store, sink
+
+    @staticmethod
+    def _fake_ws():
+        ws = MagicMock()
+        ws.send_json = AsyncMock()
+        return ws
+
+    @pytest.mark.asyncio
+    async def test_reminder_broadcasts_to_sink(self):
+        """reminder 生成回复后调 sink_manager.broadcast（小爱语音，与页面无关）。"""
+        from app.services.session_store import SessionState
+        svc, db, _, _, sink = self._make_service_with_sink()
+        session = SessionState(session_id="sess-1", request_id="r1")
+        svc._session_store.get_or_create = AsyncMock(return_value=session)
+        svc._session_store.store_session = AsyncMock()
+
+        task = await svc.add_task({
+            "name": "下班提醒", "schedule": {"kind": "every", "every_seconds": 60},
+            "payload": {"kind": "reminder", "intent": "下班"}, "user_id": "u1",
+        })
+        await svc._execute_task(task)
+
+        sink.broadcast.assert_awaited_once()
+        reply = sink.broadcast.call_args.args[0]
+        assert reply == "该下班了，路上注意安全～"
+        # last_reply 记录回复文本（手动触发反馈用）
+        assert task["last_reply"] == reply
+
+    @pytest.mark.asyncio
+    async def test_reminder_pushes_text_to_online_ws(self):
+        """reminder 回复以 ToastStream+Finish 推给该用户在线 WS（文字同步）。"""
+        from app.core import ws_registry
+        from app.services.session_store import SessionState
+        svc, db, _, _, _ = self._make_service_with_sink()
+        session = SessionState(session_id="sess-1", request_id="r1")
+        svc._session_store.get_or_create = AsyncMock(return_value=session)
+        svc._session_store.store_session = AsyncMock()
+
+        ws = self._fake_ws()
+        ws_registry.register("u1", ws)
+        try:
+            task = await svc.add_task({
+                "name": "下班提醒", "schedule": {"kind": "every", "every_seconds": 60},
+                "payload": {"kind": "reminder", "intent": "下班"}, "user_id": "u1",
+            })
+            await svc._execute_task(task)
+        finally:
+            ws_registry.unregister("u1", ws)
+
+        sent = [c.args[0] for c in ws.send_json.await_args_list]
+        toast = [s for s in sent if s["header"]["name"] == "ToastStream"]
+        finish = [s for s in sent if s["header"]["name"] == "Finish"]
+        assert toast and toast[0]["payload"]["stream"] == "该下班了，路上注意安全～"
+        assert finish and finish[0]["header"]["namespace"] == "Dialog"
+
+    @pytest.mark.asyncio
+    async def test_reminder_sink_failure_does_not_fail_task(self):
+        """语音广播失败不影响任务：文字已入会话，last_status 仍 success。"""
+        from app.services.session_store import SessionState
+        svc, db, _, _, sink = self._make_service_with_sink()
+        sink.broadcast = AsyncMock(side_effect=RuntimeError("小爱离线"))
+        session = SessionState(session_id="sess-1", request_id="r1")
+        svc._session_store.get_or_create = AsyncMock(return_value=session)
+        svc._session_store.store_session = AsyncMock()
+
+        task = await svc.add_task({
+            "name": "下班提醒", "schedule": {"kind": "every", "every_seconds": 60},
+            "payload": {"kind": "reminder", "intent": "下班"}, "user_id": "u1",
+        })
+        await svc._execute_task(task)
+        assert task["last_status"] == "success"
+
+    @pytest.mark.asyncio
+    async def test_message_extracts_reply_and_pushes(self):
+        """message kind：从 dispatch 返回的 ToastStream 提取回复 + WS 推送。"""
+        from app.core import ws_registry
+        from app.schema.chat_schema import Dialog, Instruction, Template
+        svc, db, dispatcher, session_store, _ = self._make_service_with_sink()
+        dispatcher.dispatch = AsyncMock(return_value=[
+            Instruction.build_instruction(Template.ToastStream(stream="灯已打开"), "r1", "sess-1"),
+            Instruction.build_instruction(Dialog.Finish(success=True), "r1", "sess-1"),
+        ])
+
+        ws = self._fake_ws()
+        ws_registry.register("u1", ws)
+        try:
+            task = await svc.add_task({
+                "name": "开灯", "schedule": {"kind": "every", "every_seconds": 60},
+                "payload": {"kind": "message", "message": "打开灯"}, "user_id": "u1",
+            })
+            await svc._execute_task(task)
+        finally:
+            ws_registry.unregister("u1", ws)
+
+        assert task["last_reply"] == "灯已打开"
+        sent = [c.args[0] for c in ws.send_json.await_args_list]
+        assert any(s["header"]["name"] == "ToastStream" and s["payload"]["stream"] == "灯已打开"
+                   for s in sent)
+
+    @pytest.mark.asyncio
+    async def test_push_skipped_when_user_offline(self):
+        """用户不在线（无 WS）：推送静默跳过，任务照常 success。"""
+        from app.services.session_store import SessionState
+        svc, db, _, _, sink = self._make_service_with_sink()
+        session = SessionState(session_id="sess-1", request_id="r1")
+        svc._session_store.get_or_create = AsyncMock(return_value=session)
+        svc._session_store.store_session = AsyncMock()
+
+        task = await svc.add_task({
+            "name": "下班提醒", "schedule": {"kind": "every", "every_seconds": 60},
+            "payload": {"kind": "reminder", "intent": "下班"}, "user_id": "nobody-online",
+        })
+        await svc._execute_task(task)
+        assert task["last_status"] == "success"
+
+    @pytest.mark.asyncio
+    async def test_run_now_wait_returns_after_completion(self):
+        """run_now(wait=True) 等执行完成：返回时 last_status/last_reply 已就绪。"""
+        svc, db, tool_executor, *_ = _make_service()
+        task = await svc.add_task({
+            "name": "关灯", "schedule": {"kind": "every", "every_seconds": 60},
+            "payload": {"kind": "tool", "tool_name": "x", "tool_input": {}},
+        })
+        result = await svc.run_now(task["id"], wait=True)
+        assert result is task
+        assert task["last_status"] == "success"
+        assert task["id"] not in svc._executing  # finally 已清理
+
+    @pytest.mark.asyncio
+    async def test_run_now_wait_timeout_does_not_kill_execution(self):
+        """wait 超时（shield）不杀执行：任务继续后台跑完。"""
+        svc, db, tool_executor, *_ = _make_service()
+
+        async def slow_tool(name, tool_input, session):
+            await asyncio.sleep(0.2)
+            return {"success": True, "result": "ok"}
+
+        tool_executor.execute_tool_by_name = slow_tool
+        task = await svc.add_task({
+            "name": "慢任务", "schedule": {"kind": "every", "every_seconds": 60},
+            "payload": {"kind": "tool", "tool_name": "x", "tool_input": {}},
+        })
+        result = await svc.run_now(task["id"], wait=True, timeout=0.05)
+        assert result is task
+        # 立刻返回时可能还在跑
+        await asyncio.sleep(0.3)
+        assert task["last_status"] == "success"
+
+
+# ---------------------------------------------------------------------------
 # tick 循环 — disabled 不触发
 # ---------------------------------------------------------------------------
 

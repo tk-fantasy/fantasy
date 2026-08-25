@@ -103,6 +103,9 @@ function buildPayload() {
 }
 
 // ===== 任务 CRUD =====
+const runningTaskId = ref('')
+const runNotice = ref(null) // {ok, text} 立即执行的结果横幅
+
 async function loadTasks() {
   try {
     loading.value = true
@@ -165,13 +168,23 @@ async function deleteTask(id) {
 }
 
 async function runTaskNow(id) {
+  runningTaskId.value = id
+  runNotice.value = null
   try {
-    await apiPost(`/api/scheduled-tasks/${id}/run`)
-    alert('已手动触发，结果见后端日志')
-    await loadTasks()
+    // wait=true（后端默认）：等执行完成，响应带 last_status/last_reply 即时展示
+    const task = await apiPost(`/api/scheduled-tasks/${id}/run`)
+    const idx = tasks.value.findIndex((t) => t.id === id)
+    if (idx >= 0) tasks.value[idx] = { ...tasks.value[idx], ...task }
+    if (task?.last_status === 'success') {
+      runNotice.value = { ok: true, text: task?.last_reply ? `已执行：${task.last_reply}` : '已执行' }
+    } else {
+      runNotice.value = { ok: false, text: `执行失败：${task?.last_error || '仍在后台执行，稍后刷新查看'}` }
+    }
   } catch (e) {
     console.error('Failed to run task:', e)
-    alert('触发失败：' + e.message)
+    runNotice.value = { ok: false, text: '触发失败：' + (e.message || e) }
+  } finally {
+    runningTaskId.value = ''
   }
 }
 
@@ -322,6 +335,10 @@ onMounted(() => {
     <div v-if="loading" class="loading-state">加载中...</div>
 
     <div v-else class="task-list">
+      <div v-if="runNotice" class="run-notice" :class="runNotice.ok ? 'run-notice--ok' : 'run-notice--err'">
+        <span>{{ runNotice.text }}</span>
+        <button class="run-notice-close" @click="runNotice = null">×</button>
+      </div>
       <div v-for="task in tasks" :key="task.id" class="task-card" @click="openTaskRevise(task)">
         <div class="task-toggle-col" @click.stop>
           <BaseToggle :modelValue="task.enabled" @update:modelValue="toggleTask(task.id)" />
@@ -358,9 +375,15 @@ onMounted(() => {
               <span class="meta-label">错误</span>
               <span class="meta-value">{{ task.last_error }}</span>
             </div>
+            <div v-if="task.last_reply" class="meta-row">
+              <span class="meta-label">回复</span>
+              <span class="meta-value">{{ task.last_reply }}</span>
+            </div>
           </div>
           <div class="task-actions" @click.stop>
-            <button class="btn-run" @click="runTaskNow(task.id)" title="立即执行一次">立即执行</button>
+            <button class="btn-run" :disabled="runningTaskId === task.id" @click="runTaskNow(task.id)" title="立即执行一次">
+              {{ runningTaskId === task.id ? '执行中…' : '立即执行' }}
+            </button>
             <button class="btn-delete" @click="deleteTask(task.id)" title="删除">删除</button>
           </div>
         </div>
@@ -727,5 +750,41 @@ onMounted(() => {
   .task-card {
     flex-direction: column;
   }
+}
+
+/* 立即执行的结果横幅：成功/失败共用结构，色带区分 */
+.run-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  margin-bottom: var(--space-4);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+}
+
+.run-notice--ok {
+  background: var(--color-primary-light);
+  color: var(--color-primary);
+}
+
+.run-notice--err {
+  background: var(--color-danger-light, rgba(220, 38, 38, 0.1));
+  color: var(--color-danger);
+}
+
+.run-notice-close {
+  background: none;
+  border: none;
+  font-size: var(--text-lg);
+  line-height: 1;
+  cursor: pointer;
+  color: inherit;
+  opacity: 0.6;
+}
+
+.run-notice-close:hover {
+  opacity: 1;
 }
 </style>

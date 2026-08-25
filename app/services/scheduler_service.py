@@ -110,6 +110,7 @@ class SchedulerService:
         session_store: Any,
         task_manager: Any = None,  # TaskManager，可选（执行任务时用它 spawn）
         llm_chat_client: Any = None,  # LlmChatClient — reminder kind 直接调 LLM，绕开 ReAct
+        sink_manager: Any = None,  # SinkManager — reminder 语音广播（小爱等，可选）
     ) -> None:
         self._db = db
         self._tool_executor = tool_executor
@@ -117,6 +118,7 @@ class SchedulerService:
         self._session_store = session_store
         self._task_manager = task_manager
         self._llm_chat_client = llm_chat_client
+        self._sink_manager = sink_manager
         # 内存任务表：id -> task dict。读多写少，启动时从 DB 载入，CRUD 同步两边。
         self._tasks: dict[str, dict] = {}
         self._tick_task: asyncio.Task | None = None
@@ -233,15 +235,17 @@ class SchedulerService:
         await self._db.scheduled_task_update(task_id, task)
 
         try:
+            reply_text = ""
             if kind == "tool":
                 await self._execute_tool_payload(payload)
             elif kind == "message":
-                await self._execute_message_payload(payload, name, user_id)
+                reply_text = await self._execute_message_payload(payload, name, user_id)
             elif kind == "reminder":
-                await self._execute_reminder_payload(payload, name, user_id)
+                reply_text = await self._execute_reminder_payload(payload, name, user_id)
             else:
                 raise ValueError(f"unknown payload kind: {kind}")
 
+            task["last_reply"] = reply_text
             task["last_status"] = "success"
             logger.info("scheduled task '%s' (%s) succeeded", name, task_id)
         except Exception as exc:
@@ -310,6 +314,20 @@ class SchedulerService:
         instructions = await dispatcher.dispatch(event, user_id=user_id)
         logger.info("scheduled message task '%s' dispatched, %d instructions", task_name, len(instructions))
 
+        # 回复文本：从 instructions 的 ToastStream 提取（REST 路径的最终回复形态；
+        # namespace/name 是 ClassVar，读 header 而非 payload——payload 只含业务字段）。
+        # dispatcher 的 sink 语音广播已在 _run_turn 内完成（与页面无关），
+        # 这里只补文字实时推送——WS 连接只在 ChatView 存活，用户在线才收得到。
+        reply_text = ""
+        for inst in instructions:
+            if getattr(getattr(inst, "header", None), "name", "") == "ToastStream":
+                stream = (getattr(inst, "payload", None) or {}).get("stream", "")
+                if stream:
+                    reply_text = str(stream)
+        if reply_text:
+            await self._push_reply_to_user(user_id, session_id, reply_text, rid)
+        return reply_text
+
     async def _execute_reminder_payload(self, payload: dict, task_name: str, user_id: str = "") -> None:
         """执行 reminder payload：直接调 LLM 生成一句提醒，写进主会话。
 
@@ -342,7 +360,8 @@ class SchedulerService:
             raise RuntimeError("无可用会话，无法投递定时提醒（请先在聊天页创建会话）")
 
         # 取主会话，构建带历史上下文的消息列表
-        session = await self._session_store.get_or_create(session_id, new_request_id())
+        rid = new_request_id()
+        session = await self._session_store.get_or_create(session_id, rid)
 
         from .prompt_service import build_system_prompt
         system_prompt = await build_system_prompt(query=source)
@@ -370,8 +389,38 @@ class SchedulerService:
         session.model_messages.append({"role": "assistant", "content": reply})
         await self._session_store.store_session(session)
 
+        # 语音 + 文字同步：与 message kind 的 dispatcher._run_turn 行为对齐——
+        # sink 广播（小爱等，服务端、与页面无关）+ 文字实时推送给在线 WS 连接。
+        # 语音失败不抛：文字已入会话，不应把任务标 failed。
+        if self._sink_manager is not None:
+            try:
+                await self._sink_manager.broadcast(reply, rid)
+            except Exception:  # noqa: BLE001
+                logger.warning("scheduled reminder '%s' 语音广播失败（不影响任务）", task_name, exc_info=True)
+        await self._push_reply_to_user(user_id, session_id, reply, rid)
+
         logger.info("scheduled reminder task '%s' [user=%s] -> session %s, reply: %s",
                     task_name, user_id, session_id, reply[:120])
+        return reply
+
+    async def _push_reply_to_user(self, user_id: str, session_id: str, reply: str, request_id: str) -> None:
+        """把定时任务回复以 ToastStream+Finish 指令推给该用户在线的聊天 WS。
+
+        指令形态与 REST 路径完全一致，ChatView 现有 handler 直接渲染（无活跃
+        请求时 ToastStream 会作为一条独立 assistant 消息出现）。不在线则跳过
+        ——回复已写会话历史，回聊天页可见。失败不抛（推送是增强，不是主流程）。
+        """
+        try:
+            from ..core.ws_registry import push_to_user
+            from ..schema.chat_schema import Dialog, Instruction, Template
+            await push_to_user(user_id, Instruction.build_instruction(
+                Template.ToastStream(stream=reply), request_id, session_id,
+            ).model_dump())
+            await push_to_user(user_id, Instruction.build_instruction(
+                Dialog.Finish(success=True), request_id, session_id,
+            ).model_dump())
+        except Exception:  # noqa: BLE001
+            logger.warning("scheduled reply WS 推送失败（不影响任务）", exc_info=True)
 
     async def _resolve_reminder_client(self, user_id: str = "") -> Any | None:
         """按 user_id 解析 reminder 用的 per-user chat 客户端，无配置回退全局。
@@ -462,15 +511,27 @@ class SchedulerService:
         """启停任务。启用时重算 next_run。"""
         return await self.update_task(task_id, {"enabled": enabled})
 
-    async def run_now(self, task_id: str) -> dict | None:
-        """手动触发一次（不等 schedule）。用于调试。"""
+    async def run_now(self, task_id: str, wait: bool = False, timeout: float = 60.0) -> dict | None:
+        """手动触发一次（不等 schedule）。用于调试。
+
+        wait=True 时等待执行完成（带超时；超时后任务继续后台跑完，因为 shield
+        不会被 wait_for 取消），响应可带 last_status/last_reply 给前端即时反馈。
+        """
         task = self._tasks.get(task_id)
         if task is None:
             return None
         if task_id in self._executing:
             return task  # 正在执行，跳过
         self._executing.add(task_id)
-        if self._task_manager is not None:
+        if wait:
+            try:
+                await asyncio.wait_for(asyncio.shield(self._execute_task(task)), timeout=timeout)
+            except asyncio.TimeoutError:
+                logger.warning("scheduled task '%s' 手动触发等待超时（继续后台执行）",
+                               task.get("name", task_id))
+            except Exception:
+                pass  # _execute_task 已把异常记入 last_status/last_error
+        elif self._task_manager is not None:
             self._task_manager.spawn(self._execute_task(task), name=f"scheduled-manual-{task_id}")
         else:
             self._spawn_background(self._execute_task(task))

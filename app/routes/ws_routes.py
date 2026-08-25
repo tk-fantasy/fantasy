@@ -123,12 +123,16 @@ async def _chat_loop(websocket, container, user_id: str) -> None:
 @router.websocket("/ws/chat")
 async def chat_ws(websocket: WebSocket):
     """WebSocket 聊天端点。"""
+    from ..core import ws_registry
     from ..main import _ws_verify_token, _ws_heartbeat
     user_id = await _ws_verify_token(websocket)
     if user_id is None:
         return
     container = get_container()
     await websocket.accept()
+    # 注册到在线表：定时任务（message/reminder）执行后把回复推给该用户
+    # 当前在线的连接，文字与小爱语音同步（不在线则只写会话历史）。
+    ws_registry.register(user_id, websocket)
 
     heartbeat_task = asyncio.create_task(_ws_heartbeat(websocket))
     try:
@@ -136,6 +140,7 @@ async def chat_ws(websocket: WebSocket):
     except WebSocketDisconnect:
         logger.info("Chat websocket disconnected")
     finally:
+        ws_registry.unregister(user_id, websocket)
         heartbeat_task.cancel()
 
 

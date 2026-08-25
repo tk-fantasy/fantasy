@@ -99,13 +99,18 @@ async def set_scheduled_task_enabled(
 @router.post("/scheduled-tasks/{task_id}/run")
 async def run_scheduled_task_now(
     task_id: str,
+    wait: bool = True,
     container: AppContainer = Depends(get_container),
 ) -> ApiResponse[dict]:
-    """手动触发一次（不等 schedule）。用于调试。"""
+    """手动触发一次（不等 schedule）。
+
+    默认等待执行完成（超时 60s 后转后台继续），响应带 last_status/last_reply
+    供前端即时展示回复；wait=false 时立即返回（旧行为，结果见后端日志）。
+    """
     svc = container.scheduler_service
     if svc is None:
         return ApiResponse(success=False, message="调度器未就绪", data=None)
-    task = await svc.run_now(task_id)
+    task = await svc.run_now(task_id, wait=wait)
     if task is None:
         return ApiResponse(success=False, message="任务不存在", data=None)
     return ApiResponse(data=task)
