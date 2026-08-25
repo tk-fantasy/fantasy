@@ -441,10 +441,8 @@ async def test_ha_connection(container: AppContainer = Depends(get_container)) -
 @router.post("/models/test")
 async def test_model_connection_route(payload: ModelTestRequest) -> ApiResponse[dict]:
     """测试模型连接。"""
-    from ..services import egress_service
     from ..services.model_test_service import test_model_connection
 
-    egress_service.assert_endpoint_allowed(payload.base_url)  # 纯内网模式硬拦截
     result = await test_model_connection(
         base_url=payload.base_url,
         model=payload.model,

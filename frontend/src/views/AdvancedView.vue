@@ -4,10 +4,9 @@ import FlowSelect from '../components/FlowSelect.vue'
 import AdvancedModal from '../components/AdvancedModal.vue'
 import BaseToggle from '../components/BaseToggle.vue'
 import { apiGet, apiPost } from '../utils/api'
-import { EGRESS_MODES, useEgressMode } from '../composables/useEgressMode'
 
 // ===== Modal 管理 =====
-const activeModal = ref(null) // 'weather' | 'exa' | 'camparams' | 'ha' | 'unique' | 'keys' | 'automation' | 'egress'
+const activeModal = ref(null) // 'weather' | 'exa' | 'camparams' | 'ha' | 'unique' | 'keys' | 'automation'
 
 const modalTitle = computed(() => {
   const titles = {
@@ -18,7 +17,6 @@ const modalTitle = computed(() => {
     unique: '助手角色',
     keys: 'API Keys',
     automation: '自动化',
-    egress: '数据出网模式',
   }
   return titles[activeModal.value] || ''
 })
@@ -348,32 +346,6 @@ async function saveAutomation() {
   }
 }
 
-// ===== 数据出网模式 =====
-const { egressMode, egressLabel, egressWarnings, loadEgressMode } = useEgressMode()
-const egressModeOptions = EGRESS_MODES
-const egressDraftMode = ref('cloud')   // 弹窗里的未保存选择
-const egressSaving = ref(false)
-const egressSaved = ref(false)
-
-function openEgressModal() {
-  egressDraftMode.value = egressMode.value
-  openModal('egress')
-}
-
-async function saveEgressMode() {
-  egressSaving.value = true
-  try {
-    await apiPost('/api/egress', { mode: egressDraftMode.value })
-    await loadEgressMode()
-    egressSaved.value = true
-    setTimeout(() => { egressSaved.value = false }, 2000)
-  } catch (e) {
-    console.error('Failed to save egress mode:', e)
-  } finally {
-    egressSaving.value = false
-  }
-}
-
 // ===== 摄像头参数保存(运动检测+推理间隔走 vision 全局) =====
 const camParamsSaving = ref(false)
 const camParamsSaved = ref(false)
@@ -609,7 +581,6 @@ const camParamsSummary = computed(() => `阈值${visionConfig.value.motion_thres
 const haSummary = computed(() => haConfig.value.url || '未配置')
 const uniqueSummary = computed(() => personaCustomized.value ? '已自定义' : '默认')
 const keysSummary = computed(() => `${keys.value.length} 个`)
-const egressSummary = computed(() => egressLabel.value)
 const automationSummary = computed(() => {
   const visionPart = automationConfig.value.silent_eval_enabled
     ? `视觉兜底 ${automationConfig.value.silent_eval_interval_seconds}s`
@@ -623,7 +594,6 @@ const automationSummary = computed(() => {
 onMounted(() => {
   loadAll()
   loadSimulatorStatus()
-  loadEgressMode()
   // 加载文档重建状态
   fetch('/api/doc/rebuild/status').then(r => r.json()).then(j => {
     docRebuildStatus.value = j.data || j
@@ -701,14 +671,6 @@ onUnmounted(() => {
           <div class="config-info">
             <span class="config-title">自动化</span>
             <span class="config-status">{{ automationSummary }}</span>
-          </div>
-        </div>
-
-        <div class="config-card" @click="openEgressModal()">
-          <span class="config-icon">&#127760;</span>
-          <div class="config-info">
-            <span class="config-title">数据出网模式</span>
-            <span class="config-status">{{ egressSummary }}</span>
           </div>
         </div>
       </div>
@@ -1137,34 +1099,6 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- 数据出网模式 -->
-      <div v-else-if="activeModal === 'egress'" class="modal-content">
-        <div
-          v-for="m in egressModeOptions"
-          :key="m.key"
-          class="setting-row"
-        >
-          <label class="setting-label">
-            <input type="radio" name="egress-draft" :value="m.key" v-model="egressDraftMode" />
-            <span class="label-text">{{ m.icon }} {{ m.label }}</span>
-            <span class="label-desc">{{ m.desc }}</span>
-          </label>
-        </div>
-        <p v-if="egressWarnings.length" class="egress-warnings">
-          ⚠️ {{ egressWarnings.join('；') }}
-        </p>
-        <p class="egress-hint">
-          纯内网模式：到「API Keys」把各角色 base_url 指向 OpenAI 兼容的内网端点即可。<br />
-          内置 Ollama：<code>docker compose --profile local-llm up -d ollama</code> 启动后填
-          <code>http://ollama:11434/v1</code>；也可用内网其他机器（Mac 上的 Ollama / LM Studio、自建 vLLM）。<br />
-          切到纯内网后，保存公网端点会被拒绝（硬拦截，切回云端/混合立刻放行）。
-        </p>
-        <div class="modal-save-bar">
-          <button class="btn-primary" :class="{ saved: egressSaved }" @click="saveEgressMode" :disabled="egressSaving">
-            {{ egressSaving ? '保存中...' : egressSaved ? '已保存' : '保存' }}
-          </button>
-        </div>
-      </div>
     </AdvancedModal>
   </div>
 </template>
@@ -1305,24 +1239,6 @@ onUnmounted(() => {
   display: flex;
   justify-content: flex-end;
   margin-top: var(--space-12);
-}
-
-/* 数据出网模式弹窗 */
-.egress-warnings {
-  margin: var(--space-8) 0;
-  padding: var(--space-8) var(--space-10);
-  background: var(--color-warning-bg);
-  border-radius: var(--radius-md);
-  font-size: var(--text-xs);
-  color: var(--color-warning);
-  line-height: 1.6;
-}
-
-.egress-hint {
-  margin: var(--space-8) 0 0;
-  font-size: var(--text-xs);
-  color: var(--color-text-tertiary);
-  line-height: 1.6;
 }
 
 /* HA 测试 */

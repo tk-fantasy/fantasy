@@ -2,13 +2,12 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuth } from '../composables/useAuth'
-import { EGRESS_MODES } from '../composables/useEgressMode'
 
 const router = useRouter()
 const { user } = useAuth()
 
 const currentStep = ref(1)
-const totalSteps = 4
+const totalSteps = 3
 const loading = ref(false)
 const error = ref('')
 const haTesting = ref(false)
@@ -48,15 +47,8 @@ const haForm = ref({
   token: '',
 })
 
-// Step 4: 数据出网模式声明（09 清单条目 4）
-// 模式列表与文案统一维护在 useEgressMode（高级设置弹窗共用）
-const egressModes = EGRESS_MODES
-const egressMode = ref('cloud')
-const egressAcknowledged = ref(false)
-const egressConfirmedExisting = ref(false)  // 已确认过声明（老用户升级场景）
-
 const stepTitle = computed(() => {
-  const titles = ['家庭信息', 'LLM 模型配置', 'Home Assistant 连接', '数据流向声明']
+  const titles = ['家庭信息', 'LLM 模型配置', 'Home Assistant 连接']
   return titles[currentStep.value - 1]
 })
 
@@ -65,7 +57,6 @@ const stepDesc = computed(() => {
     '设置你的家庭信息，让 AI 更了解你。',
     '配置 AI 模型，至少配置对话模型才能使用核心功能。',
     '连接 Home Assistant 智能家居平台，让 AI 能控制你的设备。',
-    '选择数据出网模式并确认声明。这会记录在系统里，作为交付留痕。',
   ]
   return descs[currentStep.value - 1]
 })
@@ -81,10 +72,6 @@ const canNext = computed(() => {
   }
   if (currentStep.value === 3) {
     return haForm.value.url && haForm.value.token
-  }
-  if (currentStep.value === 4) {
-    // 已确认过声明的老用户允许直接跳过；新用户必须选模式 + 勾选知晓
-    return egressConfirmedExisting.value || (egressMode.value && egressAcknowledged.value)
   }
   return false
 })
@@ -227,33 +214,6 @@ function finishSetup() {
   router.push('/chat')
 }
 
-// Step 4：保存出网模式；新确认（或模式有变）时提交声明确认，记录 hash 留痕
-async function submitEgressDeclaration() {
-  loading.value = true
-  error.value = ''
-  try {
-    // 此前已确认过的老用户（勾选框禁用）也按已知晓提交，保持确认记录与当前模式一致
-    const body = JSON.stringify({
-      mode: egressMode.value,
-      acknowledged: egressConfirmedExisting.value || egressAcknowledged.value,
-    })
-    const res = await fetch('/api/egress/confirm', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body,
-    })
-    const json = await res.json()
-    if (!res.ok) {
-      throw new Error(json.message || json.detail || '保存失败')
-    }
-    finishSetup()
-  } catch (e) {
-    error.value = e.message
-  } finally {
-    loading.value = false
-  }
-}
-
 function nextStep() {
   if (currentStep.value === 1) {
     submitHomeInfo()
@@ -261,8 +221,6 @@ function nextStep() {
     submitLLMConfig()
   } else if (currentStep.value === 3) {
     submitHAConfig()
-  } else if (currentStep.value === 4) {
-    submitEgressDeclaration()
   }
 }
 
@@ -275,20 +233,15 @@ onMounted(async () => {
     if (!res.ok) return
     const json = await res.json()
     const d = json.data || {}
-    // 老用户升级场景：三项基础配置已完成但从未确认出网声明 → 直达第 4 步补签
+    // 三项基础配置都已完成的，直接进聊天页
     if (d.has_home_info && d.has_llm_key && d.ha_configured) {
-      if (d.egress_confirmed) {
-        router.replace('/chat')
-        return
-      }
-      currentStep.value = 4
+      router.replace('/chat')
       return
     }
-    // 跳到第一个未完成的步骤：家庭 → LLM → HA → 声明
+    // 跳到第一个未完成的步骤：家庭 → LLM → HA
     if (d.has_home_info) {
       currentStep.value = d.has_llm_key ? 3 : 2
     }
-    if (d.egress_confirmed) egressConfirmedExisting.value = true
   } catch (e) {
     // 查询失败不阻塞，留在步骤 1 让用户从头走
   }
@@ -409,41 +362,6 @@ onMounted(async () => {
           <div v-if="haTestResult" class="ha-test-result" :class="{ success: haTestResult.ha_connected }">
             <span class="status-icon">{{ haTestResult.ha_connected ? '✅' : '⚠️' }}</span>
             <span>{{ haTestResult.ha_connected ? `连接成功，发现 ${haTestResult.entity_count} 个设备` : '连接失败，请检查配置' }}</span>
-          </div>
-        </div>
-
-        <!-- Step 4: 数据出网模式声明 -->
-        <div v-if="currentStep === 4" class="step-form">
-          <h2 class="step-title">{{ stepTitle }}</h2>
-          <p class="step-desc">{{ stepDesc }}</p>
-
-          <div class="egress-options">
-            <label
-              v-for="m in egressModes"
-              :key="m.key"
-              class="egress-option"
-              :class="{ active: egressMode === m.key }"
-            >
-              <input type="radio" name="egress-mode" :value="m.key" v-model="egressMode" />
-              <span class="egress-option-icon">{{ m.icon }}</span>
-              <span class="egress-option-body">
-                <span class="egress-option-label">{{ m.label }}</span>
-                <span class="egress-option-desc">{{ m.desc }}</span>
-              </span>
-            </label>
-          </div>
-
-          <div class="egress-declaration">
-            <p>
-              我已知晓：Aether 运行于家庭局域网，设备控制与摄像头画面默认不出网；
-              选择云端/混合模式时，对话文本（以及云端视觉模型启用时的画面）
-              将经加密 HTTPS 发送至所选模型服务商处理。详见
-              <code>docs/tech/数据流向说明.md</code>。
-            </p>
-            <label class="egress-ack">
-              <input type="checkbox" v-model="egressAcknowledged" :disabled="egressConfirmedExisting" />
-              <span>我已阅读并确认上述数据流向说明{{ egressConfirmedExisting ? '（此前已确认，可直接完成）' : '' }}</span>
-            </label>
           </div>
         </div>
 
@@ -789,81 +707,6 @@ onMounted(async () => {
   background: var(--color-primary-light);
   border-color: var(--color-success);
   color: var(--color-success);
-}
-
-/* Step 4: 数据出网模式 */
-.egress-options {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-10);
-  margin-bottom: var(--space-16);
-}
-
-.egress-option {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-10);
-  padding: var(--space-12);
-  background: var(--color-bg);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
-  cursor: pointer;
-  transition: border-color 0.2s, background 0.2s;
-}
-
-.egress-option:hover {
-  border-color: var(--color-border-hover);
-}
-
-.egress-option.active {
-  border-color: var(--color-primary);
-  background: var(--color-primary-light);
-}
-
-.egress-option input[type='radio'] {
-  margin-top: 3px;
-}
-
-.egress-option-icon {
-  font-size: var(--text-xl);
-  line-height: 1.2;
-}
-
-.egress-option-body {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-}
-
-.egress-option-label {
-  font-size: var(--text-sm);
-  font-weight: var(--weight-medium);
-  color: var(--color-text);
-}
-
-.egress-option-desc {
-  font-size: var(--text-xs);
-  color: var(--color-text-secondary);
-  line-height: 1.5;
-}
-
-.egress-declaration {
-  padding: var(--space-12);
-  background: var(--color-bg);
-  border: 1px dashed var(--color-border);
-  border-radius: var(--radius-md);
-  font-size: var(--text-xs);
-  color: var(--color-text-secondary);
-  line-height: 1.6;
-}
-
-.egress-ack {
-  display: flex;
-  align-items: center;
-  gap: var(--space-8);
-  margin-top: var(--space-10);
-  cursor: pointer;
-  color: var(--color-text);
 }
 
 @media (max-width: 600px) {

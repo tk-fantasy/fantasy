@@ -582,45 +582,7 @@ Exa 搜索 Key 在此页配置（**不是** `/models` 页），无环境变量�
 
 ---
 
-## 16. 数据出网策略 /egress
-
-| 方法 | 路径 | 认证 | 说明 |
-| --- | --- | --- | --- |
-| GET | `/api/egress` | JWT | 获取当前策略状态 |
-| POST | `/api/egress` | JWT | 设置出网模式 |
-| POST | `/api/egress/confirm` | JWT | 确认数据流向声明 |
-
-```jsonc
-// GET /api/egress 返回
-{
-  "mode": "cloud",           // cloud / hybrid / local
-  "mode_label": "云端对话",
-  "confirmed": true,
-  "confirmed_at": "2026-08-15T10:00:00Z",
-  "confirmed_by": "alice",
-  "endpoints": [
-    { "role": "chat", "base_url": "https://api.openai.com/v1", "private": false, "configured": true },
-    { "role": "vision", "base_url": "http://ollama:11434/v1", "private": true, "configured": true }
-  ],
-  "warnings": [],
-  "notes": []
-}
-
-// POST /api/egress 设置模式
-{ "mode": "local" }
-
-// POST /api/egress/confirm 确认声明
-// （body 为空，用户信息从 JWT 提取）
-```
-
-**三档模式**：
-- `cloud`：云端模式（默认），对话走 HTTPS 到模型厂商
-- `hybrid`：混合模式，对话走云端，敏感角色建议内网
-- `local`：纯内网模式，所有端点必须内网，公网端点硬拦截
-
----
-
-## 17. 文档/RAG /doc, /search
+## 16. 文档/RAG /doc, /search
 
 | 方法 | 路径 | 认证 | Body | 说明 |
 | --- | --- | --- | --- | --- |

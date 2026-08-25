@@ -13,7 +13,6 @@ from ..core.api_models import ApiResponse
 from ..core.auth import extract_token_from_request, get_current_admin, verify_token
 from ..core.config import get_config, update_config_section
 from ..core.database import Database
-from ..services import egress_service
 
 logger = logging.getLogger(__name__)
 
@@ -112,15 +111,6 @@ async def setup_status(request: Request, container: AppContainer = Depends(get_c
     # 判断是否完成初始配置（LLM key + HA token 都需要配置）
     setup_complete = has_llm_key and ha_configured
 
-    # 出网声明确认状态（09 清单条目 4：引导页据此决定是否展示声明步骤）
-    from ..services.egress_service import DECLARATION_VERSION
-    egress_record = await egress_service.get_confirm_record()
-    egress_confirmed = bool(
-        egress_record
-        and egress_record.get("version") == DECLARATION_VERSION
-        and egress_record.get("mode") == egress_service.get_mode()
-    )
-
     return ApiResponse(data={
         "setup_complete": setup_complete,
         "has_llm_key": has_llm_key,
@@ -128,7 +118,6 @@ async def setup_status(request: Request, container: AppContainer = Depends(get_c
         "ha_connected": ha_connected,
         "has_home_info": has_home_info,
         "llm_key_count": llm_key_count,
-        "egress_confirmed": egress_confirmed,
     })
 
 

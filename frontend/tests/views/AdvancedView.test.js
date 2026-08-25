@@ -15,9 +15,9 @@ describe('AdvancedView', () => {
     vi.clearAllMocks()
   })
 
-  // 回归：6eacab9 删 PTZ 时误删了相邻的 saveAutomation/egress 块，
-  // 模板仍引用 egressLabel 等未定义变量，渲染即 ReferenceError 白屏
-  it('加载完成后渲染全部 8 张配置卡片且无渲染错误', async () => {
+  // 回归：6eacab9 删 PTZ 时误删了相邻的 saveAutomation 块，
+  // 模板仍引用未定义变量，渲染即 ReferenceError 白屏
+  it('加载完成后渲染全部 7 张配置卡片且无渲染错误', async () => {
     const errors = []
     const wrapper = mount(AdvancedView, {
       global: { config: { errorHandler: err => errors.push(err) } },
@@ -34,20 +34,6 @@ describe('AdvancedView', () => {
       '助手角色',
       'API Keys',
       '自动化',
-      '数据出网模式',
     ])
-  })
-
-  it('出网模式弹窗展示三档选项', async () => {
-    const wrapper = mount(AdvancedView)
-    await flushPromises()
-
-    await wrapper.findAll('.config-card')[7].trigger('click')
-    // AdvancedModal Teleport 到 body，需从 document 查询
-    const options = document.querySelectorAll('input[name="egress-draft"]')
-    expect(options.length).toBe(3)
-    expect(document.body.textContent).toContain('云端对话')
-    expect(document.body.textContent).toContain('纯内网')
-    wrapper.unmount()
   })
 })

@@ -27,7 +27,7 @@ from ..schema.api_schemas import (
     SecondaryPasswordSetupRequest,
     SecondaryPasswordVerifyRequest,
 )
-from ..services import egress_service, llm_key_service
+from ..services import llm_key_service
 from ..services.model_test_service import test_model_connection
 
 logger = logging.getLogger(__name__)
@@ -123,7 +123,6 @@ async def upsert_global_llm_key_route(
     llm_key_service.verify_secondary_password(payload.password)
 
     base_url = payload.base_url.strip()
-    egress_service.assert_endpoint_allowed(base_url)  # 纯内网模式硬拦截公网端点
     model = payload.model.strip()
     model_type = payload.type.strip()
     api_key = payload.api_key.strip()

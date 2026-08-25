@@ -77,8 +77,8 @@ describe('SetupWizardView', () => {
     expect(btn.attributes('disabled')).toBeDefined()
   })
 
-  it('shows 4 steps total（含数据流向声明步）', () => {
+  it('shows 3 steps total', () => {
     const wrapper = mount(SetupWizardView)
-    expect(wrapper.find('.step-indicator').text()).toContain('步骤 1 / 4')
+    expect(wrapper.find('.step-indicator').text()).toContain('步骤 1 / 3')
   })
 })
