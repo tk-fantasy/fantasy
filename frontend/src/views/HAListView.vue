@@ -4,6 +4,7 @@ import BaseToggle from '../components/BaseToggle.vue'
 import EmojiPicker from '../components/EmojiPicker.vue'
 import SensorChart from '../components/SensorChart.vue'
 import { adaptControls, formatSliderValue, toActualValue } from '../utils/deviceCapabilities.js'
+import SceneBar from '../components/SceneBar.vue'
 import { apiGet } from '../utils/api'
 import { useEmojiPref } from '../composables/useEmojiPref'
 import { useEntityMeta } from '../composables/useEntityMeta'
@@ -672,6 +673,8 @@ onMounted(() => {
     <div class="search-bar">
       <input v-model="searchQuery" class="search-input" placeholder="搜索设备名称..." />
     </div>
+
+    <SceneBar />
 
     <div class="area-tabs">
       <button v-for="area in areas" :key="area" class="area-tab" :class="{ active: activeArea === area }" @click="activeArea = area">{{ area }}</button>

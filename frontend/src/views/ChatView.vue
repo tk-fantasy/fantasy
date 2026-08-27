@@ -93,6 +93,7 @@ const SLASH_COMMANDS = [
   { cmd: '/halist', desc: '查看智能家居设备', action: 'nav', url: '/halist' },
   { cmd: '/task', desc: '查看自动化规则', action: 'nav', url: '/task' },
   { cmd: '/scheduled', desc: '查看定时任务', action: 'nav', url: '/scheduled' },
+  { cmd: '/report', desc: '家庭报告（告警/周报）', action: 'nav', url: '/report' },
   { cmd: '/models', desc: '模型配置与切换', action: 'nav', url: '/models' },
   { cmd: '/sessions', desc: '浏览并切换历史会话', action: 'nav', url: '/sessions' },
   { cmd: '/doc', desc: '打开RAG文档助手', action: 'nav', url: '/doc' },

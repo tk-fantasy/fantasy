@@ -226,6 +226,15 @@ class AutomationService:
                 pass
             if result == 1:
                 applied.extend(await self._run_actions(rule, now, camera_id=camera_id))
+                # 触发事件落 family_events（周报数据源），失败静默
+                try:
+                    from .alert_service import alert_service
+                    n_actions = len(rule.get("actions", []) or [])
+                    await alert_service.record(
+                        "automation", f"rule:{rule_name}",
+                        f"规则「{rule_name}」条件成立，执行了 {n_actions} 个动作")
+                except Exception:  # noqa: BLE001
+                    pass
         return applied
 
     async def _record_eval_log(self, camera_id: str, rule: dict, result) -> None:

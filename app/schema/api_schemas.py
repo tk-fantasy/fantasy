@@ -487,3 +487,19 @@ class ExplainRequest(BaseModel):
 class UniqueSettingsRequest(BaseModel):
     """POST /unique 请求体。"""
     persona: str = ""
+
+
+# --------------- Scenes（场景模式） ---------------
+
+class SceneCreateRequest(BaseModel):
+    """POST /scenes 请求体。
+
+    capture=true 时不看 actions，直接把当前所有可控设备状态存成场景
+    （"现在这样就是我要的模式"）；否则 actions 为
+    [{"domain":"light","service":"turn_on","entity_id":"light.xx","data":{...}}]。
+    id 非空 = 更新已有场景。
+    """
+    name: str
+    actions: list[dict[str, Any]] = []
+    capture: bool = False
+    id: str = ""

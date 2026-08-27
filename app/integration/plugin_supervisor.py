@@ -41,6 +41,16 @@ class PluginSupervisor:
             except Exception as exc:
                 logger.error("插件 %s 启动失败（已重试 %d 次，已熔断）: %s",
                              manifest.id, self._max_restarts, exc)
+                # 熔断告警（内部吞异常；插件功能静默失效是家庭产品最典型的
+                # "坏了没人知道"场景）
+                try:
+                    from ..services.alert_service import alert_service
+                    await alert_service.notify(
+                        f"plugin:{manifest.id}",
+                        f"插件「{manifest.name or manifest.id}」多次启动失败已熔断，"
+                        f"其功能（如语音播报/消息推送）将不可用")
+                except Exception:  # noqa: BLE001
+                    pass
 
     async def _start_with_retries(self, manifest: Manifest, plugin_dir: str) -> None:
         """指数退避重试启动单个插件。超过 max_restarts 抛异常（由调用方记录）。"""

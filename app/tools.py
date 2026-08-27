@@ -61,6 +61,8 @@ def register_all_tools(deps: ToolDeps) -> None:
     _register_verify_action(deps)
     # 7. 定时任务管理（让 agent 能对话建/查/删定时任务）
     _register_scheduled_task_tools(deps)
+    # 8. 场景模式（一键切换一组设备到预设状态）
+    _register_scene_tools(deps)
 
 
 # ---------------------------------------------------------------------------
@@ -660,3 +662,121 @@ async def connect_external_mcp_servers(mcp_client_manager: MCPClientManager) -> 
 
     if tasks:
         await asyncio.gather(*tasks)
+
+# ---------------------------------------------------------------------------
+# 场景工具 — 一句话应用/创建/查询场景（SceneService，纯核心功能）
+# ---------------------------------------------------------------------------
+
+def _register_scene_tools(deps: ToolDeps) -> None:
+    """注册场景模式聊天工具。
+
+    scene_service 在 lifespan 装配进 container，handler 调用时动态读取。
+    """
+
+    def _svc():
+        from .container import get_container
+        c = get_container()
+        return getattr(c, "scene_service", None)
+
+    async def list_handler(parameters: dict, session) -> dict:
+        svc = _svc()
+        if svc is None:
+            return {"error": "场景服务未就绪"}
+        scenes = await svc.list_scenes()
+        return {"scenes": [
+            {"id": s["id"], "name": s["name"],
+             "actions_count": len(s.get("actions", []))}
+            for s in scenes
+        ]}
+
+    async def apply_handler(parameters: dict, session) -> dict:
+        svc = _svc()
+        if svc is None:
+            return {"error": "场景服务未就绪"}
+        name = str(parameters.get("name", "")).strip()
+        scene_id = str(parameters.get("scene_id", "")).strip()
+        if not scene_id and name:
+            scenes = await svc.list_scenes()
+            match = next((s for s in scenes if s["name"] == name), None)
+            if match is None:
+                return {"error": f"没有叫「{name}」的场景，先调 scene_list 看已有场景"}
+            scene_id = match["id"]
+        if not scene_id:
+            return {"error": "name 或 scene_id 必填一个"}
+        try:
+            result = await svc.apply_scene(scene_id)
+        except ValueError as e:
+            return {"error": str(e)}
+        ok, total = result.get("ok", 0), result.get("total", 0)
+        if ok == total:
+            return {"success": True, "summary": f"场景「{result.get('scene')}」已应用（{ok}/{total} 个设备成功）"}
+        failed = [r.get("entity_id", "") for r in result.get("results", []) if not r.get("ok")]
+        return {"success": ok > 0,
+                "summary": f"场景「{result.get('scene')}」部分应用（{ok}/{total} 成功），失败: {', '.join(failed)}"}
+
+    async def create_handler(parameters: dict, session) -> dict:
+        svc = _svc()
+        if svc is None:
+            return {"error": "场景服务未就绪"}
+        name = str(parameters.get("name", "")).strip()
+        if not name:
+            return {"error": "name 不能为空"}
+        user_id = getattr(session, "user_id", "") or ""
+        try:
+            if parameters.get("capture"):
+                scene = await svc.capture_scene(name, user_id=user_id)
+            else:
+                actions = parameters.get("actions") or []
+                scene = await svc.create_scene(name, actions, user_id=user_id)
+        except (ValueError, RuntimeError) as e:
+            return {"error": str(e)}
+        return {"success": True, "scene_id": scene["id"], "name": name,
+                "actions_count": len(scene.get("actions", []))}
+
+    deps.mcp_client_manager.register_tool(MCPTool(
+        client_id="local",
+        tool_name="scene_list",
+        description="【场景列表】列出所有已保存的场景（如'回家模式''观影模式'）。",
+        parameters={"type": "object", "properties": {}},
+        handler=list_handler,
+    ))
+    deps.mcp_client_manager.register_tool(MCPTool(
+        client_id="local",
+        tool_name="scene_apply",
+        description=(
+            "【应用场景】把一组设备切换到预设状态。用户说'回家模式''看电影模式''该睡觉了，切睡眠模式'"
+            "等场景名时用本工具。不确定有哪些场景先调 scene_list。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "场景名（如'观影模式'）"},
+                "scene_id": {"type": "string", "description": "场景 ID（与 name 二选一）"},
+            },
+        },
+        handler=apply_handler,
+    ))
+    deps.mcp_client_manager.register_tool(MCPTool(
+        client_id="local",
+        tool_name="scene_create",
+        description=(
+            "【创建场景】保存一组设备状态为场景。两种方式："
+            "① capture=true：把设备当前状态拍下来存成场景（用户说'把现在的灯光存成观影模式'时用）；"
+            "② 传 actions 列表（[{domain,service,entity_id,data}]，格式同 call_service 参数）。"
+            "用户只是要控制设备时不要用本工具，直接调 call_service。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "场景名（如'观影模式'）"},
+                "capture": {"type": "boolean", "description": "true=捕获当前所有设备状态"},
+                "actions": {
+                    "type": "array",
+                    "description": "动作列表（capture=false 时必填）",
+                    "items": {"type": "object"},
+                },
+            },
+            "required": ["name"],
+        },
+        handler=create_handler,
+    ))

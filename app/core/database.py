@@ -271,6 +271,25 @@ class Database:
             );
             CREATE INDEX IF NOT EXISTS idx_vision_logs_camera
                 ON vision_logs(camera_id, id);
+
+            CREATE TABLE IF NOT EXISTS family_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at INTEGER NOT NULL,
+                kind TEXT NOT NULL,
+                source TEXT DEFAULT '',
+                message TEXT DEFAULT ''
+            );
+            CREATE INDEX IF NOT EXISTS idx_family_events_time
+                ON family_events(created_at);
+
+            CREATE TABLE IF NOT EXISTS scenes (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                actions TEXT NOT NULL DEFAULT '[]',
+                user_id TEXT DEFAULT '',
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
         """)
         await db.commit()
 
@@ -592,6 +611,74 @@ class Database:
             )
             await self._db.commit()
             return cursor.rowcount
+
+    # ============ Family Events（告警/任务/自动化事件流，周报数据源） ============
+
+    async def family_event_add(self, kind: str, source: str = "", message: str = "") -> None:
+        """追加一条家庭事件（轻量，各 hook 点 try/except 调用，失败不影响主流程）。"""
+        now = int(time.time() * 1000)
+        async with self._write_lock:
+            await self._db.execute(
+                "INSERT INTO family_events (created_at, kind, source, message) VALUES (?, ?, ?, ?)",
+                (now, kind, source, message),
+            )
+            # 顺手修剪 90 天前的事件（每次写都执行，DELETE 无匹配行代价可忽略）
+            cutoff = now - 90 * 24 * 3600 * 1000
+            await self._db.execute("DELETE FROM family_events WHERE created_at < ?", (cutoff,))
+            await self._db.commit()
+
+    async def family_events_since(self, since_ms: int, kinds: list[str] | None = None) -> list[dict]:
+        """取 since_ms 之后的事件（升序）。kinds 为空取全部。"""
+        if kinds:
+            placeholders = ",".join("?" * len(kinds))
+            sql = (f"SELECT id, created_at, kind, source, message FROM family_events "
+                   f"WHERE created_at >= ? AND kind IN ({placeholders}) ORDER BY created_at")
+            params: tuple = (since_ms, *kinds)
+        else:
+            sql = ("SELECT id, created_at, kind, source, message FROM family_events "
+                   "WHERE created_at >= ? ORDER BY created_at")
+            params = (since_ms,)
+        async with self._db.execute(sql, params) as cursor:
+            return [{"id": r[0], "created_at": r[1], "kind": r[2],
+                     "source": r[3], "message": r[4]} async for r in cursor]
+
+    # ============ Scenes（场景模式） ============
+
+    async def scenes_all(self) -> list[dict]:
+        async with self._db.execute("SELECT id, name, actions, user_id, created_at, updated_at FROM scenes ORDER BY created_at") as cursor:
+            return [
+                {"id": r[0], "name": r[1], "actions": json.loads(r[2]),
+                 "user_id": r[3], "created_at": r[4], "updated_at": r[5]}
+                async for r in cursor
+            ]
+
+    async def scenes_get(self, scene_id: str) -> dict | None:
+        async with self._db.execute(
+                "SELECT id, name, actions, user_id, created_at, updated_at FROM scenes WHERE id = ?",
+                (scene_id,)) as cursor:
+            row = await cursor.fetchone()
+            if row is None:
+                return None
+            return {"id": row[0], "name": row[1], "actions": json.loads(row[2]),
+                    "user_id": row[3], "created_at": row[4], "updated_at": row[5]}
+
+    async def scenes_upsert(self, scene_id: str, name: str, actions: list, user_id: str = "") -> None:
+        now = int(time.time() * 1000)
+        async with self._write_lock:
+            await self._db.execute(
+                "INSERT INTO scenes (id, name, actions, user_id, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(id) DO UPDATE SET name=excluded.name, actions=excluded.actions, "
+                "updated_at=excluded.updated_at",
+                (scene_id, name, json.dumps(actions, ensure_ascii=False), user_id, now, now),
+            )
+            await self._db.commit()
+
+    async def scenes_delete(self, scene_id: str) -> bool:
+        async with self._write_lock:
+            cursor = await self._db.execute("DELETE FROM scenes WHERE id = ?", (scene_id,))
+            await self._db.commit()
+            return cursor.rowcount > 0
 
     # ============ Scheduled Tasks 操作 ============
 

@@ -39,3 +39,9 @@ async def push_to_user(user_id: str, payload: dict) -> None:
         except Exception:  # noqa: BLE001
             # 连接刚好关闭等场景：注册表清理由 chat_ws 的 finally 负责
             logger.debug("ws_registry push 失败（连接可能已断开）", exc_info=True)
+
+
+async def push_to_all(payload: dict) -> None:
+    """把一条 JSON 推给所有在线用户（告警广播用）。"""
+    for user_id in list(_sockets.keys()):
+        await push_to_user(user_id, payload)

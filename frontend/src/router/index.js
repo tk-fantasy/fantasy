@@ -104,6 +104,11 @@ const routes = [
     name: 'Plugin',
     component: () => import('../views/PluginManageView.vue'),
   },
+  {
+    path: '/report',
+    name: 'FamilyReport',
+    component: () => import('../views/FamilyReportView.vue'),
+  },
 ]
 
 const router = createRouter({

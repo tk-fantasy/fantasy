@@ -261,10 +261,15 @@ class SchedulerService:
             task["last_reply"] = reply_text
             task["last_status"] = "success"
             logger.info("scheduled task '%s' (%s) succeeded", name, task_id)
+            await self._record_task_event("task_success", name, "执行成功")
         except Exception as exc:
             task["last_status"] = "failed"
             task["last_error"] = str(exc)
             logger.warning("scheduled task '%s' (%s) failed: %s", name, task_id, exc)
+            await self._record_task_event("task_failed", name, f"执行失败: {exc}")
+            # 告警推送（内部吞异常，不影响调度主流程）
+            from .alert_service import alert_service
+            await alert_service.notify("scheduler:task", f"定时任务「{name}」执行失败：{exc}")
         finally:
             # at 类型一次性任务：成功/失败后禁用（不自动重试，下次到点自然不再触发）
             schedule = task.get("schedule", {})
@@ -276,6 +281,14 @@ class SchedulerService:
                 task["next_run_at"] = compute_next_run(schedule, time.time())
             await self._db.scheduled_task_update(task_id, task)
             self._executing.discard(task_id)
+
+    async def _record_task_event(self, kind: str, name: str, message: str) -> None:
+        """任务成败落 family_events（周报数据源）。失败只记日志。"""
+        try:
+            from .alert_service import alert_service
+            await alert_service.record(kind, f"scheduler:{name}", message)
+        except Exception:  # noqa: BLE001
+            logger.debug("record task event failed", exc_info=True)
 
     async def _execute_tool_payload(self, payload: dict) -> None:
         """执行 tool payload：复用 ToolExecutor 链路（与 AutomationService._execute_action 同出口）。"""

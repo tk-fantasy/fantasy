@@ -67,6 +67,8 @@ class AppContainer:
     ptz_registry: Any = None  # Task 5:PtzRegistry(模块单例,容器暴露给路由)
     dispatcher: Any = None  # Dispatcher | None
     scheduler_service: Any = None  # SchedulerService | None
+    scene_service: Any = None  # SceneService | None（lifespan 阶段装配）
+    weekly_report_service: Any = None  # WeeklyReportService | None
 
     # ── RAG 文档助手（lifespan 启动阶段后台构建索引）──
     rag_service: Any = None  # RagService | None

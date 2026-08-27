@@ -194,6 +194,9 @@ def sync_ha_runtime_refs(new_client, new_service) -> None:
     td = getattr(_container, "tool_deps", None)
     if td is not None:
         td.ha_service = new_service
+    ss = getattr(_container, "scene_service", None)
+    if ss is not None:
+        ss.set_ha(new_client, new_service)
 
 
 # ============ 公共工具函数 ============
@@ -469,6 +472,21 @@ async def lifespan(_: FastAPI):
     # 回填工具依赖的 ref：让 scheduled_task_* 工具能访问调度器
     tool_deps.scheduler_service_ref[0] = scheduler_service
 
+    # ── 场景模式（纯核心功能，聊天工具与 REST 共用）──
+    from .services.scene_service import SceneService
+    _container.scene_service = SceneService(ha_client=ha_client, ha_service=_container.ha_service)
+
+    # ── 离线告警（摄像头离线/HA 断连轮询 + 各 hook 点事件；模块级单例）──
+    from .services.alert_service import alert_service
+    alert_service.bind(camera_manager=_services.get("camera_manager"),
+                       health_checker=health_checker)
+    await alert_service.start()
+
+    # ── 家庭周报（默认关闭，weekly_report.enabled 开启）──
+    from .services.weekly_report_service import WeeklyReportService
+    _container.weekly_report_service = WeeklyReportService(llm_chat_client=llm_chat_client)
+    await _container.weekly_report_service.start()
+
     _startup_progress.set("正在连接摄像头与智能家居...")
     # 多路 CameraManager 是唯一摄像头来源:各路 worker 自带 dhash 运动检测 +
     # _on_automation_trigger 事件驱动评估(自闭环,不经 AutomationAgent.trigger_evaluate)。
@@ -589,6 +607,11 @@ async def lifespan(_: FastAPI):
         await _safe_stop("automation agent", _automation_agent_ref[0].stop)
     if _container.scheduler_service is not None:
         await _safe_stop("scheduler", _container.scheduler_service.stop)
+    # 告警监控 / 周报循环
+    from .services.alert_service import alert_service as _alert_svc
+    await _safe_stop("alert service", _alert_svc.stop)
+    if _container.weekly_report_service is not None:
+        await _safe_stop("weekly report", _container.weekly_report_service.stop)
     # 集成插件平台停止（停止所有插件子进程）
     if _container.integration_layer is not None:
         await _safe_stop("integration layer", _container.integration_layer.stop)
@@ -651,6 +674,8 @@ from .routes.sg_routes import router as sg_router
 from .routes.integration_routes import router as integration_router
 from .routes.ws_routes import router as ws_router
 from .routes.automation_routes import router as automation_router
+from .routes.scene_routes import router as scene_router
+from .routes.report_routes import router as report_router
 from .routes.simulator_routes import router as simulator_router
 from .routes.ops_routes import router as ops_router
 app.include_router(llm_key_router, prefix="/api")
@@ -676,6 +701,8 @@ app.include_router(doc_router)  # 路径已包含 /api 前缀或无
 app.include_router(sg_router, prefix="/api")  # 语义图：/api/sg/*
 app.include_router(integration_router, prefix="/api")  # 集成插件平台：/api/integrations/*
 app.include_router(ops_router, prefix="/api")  # 运维：诊断包导出 /api/ops/*
+app.include_router(scene_router, prefix="/api")  # 场景模式：/api/scenes/*
+app.include_router(report_router, prefix="/api")  # 家庭报告：/api/events、/api/report/*
 app.include_router(ws_router)  # WebSocket 路由，无 prefix
 
 # CORS
