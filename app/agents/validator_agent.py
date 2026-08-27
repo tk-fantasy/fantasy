@@ -57,6 +57,10 @@ class ValidatorAgent:
         # 注意：key 解析是 async（resolve_key_for_role_user），在 should_retry 内完成；
         # 这里只缓存已构建的 ChatOpenAI 实例。
         self._user_llms: dict[str, ChatOpenAI] = {}
+        # per-user LLM 注入的 httpx 客户端（生命周期由本类负责——ChatOpenAI
+        # 不会关注入的客户端）。invalidate_user 不关闭的话连接池缓慢累积。
+        self._user_clients: dict[str, tuple] = {}
+        self._close_tasks: set = set()
 
     @property
     def max_retries(self) -> int:
@@ -71,8 +75,39 @@ class ValidatorAgent:
         user_id 为空或未缓存则 no-op。
         """
         old = self._user_llms.pop(user_id, None)
+        clients = self._user_clients.pop(user_id, None)
+        if clients is not None:
+            self._close_clients(clients)
         if old is not None:
             logger.info("Validator: invalidated cached LLM for user_id=%s", user_id)
+
+    def _close_clients(self, clients: tuple) -> None:
+        """关闭注入的 (sync, async) httpx 客户端。失败静默（仅资源回收）。"""
+        sync_c, async_c = clients
+        try:
+            sync_c.close()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            import asyncio
+            loop = asyncio.get_running_loop()
+            t = loop.create_task(async_c.aclose())
+            self._close_tasks.add(t)
+            t.add_done_callback(self._close_tasks.discard)
+        except RuntimeError:
+            pass  # 无运行中的循环（停机路径），交由 GC
+
+    async def close_all(self) -> None:
+        """关闭全部 per-user 客户端（进程停机时调用）。"""
+        clients = list(self._user_clients.values())
+        self._user_clients.clear()
+        self._user_llms.clear()
+        for c in clients:
+            self._close_clients(c)
+            try:
+                await c[1].aclose()
+            except Exception:  # noqa: BLE001
+                pass
 
     def _get_llm(self, user_id: str = "") -> ChatOpenAI:
         """按 user_id 取已缓存的 per-user LLM；未缓存或无 user_id 回退全局。
@@ -101,16 +136,19 @@ class ValidatorAgent:
             if not key_info or not key_info.get("api_key"):
                 return None
             from ..clients.http_client import new_client, new_sync_client
+            sync_c = new_sync_client(timeout=30.0)
+            async_c = new_client(timeout=30.0)
             llm = ChatOpenAI(
                 model=key_info.get("model", "glm-4-flash"),
                 base_url=key_info.get("base_url", "").rstrip("/"),
                 api_key=key_info["api_key"],
                 temperature=0.0,
                 max_tokens=50,
-                http_client=new_sync_client(timeout=30.0),
-                http_async_client=new_client(timeout=30.0),
+                http_client=sync_c,
+                http_async_client=async_c,
             )
             self._user_llms[user_id] = llm
+            self._user_clients[user_id] = (sync_c, async_c)
             logger.info("Validator: built per-user LLM for user_id=%s, model=%s",
                         user_id, key_info.get("model"))
             return llm

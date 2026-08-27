@@ -99,6 +99,11 @@ class SessionStore:
         self._lock = asyncio.Lock()
         self._loaded = False
         self._pending_tasks: set[asyncio.Task] = set()
+        # 每 session 的保存链尾任务：同会话的写入严格按提交顺序落库。
+        # fire-and-forget + 失败重试(sleep)下，两次保存可能乱序——第 1 个写
+        # 失败进入重试等待时第 2 个(新快照)先落库，随后旧快照覆盖新数据；
+        # delete 也可能被先前排队的 save"复活"。链式等待消除这两类竞态。
+        self._save_chains: dict[str, asyncio.Task] = {}
 
     async def load_from_db(self, user_id: str = "") -> None:
         """从 SQLite 加载会话数据到内存缓存。"""
@@ -120,19 +125,48 @@ class SessionStore:
 
         注意：调用方应在持有 self._lock 时调用，以保证序列化期间 session
         不被其他协程修改；序列化在锁内同步完成，仅 DB 写入异步执行。
+        同会话多次保存按提交顺序排队（见 self._save_chains）。
         """
         try:
-            db = Database.get()
             data = self._serialize_session(session)
-            task = asyncio.create_task(self._save_with_retry(session.session_id, data, session.user_id))
+            prev = self._save_chains.get(session.session_id)
+            task = asyncio.create_task(
+                self._save_with_retry(session.session_id, data, session.user_id, prev=prev))
+            self._save_chains[session.session_id] = task
             self._pending_tasks.add(task)
             task.add_done_callback(self._pending_tasks.discard)
             task.add_done_callback(self._log_task_error)
+            task.add_done_callback(
+                lambda t, sid=session.session_id: self._pop_save_chain(sid, t))
         except RuntimeError:
             logger.debug("Cannot persist session %s: no running event loop", session.session_id)
 
-    async def _save_with_retry(self, session_id: str, data: dict, user_id: str, max_retries: int = 2) -> None:
-        """带重试的 DB 写入。"""
+    def _pop_save_chain(self, session_id: str, task: asyncio.Task) -> None:
+        """链尾任务结束时清理；若已被更新的保存接管（链尾非自己）则不动。"""
+        if self._save_chains.get(session_id) is task:
+            self._save_chains.pop(session_id, None)
+
+    @staticmethod
+    async def _await_prev(prev: asyncio.Task | None) -> None:
+        """等前序链任务完成（吞掉其异常——新快照本就该覆盖旧数据）。"""
+        if prev is None or prev.cancelled():
+            return
+        try:
+            await prev
+        except asyncio.CancelledError:
+            # prev 被取消（停机清理等）：跳过等待直接写。但若是我们自己
+            # 同时被取消，必须让 CancelledError 继续传播。
+            cur = asyncio.current_task()
+            if cur is not None and cur.cancelling():
+                raise
+        except Exception:  # noqa: BLE001
+            pass
+
+    async def _save_with_retry(self, session_id: str, data: dict, user_id: str,
+                               max_retries: int = 2,
+                               prev: asyncio.Task | None = None) -> None:
+        """带重试的 DB 写入（排在前序链任务之后，保证同会话写序）。"""
+        await self._await_prev(prev)
         db = Database.get()
         for attempt in range(max_retries + 1):
             try:
@@ -147,15 +181,21 @@ class SessionStore:
                     logger.error("Session save failed after %d retries: %s", max_retries + 1, session_id, exc_info=True)
 
     def _delete_session_async(self, session_id: str) -> None:
-        """异步从 SQLite 删除会话。"""
+        """异步从 SQLite 删除会话（排在同会话所有待写保存之后，防"复活"）。"""
         try:
             db = Database.get()
-            task = asyncio.create_task(db.sessions_delete(session_id))
+            prev = self._save_chains.pop(session_id, None)
+            task = asyncio.create_task(self._delete_after_prev(prev, db, session_id))
             self._pending_tasks.add(task)
             task.add_done_callback(self._pending_tasks.discard)
             task.add_done_callback(self._log_task_error)
         except RuntimeError:
             logger.debug("Cannot delete session %s: no running event loop", session_id)
+
+    @staticmethod
+    async def _delete_after_prev(prev: asyncio.Task | None, db, session_id: str) -> None:
+        await SessionStore._await_prev(prev)
+        await db.sessions_delete(session_id)
 
     @staticmethod
     def _log_task_error(task: asyncio.Task) -> None:

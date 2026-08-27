@@ -127,33 +127,48 @@ async def test_stream(camera_id: str, body: dict):
     if user and pwd and "://" in base:
         scheme, rest = base.split("://", 1)
         url = f"{scheme}://{quote(user, safe='')}:{quote(pwd, safe='')}@{rest}"
-    # RTSP over TCP + 低延迟(与 _open_network_stream 一致;默认 UDP 在 NAT/桥接
-    # 网络下信令通但拿不到帧)
-    transport = str(get_config("vision.rtsp_transport", "tcp")).strip().lower() or "tcp"
-    os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
-        f"rtsp_transport;{transport}"
-        f"|buffer_size;256k"
-        f"|max_delay;100000"
-        f"|fflags;nobuffer+discardcorrupt"
-        f"|flags;low_delay"
-    )
-    cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
-    if not cap.isOpened():
-        cap.release()
-        return ApiResponse(data={"ok": False, "error": "打不开(检查 url/凭证/网络/transport)"})
-    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-    # 预热读:首帧可能慢(握手+I 帧),多试几次
-    ok = False
-    err = ""
-    for _ in range(10):
-        ret, frame = cap.read()
-        if ret and frame is not None:
-            ok = True
-            break
-        time.sleep(0.1)
-    if not ok:
-        err = "打开但读不到帧"
-    cap.release()
+
+    def _probe_sync() -> tuple[bool, str]:
+        """同步试连（在线程里跑，绝不碰事件循环）。
+
+        FFmpeg 打开是不可中断的阻塞调用：目标断网/防火墙丢包时 connect 能挂
+        几十秒——此前直接跑在 async handler 里，期间全站（WS 聊天、scheduler
+        tick、HA 调用）冻结。这里加了两层时限：
+        - FFmpeg 层 timeout（5s socket 超时）保证线程自身会退出（线程不可强杀，
+          外层超时后泄漏的线程靠这个自行结束）；
+        - 外层 asyncio.wait_for 12s 保证 handler 一定返回。
+        """
+        transport = str(get_config("vision.rtsp_transport", "tcp")).strip().lower() or "tcp"
+        # RTSP over TCP + 低延迟(与 _open_network_stream 一致;默认 UDP 在 NAT/桥接
+        # 网络下信令通但拿不到帧)。timeout 单位 µs（FFmpeg rtsp 私有选项）。
+        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
+            f"rtsp_transport;{transport}"
+            f"|buffer_size;256k"
+            f"|max_delay;100000"
+            f"|fflags;nobuffer+discardcorrupt"
+            f"|flags;low_delay"
+            f"|timeout;5000000"
+        )
+        cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
+        try:
+            if not cap.isOpened():
+                return False, "打不开(检查 url/凭证/网络/transport)"
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            # 预热读:首帧可能慢(握手+I 帧),多试几次
+            for _ in range(10):
+                ret, frame = cap.read()
+                if ret and frame is not None:
+                    return True, ""
+                time.sleep(0.1)
+            return False, "打开但读不到帧"
+        finally:
+            cap.release()
+
+    import asyncio
+    try:
+        ok, err = await asyncio.wait_for(asyncio.to_thread(_probe_sync), timeout=12.0)
+    except asyncio.TimeoutError:
+        ok, err = False, "试连超时（12 秒无响应）"
     return ApiResponse(data={"ok": ok, "error": err})
 
 

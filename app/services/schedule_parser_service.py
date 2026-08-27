@@ -94,27 +94,40 @@ async def parse_schedule(phrase: str) -> dict[str, Any]:
 
     model_config = _load_model_config_from_config()
 
-    # 无工具的纯 ChatOpenAI，复用绕代理 http client
+    # 无工具的纯 ChatOpenAI，复用绕代理 http client。用完即关——ChatOpenAI
+    # 不关注入的客户端，此前的每次调用都泄漏 2 个连接池。
     from langchain_openai import ChatOpenAI
 
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M %A")
     # 注意：prompt 里有大量字面量 { } JSON 示例，不能用 str.format（会把 {kind} 当字段解析）。
     # 用 replace 注入当前时间即可。
     system_prompt = _SYSTEM_PROMPT.replace("{now}", now_str)
+    sync_c = new_sync_client(timeout=30.0)
+    async_c = new_client(timeout=30.0)
     llm = ChatOpenAI(
         model=model_config.get("model", "glm-4-flash"),
         base_url=model_config.get("base_url"),
         api_key=model_config.get("api_key", "not-needed"),
         temperature=0.0,
-        http_client=new_sync_client(timeout=30.0),
-        http_async_client=new_client(timeout=30.0),
+        http_client=sync_c,
+        http_async_client=async_c,
     )
 
     messages = [
         ("system", system_prompt),
         ("human", phrase),
     ]
-    resp = await llm.ainvoke(messages)
+    try:
+        resp = await llm.ainvoke(messages)
+    finally:
+        try:
+            await async_c.aclose()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            sync_c.close()
+        except Exception:  # noqa: BLE001
+            pass
     raw = resp.content if isinstance(resp.content, str) else str(resp.content)
     logger.info("parse_schedule('%s') -> %s", phrase, raw[:200])
 

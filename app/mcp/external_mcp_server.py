@@ -76,7 +76,11 @@ class ExternalMCPServer:
                     continue
                 rid = msg.get("id")
                 if rid is not None and rid in self._pending:
-                    self._pending[rid].set_result(msg)
+                    fut = self._pending[rid]
+                    # 响应与调用方超时取消的竞态：fut 已取消时 set_result 会抛
+                    # InvalidStateError 杀死整个 reader 任务
+                    if not fut.done():
+                        fut.set_result(msg)
         finally:
             err = ExternalMCPServerError(f"External MCP server disconnected: {self.name}")
             for fut in list(self._pending.values()):

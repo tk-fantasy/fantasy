@@ -97,8 +97,19 @@ class HAService:
                     async def call(msg_type: str) -> dict[str, Any]:
                         nonlocal msg_id
                         msg_id += 1
-                        await ws.send(json.dumps({"id": msg_id, "type": msg_type}))
-                        return json.loads(await ws.recv())
+                        rid = msg_id
+                        await ws.send(json.dumps({"id": rid, "type": msg_type}))
+                        # 读到本请求的响应为止：HA 可能穿插推送事件消息；
+                        # 单次 recv 拿错帧时 .get("result") 把错误当空列表
+                        # "成功"缓存 60 秒（设备分组整体消失）。
+                        for _ in range(20):
+                            resp = json.loads(await ws.recv())
+                            if resp.get("id") == rid:
+                                if not resp.get("success", False):
+                                    raise RuntimeError(
+                                        f"HA WebSocket {msg_type} failed: {resp.get('error')}")
+                                return resp
+                        raise RuntimeError(f"HA WebSocket {msg_type}: no matching response")
 
                     # areas
                     areas = (await call("config/area_registry/list")).get("result", [])

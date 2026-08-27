@@ -35,11 +35,28 @@ def session_to_langchain_messages(
     """将 session.model_messages (OpenAI dict 格式) 转为 LangChain Message 列表。
 
     如果提供 system_prompt，会在列表开头插入 SystemMessage。
+    存在历史摘要时（summarization_service 压缩产生），以一条 SystemMessage
+    注入在系统提示之后、保留窗口消息之前——否则摘要算了没人消费，上下文
+    并未真正变小。rag.summary_trim_enabled=False 时摘要不注入（与不裁剪
+    一起构成旧行为的完整回退）。
     """
     messages: list[BaseMessage] = []
 
     if system_prompt:
         messages.append(SystemMessage(content=system_prompt))
+
+    # 注入与裁剪同开关（rag.summary_trim_enabled，默认开）：关掉即完全回到
+    # 旧行为——摘要不注入、历史不裁剪。
+    from ..core.config import get_config
+    if session.summaries and bool(get_config("rag.summary_trim_enabled", True)):
+        summary_text = "\n".join(
+            f"- {str(s.get('text', '')).strip()}" for s in session.summaries
+            if str(s.get("text", "")).strip()
+        )
+        if summary_text:
+            messages.append(SystemMessage(
+                content=f"以下是本会话更早对话的摘要（原文已被压缩掉，摘要即历史）：\n{summary_text}"
+            ))
 
     for msg in session.model_messages:
         role = msg.get("role")

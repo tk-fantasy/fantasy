@@ -194,6 +194,10 @@ class HomeAssistantClient:
                     "name": name,
                 }))
                 resp = json.loads(await ws.recv())
+                # 校验帧配对：HA 可能穿插其他消息，拿错帧时 success 缺失
+                # 会误报"改名失败"（实际成功）
+                if resp.get("id") != 1:
+                    raise RuntimeError("HA entity_registry/update: unexpected frame")
                 if not resp.get("success"):
                     err = resp.get("error", {})
                     raise RuntimeError(

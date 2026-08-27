@@ -67,6 +67,8 @@ class PluginProcess:
         self.manifest = manifest
         self._plugin_root = plugin_root
         self._rpc_timeout = rpc_timeout
+        # 反向请求处理任务引用（防 GC 中途回收）
+        self._reverse_tasks: set[asyncio.Task] = set()
         # 方向 2 反向方法注册表：插件 → Aether 调用时按 method dispatch（Phase 3）。
         # None 时插件发反向请求会收到 "宿主未注入" 错误（向后兼容旧部署）。
         self._host_registry = host_registry
@@ -220,8 +222,10 @@ class PluginProcess:
             if msg is None:
                 continue
             if "method" in msg:
-                # 方向 2：插件 → Aether 反向请求
-                asyncio.create_task(self._handle_reverse(msg))
+                # 方向 2：插件 → Aether 反向请求（持引用防 GC 中途回收）
+                _t = asyncio.create_task(self._handle_reverse(msg))
+                self._reverse_tasks.add(_t)
+                _t.add_done_callback(self._reverse_tasks.discard)
                 continue
             # 方向 1 响应：按 id 配对
             rid = msg.get("id")

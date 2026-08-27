@@ -265,7 +265,9 @@ class RuleService:
                     messages.append({"role": "assistant", "content": content})
                     messages.append({"role": "user", "content": "JSON 解析失败，请重新生成有效的 JSON。"})
                     continue
-                return self._fallback_rule(text)
+                # 兜底规则同样保留摄像头绑定（与下方 setdefault 透传语义一致，
+                # 否则绑定摄像头的规则静默退化成全局规则）
+                return self._fallback_rule(text, camera_id)
 
             # 兜底:确保关键字段存在
             parsed.setdefault("name", text[:20])
@@ -298,7 +300,7 @@ class RuleService:
                 logger.warning("Rule validation failed after %d attempts: %s", MAX_RETRIES + 1, errors)
                 return parsed
 
-        return self._fallback_rule(text)
+        return self._fallback_rule(text, camera_id)
 
     async def revise_rule(self, current_rule: dict, instruction: str, user_id: str = "") -> dict:
         """基于自然语言指令迭代修改已有规则（不落库，只返回预览）。

@@ -72,8 +72,16 @@ async def start_export(operator: str, notes: str = "") -> dict:
         raise AppException("docker.sock 不可用（需按部署文档挂载）", http_status=400)
 
     _state.update(status="running", staged_bytes=0, total_bytes=0, file="", error="")
-    asyncio.create_task(_export_job(operator, notes))
+    # 持引用防 GC：导出含长时间 docker save，事件循环只持任务弱引用，
+    # await 中的任务可能被中途回收（官方文档明确的坑），导出无声消失。
+    _t = asyncio.create_task(_export_job(operator, notes))
+    _EXPORT_TASKS.add(_t)
+    _t.add_done_callback(_EXPORT_TASKS.discard)
     return {"started": True}
+
+
+# 导出任务强引用集合（见上）
+_EXPORT_TASKS: set[asyncio.Task] = set()
 
 
 async def _export_job(operator: str, notes: str) -> None:

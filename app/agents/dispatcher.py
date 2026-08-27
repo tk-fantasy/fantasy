@@ -212,6 +212,8 @@ class Dispatcher:
         self._tools: list = []           # 工具列表（构建 per-user agent 用）
         self._user_agents: dict[str, Any] = {}  # user_id → agent 缓存
         self._user_agent_lock = asyncio.Lock()
+        # 后台小任务引用（如 broadcasting 状态清除），防事件循环只持弱引用被 GC
+        self._bg_tasks: set[asyncio.Task] = set()
         # 多路。取 focus/state 时按主摄像头(第一个 enabled)。
         self._camera_manager = camera_manager
         self._ha_catalog_provider = ha_catalog_provider
@@ -641,14 +643,36 @@ class Dispatcher:
                 logger.exception("dispatch_stream: failed to send error to ws")
             return
 
+        ws_broken = False
+
         async def emit(instruction: Instruction) -> None:
-            await ws_send(instruction.model_dump())
+            """WS 发送，断连后自动静音。
+
+            客户端中途断开（手机锁屏/切页）时 ws_send 会抛异常；若让它逃逸，
+            _run_turn 的收尾（model_messages 落库、Finish）全部跳过，本轮问答
+            永久丢失且日志无痕。这里失败一次即标记断连，后续 emit 静默 no-op，
+            让本轮继续跑完并持久化——用户重连后能看到完整历史。
+            """
+            nonlocal ws_broken
+            if ws_broken:
+                return
+            try:
+                await ws_send(instruction.model_dump())
+            except Exception:  # noqa: BLE001
+                ws_broken = True
+                logger.info("dispatch_stream: ws send failed, muting further emits "
+                            "(turn continues for persistence)")
 
         agent = await self._get_agent(user_id)
-        await self._run_turn(event, session, query, ctx, emit, stream_tokens=True, agent=agent, user_id=user_id)
-
-        session.history_instructions = []  # 流式模式不存 history_instructions
-        await self._session_store.store_session(session)
+        try:
+            await self._run_turn(event, session, query, ctx, emit, stream_tokens=True, agent=agent, user_id=user_id)
+        finally:
+            # 无论本轮如何收场（含意外异常），都把会话状态落库
+            session.history_instructions = []  # 流式模式不存 history_instructions
+            try:
+                await self._session_store.store_session(session)
+            except Exception:  # noqa: BLE001
+                logger.exception("dispatch_stream: store_session failed after turn")
 
     # ------------------------------------------------------------------
     # 共享编排骨架
@@ -869,8 +893,10 @@ class Dispatcher:
                 await self._sink_manager.broadcast(state.final_content, request_id)
                 # 估算超时后清除 broadcasting（中文约 4 字/秒 + 5 秒缓冲）
                 est_seconds = max(len(state.final_content) / 4, 3) + 5
-                asyncio.create_task(self._clear_broadcasting_after(
+                _t = asyncio.create_task(self._clear_broadcasting_after(
                     emit, request_id, session_id, est_seconds))
+                self._bg_tasks.add(_t)
+                _t.add_done_callback(self._bg_tasks.discard)
             except Exception as exc:
                 logger.warning("集成广播失败（不影响主流程）: %s", exc)
 

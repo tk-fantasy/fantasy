@@ -517,11 +517,17 @@ def _register_scheduled_task_tools(deps: ToolDeps) -> None:
         payload = parameters.get("payload") or {}
         if not schedule or not payload:
             return {"error": "schedule 和 payload 都是必填"}
+        # 创建者 user_id：与 REST 路由（scheduler_routes）一致。缺失时 message 类
+        # 任务到点执行会被拒（无归属会话）、reminder 会回退全局 agent 投递到
+        # 全系统最近活跃会话（多用户下投错人）。session 由 tool_executor 传入，
+        # 含登录用户 user_id。
+        user_id = getattr(session, "user_id", "") or ""
         task = await svc.add_task({
             "name": name,
             "schedule": schedule,
             "payload": payload,
             "enabled": True,
+            "user_id": user_id,
         })
         from .services.scheduler_service import summarize_schedule
         # 只回精简摘要，不回完整 task（含 payload 文本），避免模型复述导致确认语冗长重复

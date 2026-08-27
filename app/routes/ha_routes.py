@@ -21,6 +21,19 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+# 后台目录刷新任务引用（防 GC 中途回收，官方文档明确的弱引用坑）
+_bg_refresh_tasks: set[asyncio.Task] = set()
+
+
+def _spawn_catalog_refresh(refresh_fn) -> None:
+    """后台刷新 HA 目录缓存（持强引用；异常只记日志）。"""
+    try:
+        t = asyncio.create_task(refresh_fn())
+        _bg_refresh_tasks.add(t)
+        t.add_done_callback(_bg_refresh_tasks.discard)
+    except Exception:  # noqa: BLE001
+        logger.warning("catalog refresh spawn failed", exc_info=True)
+
 
 @router.get("/ha/entities")
 async def ha_entities(container: AppContainer = Depends(get_container)) -> ApiResponse[dict]:
@@ -136,10 +149,7 @@ async def set_entity_note(
     # 否则用户写完备注立刻聊天，LLM 用的还是旧缓存（不含备注）→ 调错 service。
     refresh_fn = getattr(container, "catalog_refresh_fn", None)
     if refresh_fn is not None:
-        try:
-            asyncio.create_task(refresh_fn())
-        except Exception:  # noqa: BLE001
-            logger.warning("catalog refresh after note save failed", exc_info=True)
+        _spawn_catalog_refresh(refresh_fn)
     return ApiResponse(data={"entity_id": entity_id, "note": note})
 
 
@@ -176,10 +186,7 @@ async def set_entity_operable(
     # 立即刷新 catalog（与 set_entity_note 同做法）
     refresh_fn = getattr(container, "catalog_refresh_fn", None)
     if refresh_fn is not None:
-        try:
-            asyncio.create_task(refresh_fn())
-        except Exception:  # noqa: BLE001
-            logger.warning("catalog refresh after operable change failed", exc_info=True)
+        _spawn_catalog_refresh(refresh_fn)
     return ApiResponse(data={"entity_id": entity_id, "operable": payload.operable})
 
 
@@ -254,10 +261,7 @@ async def set_action_map(
     invalidate_cache()
     refresh_fn = getattr(container, "catalog_refresh_fn", None)
     if refresh_fn is not None:
-        try:
-            asyncio.create_task(refresh_fn())
-        except Exception:  # noqa: BLE001
-            logger.warning("catalog refresh after action-map save failed", exc_info=True)
+        _spawn_catalog_refresh(refresh_fn)
     return ApiResponse(data={"entity_id": entity_id, "mappings": payload.mappings})
 
 

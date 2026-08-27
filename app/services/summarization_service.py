@@ -55,10 +55,18 @@ class SummarizationService:
         if not should:
             self._last_message_count[session.session_id] = current_count
             return session.summaries
-        older_messages = session.model_messages[:-self._recent_turns_to_keep]
+        # 保留窗口 = recent_turns × 2 条消息（一轮 ≈ user+assistant 两条）。
+        # 旧实现按条数切片把"轮"当"条"，这里对齐语义。
+        keep_messages = max(2, self._recent_turns_to_keep * 2)
+        older_messages = session.model_messages[:-keep_messages]
         if not older_messages:
             return session.summaries
+        # 滚动摘要：把上一轮生成的摘要文本并入本次输入，否则每次压缩会丢掉
+        # 更早的摘要内容（每段历史只被摘要一次，摘要自身要滚动承接）。
+        prev_texts = [str(s.get("text", "")).strip() for s in session.summaries
+                      if str(s.get("text", "")).strip()]
         text_blocks = [str(message.get("content", "")).strip() for message in older_messages if str(message.get("content", "")).strip()]
+        text_blocks = prev_texts + text_blocks
         if not text_blocks:
             return session.summaries
         chunk_size = max(1, len(text_blocks) // self._summary_blocks)
@@ -88,7 +96,14 @@ class SummarizationService:
                 }
             )
         session.summaries = summaries
-        self._last_message_count[session.session_id] = current_count
+        # 真正生效：裁掉已摘要部分，上下文实际变小（此前只写 summaries、
+        # model_messages 原封不动，摘要白算且每轮重复全量摘要）。
+        # rag.summary_trim_enabled=False 可回退旧行为（只算不裁）。
+        if bool(get_config("rag.summary_trim_enabled", True)):
+            session.model_messages = session.model_messages[-keep_messages:]
+            self._last_message_count[session.session_id] = len(session.model_messages)
+        else:
+            self._last_message_count[session.session_id] = current_count
         return summaries
 
     async def _resolve_summary_client(self, user_id: str):

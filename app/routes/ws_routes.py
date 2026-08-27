@@ -37,7 +37,9 @@ async def _run_dispatch(container, event, ws_send, user_id: str) -> None:
     except asyncio.CancelledError:
         pass  # Dispatcher 内部已 emit Finish + interrupt
     except Exception:
-        pass  # Dispatcher 内部已有异常处理
+        # Dispatcher 应当内部消化异常；逃逸到这里说明有意外的洞——必须留痕
+        #（此前静默 pass，断连丢轮次这类问题在日志里毫无痕迹）
+        logger.exception("dispatch_stream: unhandled exception escaped")
 
 
 async def _handle_direct(websocket, container, payload, rid: str, user_id: str) -> None:

@@ -51,8 +51,12 @@ def compute_next_run(schedule: dict, now_ts: float) -> float | None:
         if not at_str:
             return None
         try:
-            # 兼容带/不带毫秒、带 Z 的 ISO 字符串
-            dt = datetime.fromisoformat(at_str.replace("Z", "+00:00"))
+            # 兼容带/不带毫秒、带 Z 的 ISO 字符串。Z 一律按本地时间处理：
+            # schedule_parser 校验侧（_validate_schedule）本就把 Z 剥掉当本地
+            # 时间，执行侧若按 UTC 解析会静默偏移一个时区（国内差 8 小时）。
+            dt = datetime.fromisoformat(at_str.replace("Z", "").replace("+00:00", "")) \
+                if ("Z" in at_str or at_str.endswith("+00:00")) \
+                else datetime.fromisoformat(at_str)
             ts = dt.timestamp()
             return ts if ts > now_ts else None
         except (ValueError, TypeError):
@@ -165,6 +169,15 @@ class SchedulerService:
                     task["last_status"] = "interrupted"
                     task["last_error"] = "进程重启，上次执行被中断"
                 task["next_run_at"] = compute_next_run(task.get("schedule", {}), now)
+                # 停机期间错过的 at 一次性任务：compute_next_run 返回 None，
+                # 任务却保持 enabled=True——表现为前端"已启用"但永不触发的
+                # 死任务。明确打标 expired 并禁用，用户可见可删可重建。
+                if task["next_run_at"] is None and task.get("schedule", {}).get("kind") == "at":
+                    task["enabled"] = False
+                    task["last_status"] = "expired"
+                    task["last_error"] = "任务时刻在停机期间已过去，已自动停用"
+                    logger.info("scheduler: at-task '%s' expired during downtime, disabled",
+                                task.get("name"))
             else:
                 task["next_run_at"] = None
             await self._db.scheduled_task_update(task["id"], task)
@@ -458,8 +471,10 @@ class SchedulerService:
         now = time.time()
         task.setdefault("name", "未命名任务")
         task.setdefault("enabled", True)
-        # 创建者 user_id：执行时按它解析 per-user 模型。路由层已注入；
-        # setdefault 兼容旧测试/未传场景（空串表示无归属，_load_tasks 会打标禁用）
+        # 创建者 user_id：执行时按它解析 per-user 模型。REST 路由与聊天工具
+        # （tools.register_scheduler_tools）均注入；空串为历史遗留/旧测试数据，
+        # message 类任务执行时会被明确拒绝并给出错误提示（见
+        # _execute_message_payload），不在启动期静默禁用——保持任务可见可修。
         task.setdefault("user_id", "")
         task["id"] = task_id
         task["created_at"] = now_ms

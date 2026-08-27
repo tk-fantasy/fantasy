@@ -49,6 +49,9 @@ class IntegrationLayer:
         self._host_registry = HostMethodRegistry()
         camera_manager = (host_deps or {}).get("camera_manager")
 
+        # 注销任务强引用（loop.create_task 只持弱引用，防 GC 中途回收）
+        unregister_tasks: set = set()
+
         def _on_plugin_stopped(plugin_id: str) -> None:
             """插件进程停止（含崩溃回收）→ 注销其注册的虚拟摄像头。
 
@@ -59,7 +62,9 @@ class IntegrationLayer:
             try:
                 import asyncio
                 loop = asyncio.get_running_loop()
-                loop.create_task(camera_manager.unregister_plugin_cameras(plugin_id))
+                t = loop.create_task(camera_manager.unregister_plugin_cameras(plugin_id))
+                unregister_tasks.add(t)
+                t.add_done_callback(unregister_tasks.discard)
             except Exception:  # noqa: BLE001
                 logger.warning("注销插件 %s 虚拟摄像头失败", plugin_id, exc_info=True)
 
