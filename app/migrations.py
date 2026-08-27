@@ -134,3 +134,19 @@ async def load_vision_focuses(db, vision_service) -> None:
             vision_service.add_focus(saved_focus)
             await db.kv_set("vision_focuses", json.dumps(vision_service.get_vision_focuses()))
             logger.info("Migrated old vision_focus to new format: %s", saved_focus[:50])
+
+
+async def migrate_camera_frame_interval(db) -> None:
+    """cameras.frame_interval_ms 默认值演进：2000ms → 1000ms（3 帧覆盖约 2 秒）。
+
+    旧默认的"2 秒一帧 × 3 帧"时间序列太稀，动态条件（如"正在坐下"）语义弱；
+    新默认约 1 秒间隔让三帧更连续。只改写仍等于旧默认值的行，
+    用户显式设置过的其他间隔原样保留。幂等：跑过后不再命中。
+    """
+    try:
+        changed = await db.cameras_remap_frame_interval(old_ms=2000, new_ms=1000)
+        if changed:
+            logger.info("已将 %d 路摄像头的抓帧间隔从 2000ms 迁移到 1000ms", changed)
+    except Exception:
+        logger.warning("cameras.frame_interval_ms 默认值迁移失败（跳过，不影响启动）",
+                       exc_info=True)

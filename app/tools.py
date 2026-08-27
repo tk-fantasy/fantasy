@@ -72,7 +72,6 @@ def _register_vision_chat(deps: ToolDeps) -> None:
         question = str(parameters.get("question", "") or "请描述画面内容。")
         camera_id = str(parameters.get("camera_id", "") or "").strip()
         # 多路取帧三级:用户指定 → 当前预览路(_active_display_id)→ 第一个 enabled。
-        frame = None
         used_camera_id = camera_id
         if deps.camera_manager is None:
             return {"answer": "摄像头未配置,无法分析。", "question": question, "has_frame": False}
@@ -82,18 +81,25 @@ def _register_vision_chat(deps: ToolDeps) -> None:
             cams = deps.camera_manager.list_cameras()
             if cams:
                 used_camera_id = cams[0]["id"]
-        if used_camera_id:
-            frame = deps.camera_manager.get_frame(used_camera_id)
-        if frame is None:
+        if not used_camera_id:
             return {"answer": "摄像头当前没有画面,无法分析。", "question": question, "has_frame": False}
-        answer = await deps.vision_client.ask_about_frame(frame, question)
+        # 多帧:取规则引擎环形缓冲的最近几帧(frame_interval_ms 采样、时间有序),
+        # 模型能结合帧间变化回答"正在做什么";缓冲为空(刚启动还没攒够采样)回退最新单帧。
+        frames = deps.camera_manager.get_recent_frames(used_camera_id, 3)
+        if not frames:
+            latest = deps.camera_manager.get_frame(used_camera_id)
+            frames = [latest] if latest is not None else []
+        if not frames:
+            return {"answer": "摄像头当前没有画面,无法分析。", "question": question, "has_frame": False}
+        answer = await deps.vision_client.ask_about_frames(frames, question)
         return {"answer": answer, "question": question, "has_frame": True,
-                "camera_id": used_camera_id, "model": deps.vision_client.model}
+                "camera_id": used_camera_id, "model": deps.vision_client.model,
+                "frames_used": len(frames)}
 
     deps.mcp_client_manager.register_tool(MCPTool(
         client_id="local",
         tool_name="vision_chat",
-        description="拍摄指定摄像头画面，根据画面内容回答用户问题。可用摄像头列表请调用 get_entities 查看。",
+        description="拍摄指定摄像头的最近连续画面，根据画面内容和变化回答用户问题（可用于判断动作/状态）。可用摄像头列表请调用 get_entities 查看。",
         parameters={"type": "object", "properties": {
             "question": {"type": "string"},
             "camera_id": {"type": "string", "description": "可选,指定摄像头ID;不传取当前查看路"},

@@ -50,6 +50,10 @@ class Database:
     _instance: Database | None = None
     _db: aiosqlite.Connection | None = None
     _write_lock: asyncio.Lock | None = None
+    # 曾建立且尚未关闭的全部连接。测试常把 _db/_instance 直接置 None 来换
+    # 单例，被丢弃的连接其 worker 线程（aiosqlite）非 daemon，不 close 会让
+    # 解释器退出永久卡死在 threading._shutdown；登记于此供统一回收。
+    _open_conns: list[aiosqlite.Connection] = []
 
     @classmethod
     async def init(cls) -> Database:
@@ -147,11 +151,21 @@ class Database:
                 vision_min_infer_interval   REAL DEFAULT 8.0,
                 vision_max_idle_interval    REAL DEFAULT 120.0,
                 vision_use_img_count        INTEGER DEFAULT 3,
-                frame_interval_ms           INTEGER DEFAULT 2000,
+                frame_interval_ms           INTEGER DEFAULT 1000,
                 display_enabled             INTEGER DEFAULT 1,
                 created_at      INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000),
                 updated_at      INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000)
             );
+
+            CREATE TABLE IF NOT EXISTS vision_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at INTEGER NOT NULL,
+                camera_id TEXT NOT NULL DEFAULT '',
+                kind TEXT NOT NULL DEFAULT '',
+                content TEXT NOT NULL DEFAULT '{}'
+            );
+            CREATE INDEX IF NOT EXISTS idx_vision_logs_camera
+                ON vision_logs(camera_id, id);
         """)
         await db.commit()
 
@@ -182,6 +196,7 @@ class Database:
         await db.commit()
 
         cls._db = db
+        cls._open_conns.append(db)
         cls._write_lock = asyncio.Lock()
         cls._instance = cls()
 
@@ -220,7 +235,7 @@ class Database:
                     "vision_min_infer_interval": float(v.get("min_infer_interval_seconds", 8.0)),
                     "vision_max_idle_interval": float(v.get("max_idle_interval_seconds", 120.0)),
                     "vision_use_img_count": int(v.get("vision_use_img_count", 3)),
-                    "frame_interval_ms": int(v.get("frame_interval_ms", 2000)),
+                    "frame_interval_ms": int(v.get("frame_interval_ms", 1000)),
                     "display_enabled": 1 if legacy.get("automation", {}).get("camera_vl_display_enabled") else 0,
                 })
                 # 把现有规则的 camera_id 回填到新 id(data JSON blob + 列都设)
@@ -260,11 +275,32 @@ class Database:
     async def close(cls) -> None:
         """关闭数据库连接。"""
         if cls._db is not None:
-            await cls._db.close()
+            db = cls._db
             cls._db = None
             cls._write_lock = None
             cls._instance = None
+            cls._open_conns = [c for c in cls._open_conns if c is not db]
+            await db.close()
             logger.info("Database closed")
+
+    @classmethod
+    async def close_all(cls) -> int:
+        """关闭登记在册的全部连接（含测试置空 _db 后失联的孤儿），返回关闭数。
+
+        aiosqlite 的连接队列是线程安全的，跨事件循环收尾没有问题；对已损坏/
+        已关闭的连接尽力而为即可（测试进程退出路径，吞异常换确定性）。
+        """
+        orphan_count = len(cls._open_conns) - (1 if cls._db is not None else 0)
+        if orphan_count > 0:
+            logger.warning("Database.close_all: 回收 %d 个失联连接", orphan_count)
+        await cls.close()
+        conns, cls._open_conns = cls._open_conns, []
+        for conn in conns:
+            try:
+                await conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+        return len(conns)
 
     def __init__(self) -> None:
         if self._db is None:
@@ -358,6 +394,20 @@ class Database:
             await self._db.commit()
         return data["id"]
 
+    async def cameras_remap_frame_interval(self, old_ms: int = 2000, new_ms: int = 1000) -> int:
+        """一次性迁移：把仍等于旧默认值的 frame_interval_ms 改写为新默认。
+
+        只动恰好等于 old_ms 的行——用户显式设过的其他值原样保留。
+        幂等：迁移后为 new_ms，不再命中 WHERE 条件。返回改写行数。
+        """
+        async with self._db.execute(
+            "UPDATE cameras SET frame_interval_ms = ? WHERE frame_interval_ms = ?",
+            (new_ms, old_ms),
+        ) as cur:
+            changed = cur.rowcount
+        await self._db.commit()
+        return changed
+
     async def cameras_update(self, camera_id: str, fields: dict) -> bool:
         """部分更新指定列(id/created_at/updated_at 不可改)。自动刷 updated_at。"""
         if not fields:
@@ -383,6 +433,64 @@ class Database:
             )
             await self._db.commit()
             return cursor.rowcount > 0
+
+    # ============ Vision Logs 操作（识别留痕）============
+
+    # 保留上限：识别日志是诊断性数据（预览分类 + 规则判定 + 动作执行），
+    # 超限修剪最旧记录，防无限增长。
+    VISION_LOG_MAX_ROWS = 5000
+
+    async def vision_log_insert(self, camera_id: str, kind: str, content: dict) -> None:
+        """插入一条识别日志。偶发修剪（时间戳取模采样）保总量有界。"""
+        now = int(time.time() * 1000)
+        async with self._write_lock:
+            await self._db.execute(
+                "INSERT INTO vision_logs (created_at, camera_id, kind, content) VALUES (?, ?, ?, ?)",
+                (now, camera_id, kind, json.dumps(content, ensure_ascii=False)),
+            )
+            if now % 50 == 0:
+                await self._db.execute(
+                    "DELETE FROM vision_logs WHERE id <= "
+                    "(SELECT id FROM vision_logs ORDER BY id DESC LIMIT 1 OFFSET ?)",
+                    (self.VISION_LOG_MAX_ROWS,),
+                )
+            await self._db.commit()
+
+    async def vision_logs_tail(
+        self, camera_id: str = "", kind: str = "", limit: int = 100,
+    ) -> list[dict]:
+        """按条件倒序取最近的识别日志（新在前）。"""
+        conds, args = [], []
+        if camera_id:
+            conds.append("camera_id = ?")
+            args.append(camera_id)
+        if kind:
+            conds.append("kind = ?")
+            args.append(kind)
+        where = f"WHERE {' AND '.join(conds)}" if conds else ""
+        args.append(max(1, min(int(limit), 1000)))
+        async with self._db.execute(
+            f"SELECT id, created_at, camera_id, kind, content FROM vision_logs "
+            f"{where} ORDER BY id DESC LIMIT ?",
+            args,
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [
+            {
+                "id": r[0], "created_at": r[1], "camera_id": r[2], "kind": r[3],
+                "content": json.loads(r[4]) if r[4] else {},
+            }
+            for r in rows
+        ]
+
+    async def vision_logs_delete_camera(self, camera_id: str) -> int:
+        """删除某摄像头全部识别日志（插件删除时回收）。"""
+        async with self._write_lock:
+            cursor = await self._db.execute(
+                "DELETE FROM vision_logs WHERE camera_id = ?", (camera_id,)
+            )
+            await self._db.commit()
+            return cursor.rowcount
 
     # ============ Scheduled Tasks 操作 ============
 

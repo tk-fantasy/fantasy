@@ -15,7 +15,7 @@ const {
   cameras, areas, loading,
   loadCameras, loadAreas, createCamera, updateCamera, deleteCamera,
   testStream, enableDisplay, disableDisplay,
-  loadFocuses, addFocus, updateFocus, deleteFocus, findDevice, manualIp,
+  loadFocuses, addFocus, updateFocus, deleteFocus,
 } = useCamera()
 
 // —— 编辑态 ——
@@ -24,8 +24,6 @@ const editingFocuses = ref([])   // 当前编辑摄像头的关注项
 const newFocusText = ref('')
 const testing = ref(false)
 const testResult = ref(null)     // null | { ok, error }
-const discovering = ref(false)
-const discoverResult = ref(null) // null | { new_ip }
 
 // 默认新摄像头(cameras 表列默认值,见 database.py DDL)
 function blankCamera() {
@@ -37,7 +35,7 @@ function blankCamera() {
     ptz_speed: 0.5, ptz_step_ms: 300,
     motion_hash_size: 16, motion_threshold: 15, motion_check_interval: 1.0,
     vision_min_infer_interval: 8.0, vision_max_idle_interval: 120.0,
-    vision_use_img_count: 3, frame_interval_ms: 2000, display_enabled: 1,
+    vision_use_img_count: 3, frame_interval_ms: 1000, display_enabled: 1,
   }
 }
 
@@ -50,14 +48,12 @@ function startCreate() {
   editingFocuses.value = []
   newFocusText.value = ''
   testResult.value = null
-  discoverResult.value = null
 }
 
 async function startEdit(cam) {
   // 拷贝一份,避免直接改列表数据
   editing.value = { ...cam }
   testResult.value = null
-  discoverResult.value = null
   try {
     editingFocuses.value = await loadFocuses(cam.id) || []
   } catch (e) {
@@ -230,40 +226,6 @@ async function doToggleFocus(fid) {
   }
 }
 
-// ONVIF 发现
-async function doFindDevice() {
-  if (!editing.value?.id) return
-  discovering.value = true
-  discoverResult.value = null
-  try {
-    discoverResult.value = await findDevice(editing.value.id)
-    await loadCameras()
-    // 刷新当前编辑对象的 device_mac/ip
-    const fresh = cameras.value.find(c => c.id === editing.value.id)
-    if (fresh) {
-      editing.value.device_mac = fresh.device_mac
-      if (fresh.ptz_ip && !editing.value.ptz_ip) editing.value.ptz_ip = fresh.ptz_ip
-    }
-  } catch (e) {
-    discoverResult.value = { new_ip: '', error: String(e) }
-  } finally {
-    discovering.value = false
-  }
-}
-
-async function doManualIp() {
-  if (!editing.value?.id) return
-  const ip = prompt('输入摄像头 IP 地址:', editing.value.ptz_ip || '')
-  if (!ip) return
-  try {
-    await manualIp(editing.value.id, ip)
-    editing.value.ptz_ip = ip
-    await loadCameras()
-  } catch (e) {
-    alert('设置 IP 失败: ' + (e?.message || String(e)))
-  }
-}
-
 const isEdit = computed(() => !!editing.value?.id)
 const sourceOptions = [
   { value: 'rtsp', label: 'RTSP 网络摄像头' },
@@ -295,17 +257,22 @@ const areaOptions = computed(() => [
             <span class="cam-badge" :class="{ on: cam.display_enabled }">
               {{ cam.display_enabled ? 'AI 预览' : '休眠' }}
             </span>
-            <span class="cam-source">{{ cam.source_type === 'usb' ? 'USB' : 'RTSP' }}</span>
+            <span v-if="cam.source_type === 'test'" class="cam-badge test-badge">插件虚拟摄像头</span>
+            <span class="cam-source">
+              {{ cam.source_type === 'usb' ? 'USB' : cam.source_type === 'test' ? 'TEST' : 'RTSP' }}
+            </span>
           </div>
           <div class="cam-card-meta">
             <span v-if="cam.area">📍 {{ cam.area }}</span>
             <span v-if="cam.device_mac">MAC {{ cam.device_mac }}</span>
             <span v-if="cam.source_type === 'rtsp'">{{ cam.rtsp_url }}</span>
+            <span v-else-if="cam.source_type === 'test'">视频源由测试插件推送（/camera 面板管理）</span>
             <span v-else>USB #{{ cam.usb_index }}</span>
           </div>
         </div>
         <div class="cam-card-actions">
-          <div class="cam-toggle">
+          <!-- 虚拟摄像头启停由插件管理页控制（启/停插件=注册/注销摄像头），无独立启用开关 -->
+          <div v-if="cam.source_type !== 'test'" class="cam-toggle">
             <span class="cam-toggle-label">启用</span>
             <BaseToggle :modelValue="!!cam.enabled" @update:modelValue="toggleEnabled(cam)" />
           </div>
@@ -313,8 +280,8 @@ const areaOptions = computed(() => [
             <span class="cam-toggle-label">预览</span>
             <BaseToggle :modelValue="!!cam.display_enabled" @update:modelValue="toggleDisplay(cam)" />
           </div>
-          <button class="btn-config" @click="startEdit(cam)">配置</button>
-          <button class="btn-del" @click="remove(cam.id)">删除</button>
+          <button v-if="cam.source_type !== 'test'" class="btn-config" @click="startEdit(cam)">配置</button>
+          <button v-if="cam.source_type !== 'test'" class="btn-del" @click="remove(cam.id)">删除</button>
         </div>
       </div>
 
@@ -461,6 +428,10 @@ const areaOptions = computed(() => [
             </div>
 
             <div class="cam-modal-footer">
+              <!-- 新建态的主操作放底部右侧(弹窗惯例位置),走整卡 createCamera -->
+              <button v-if="!isEdit" class="btn-modal-create" :disabled="sectionBusy === 'basic'" @click="saveSection('basic')">
+                {{ sectionBusy === 'basic' ? '创建中...' : '创建' }}
+              </button>
               <button class="btn-cancel" @click="cancelEdit">关闭</button>
             </div>
           </div>
@@ -527,6 +498,11 @@ const areaOptions = computed(() => [
 .cam-source {
   font-size: var(--text-xs);
   color: var(--color-text-muted);
+}
+
+.test-badge {
+  background: rgba(90, 130, 200, 0.2);
+  color: #8fb4e8;
 }
 
 .cam-card-meta {
@@ -845,6 +821,26 @@ const areaOptions = computed(() => [
   color: var(--color-text-secondary);
   font-size: var(--text-sm);
   cursor: pointer;
+}
+
+.btn-modal-create {
+  padding: var(--space-5) var(--space-20);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-primary);
+  background: var(--color-primary);
+  color: #fff;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  cursor: pointer;
+}
+
+.btn-modal-create:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+
+.btn-modal-create:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .modal-enter-active,

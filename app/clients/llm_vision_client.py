@@ -125,7 +125,48 @@ class LlmVisionClient(LlmBaseClient):
             return str(choices[0].get("message", {}).get("content", "") or "").strip() or "视觉模型没有返回内容。"
         return "视觉模型没有返回内容。"
 
-    # ----------------------------------------------- 规则引擎:条件评估
+    async def ask_about_frames(self, frames_bgr: list, question: str, timeout: int | None = None) -> str:
+        """按需问多帧:把按时间顺序排列的帧序列和用户问题一起送视觉模型。
+
+        与单帧 ask_about_frame 的区别：模型能看到帧间变化，能回答
+        「他正在做什么」这类动作/状态变化问题。帧来自规则引擎环形缓冲
+        （frame_interval_ms 采样），默认约 1 秒间隔共 3 帧。
+        """
+        if not self.enabled:
+            return "视觉模型未启用，无法分析画面。"
+        if not self.multimodal_enabled:
+            return "当前视觉模型已关闭图像输入(多模态),无法分析画面。"
+        # 批量编码同样持 GIL，to_thread 挪独立线程（与 evaluate_condition 一致）
+        b64_list = await asyncio.to_thread(
+            _encode_frames_b64, frames_bgr, self._max_side, self._jpeg_quality
+        )
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "stream": False,
+            "max_tokens": 512,
+            "temperature": 0.3,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": (
+                                f"这是同一个摄像头按时间先后顺序连拍的 {len(b64_list)} 张画面"
+                                f"（相邻两张之间有短暂时间间隔）。请结合画面之间的变化，"
+                                f"用简洁中文回答用户问题。问题：{question}"
+                            ),
+                        },
+                        *[{"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}} for b64 in b64_list],
+                    ],
+                }
+            ],
+        }
+        response = await self.post_chat(payload, timeout=timeout or self._timeout)
+        choices = response.get("choices") or []
+        if choices:
+            return str(choices[0].get("message", {}).get("content", "") or "").strip() or "视觉模型没有返回内容。"
+        return "视觉模型没有返回内容。"
 
     _CONDITION_SYSTEM_PROMPT = (
         "你是一个家庭管家，查看监控摄像头画面，判断规则条件是否满足。\n\n"
