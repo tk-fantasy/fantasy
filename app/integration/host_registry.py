@@ -40,9 +40,6 @@ class HostMethodRegistry:
         """
         self._methods[method] = (handler, required_permission)
 
-    def has(self, method: str) -> bool:
-        return method in self._methods
-
     async def dispatch(self, manifest, method: str, params: dict) -> dict:
         entry = self._methods.get(method)
         if entry is None:

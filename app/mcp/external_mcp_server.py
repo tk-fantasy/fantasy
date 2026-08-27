@@ -45,7 +45,9 @@ class ExternalMCPServer:
         self._tools: list[dict] = []
 
     async def start(self) -> None:
-        logger.info("Starting external MCP server", extra={"name": self.name, "cmd": self._cmd, "args": self._args})
+        # extra 里不能放保留字段（如 name，会触发 makeRecord KeyError），
+        # 一律走消息插值
+        logger.info("Starting external MCP server %s cmd=%s args=%s", self.name, self._cmd, self._args)
         self._process = await asyncio.create_subprocess_exec(
             self._cmd,
             *self._args,
@@ -140,7 +142,7 @@ class ExternalMCPServer:
         return result.get("content", [])
 
     async def stop(self) -> None:
-        logger.info("Stopping external MCP server", extra={"name": self.name})
+        logger.info("Stopping external MCP server %s", self.name)
         for task in (self._reader_task, self._stderr_task):
             if task:
                 task.cancel()
@@ -156,17 +158,22 @@ class ExternalMCPServer:
                     await asyncio.wait_for(self._process.wait(), timeout=3)
                 except asyncio.TimeoutError:
                     # 超时未退出，强制 kill（SIGKILL）
-                    logger.warning("MCP server did not exit gracefully, forcing kill", extra={"name": self.name})
+                    logger.warning("MCP server %s did not exit gracefully, forcing kill", self.name)
                     self._process.kill()
                     await self._process.wait()
             except Exception:
                 pass
-            # 关闭 stdin/stdout/stderr 管道
+            # 关闭 stdin/stdout/stderr 管道。at_eof 只有读端有，
+            # StreamWriter 上调它会 AttributeError（曾致 stop() 恒崩）。
             for stream in (self._process.stdin, self._process.stdout, self._process.stderr):
-                if stream and not stream.at_eof():
-                    try:
-                        stream.close()
-                    except Exception:
-                        pass
+                if not stream:
+                    continue
+                try:
+                    at_eof = getattr(stream, "at_eof", None)
+                    if callable(at_eof) and at_eof():
+                        continue
+                    stream.close()
+                except Exception:
+                    pass
 
 

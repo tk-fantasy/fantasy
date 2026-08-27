@@ -101,9 +101,6 @@
     "hard_max_chars": 32000,
     "summary_blocks": 2
   },
-  "storage": {
-    "session_file": ""
-  },
   "web_search": {
     "exa": {
       "api_key": ""

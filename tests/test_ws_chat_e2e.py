@@ -39,7 +39,7 @@ def _make_dispatcher(stream_tokens: bool = True, validator_retry: bool = False):
     # validator.should_retry 是 async；默认 False（不重试）
     dispatcher._validator.should_retry = AsyncMock(return_value=validator_retry)
     dispatcher._validator.build_retry_message = MagicMock(return_value=MagicMock())
-    dispatcher._validator._max_retries = 1
+    dispatcher._validator.max_retries = 1
     return dispatcher, agent, store
 
 

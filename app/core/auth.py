@@ -12,7 +12,6 @@ from typing import Any
 
 import jwt
 from fastapi import Depends, Request, Response
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from passlib.context import CryptContext
 
 from .exceptions import AppException
@@ -63,9 +62,6 @@ JWT_SECRET = _resolve_jwt_secret()
 JWT_ALGORITHM = "HS256"
 JWT_ACCESS_TOKEN_EXPIRE_SECONDS = 24 * 60 * 60  # 24 小时
 JWT_REFRESH_TOKEN_EXPIRE_SECONDS = 7 * 24 * 60 * 60  # 7 天
-
-# Bearer token 提取
-security = HTTPBearer(auto_error=False)
 
 
 def hash_password(password: str) -> str:
@@ -225,7 +221,6 @@ def extract_refresh_token_from_request(request: Request) -> str | None:
 
 async def get_current_user(
     request: Request,
-    credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ) -> dict[str, str]:
     """FastAPI 依赖注入：从请求中提取当前用户信息。
 

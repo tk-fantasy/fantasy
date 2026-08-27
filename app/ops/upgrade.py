@@ -175,7 +175,3 @@ def upgrade_history(limit: int = 10) -> list[dict]:
             continue
     result.reverse()
     return result
-
-
-def make_temp_pack_dir() -> Path:
-    return Path(tempfile.mkdtemp(prefix="aether-upgrade-"))

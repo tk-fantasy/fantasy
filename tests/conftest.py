@@ -32,16 +32,16 @@ def _close_database_at_session_end():
 
     aiosqlite 0.22.1 的连接 worker 线程是非 daemon 线程：只要有一个连接
     没被 close，解释器退出时会在 threading._shutdown 永久挂起（测试全过
-    但进程不退出，CI 会超时）。测试里的 Database 单例只 init 不 close，
-    故在 session 末尾统一收尾。
+    但进程不退出，CI 会超时）。若干测试文件换临时库时把 Database._db 直
+    接置 None，旧连接就此失联——close_all 会把这些孤儿一并回收。
     """
     yield
     import asyncio
 
     from app.core.database import Database
 
-    if Database._db is not None:
-        asyncio.run(Database.close())
+    if Database._open_conns:
+        asyncio.run(Database.close_all())
 
 
 @pytest.fixture(autouse=True)

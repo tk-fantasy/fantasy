@@ -112,8 +112,6 @@ def _load_env_override() -> dict[str, Any]:
         override["llm"]["embed_model"] = os.getenv("LLM_EMBED_MODEL")
     if "LOG_LEVEL" in os.environ:
         override["logging"]["level"] = os.getenv("LOG_LEVEL")
-    if "SESSION_FILE" in os.environ:
-        override["storage"]["session_file"] = os.getenv("SESSION_FILE")
     # HA 连接：容器部署时用服务名（如 http://homeassistant:8123）覆盖 config.json 里的 localhost
     if "HA_URL" in os.environ:
         override["ha"]["url"] = os.getenv("HA_URL")

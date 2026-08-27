@@ -34,18 +34,16 @@ class TestCameraStateModel:
             action="idle",
             feedback="ok",
             details=None,
-            confirmed=False,
             model_fps=0.0,
         )
         assert state.action == "idle"
-        assert state.infer_busy is False
+        assert state.infer_count == 0
 
     def test_defaults(self):
         state = CameraStateModel(
             camera_opened=False, backend_name="n",
             frame_width=0, frame_height=0, fps=0, last_frame_at=0,
             last_error=None, action="idle", feedback="", details=None,
-            confirmed=False,
             model_fps=0,
         )
         assert state.motion_distance == -1
@@ -58,8 +56,7 @@ class TestCameraStateModelValidation:
             camera_opened=False, backend_name="n",
             frame_width=0, frame_height=0, fps=0, last_frame_at=0,
             last_error=None, action="idle", feedback="", details=None,
-            confirmed=False,
             model_fps=0,
         )
         assert data.action == "idle"
-        assert data.infer_busy is False
+        assert data.infer_count == 0

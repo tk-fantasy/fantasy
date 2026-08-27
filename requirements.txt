@@ -1,4 +1,6 @@
 fastapi==0.115.12
+# fastapi 0.115.x 依赖 starlette<0.42；全局 pip 升到 1.x 会让 Router(on_startup) 报错
+starlette>=0.37.2,<0.42
 uvicorn[standard]==0.34.3
 # FastAPI 处理 File/Form 上传（stt/transcribe 语音转文字）必需
 python-multipart>=0.0.9

@@ -21,7 +21,6 @@ _startup_progress.set("正在加载后端依赖...")
 import faiss
 import numpy as np
 import openai
-import httpx as _httpx
 
 from fastapi import FastAPI, WebSocket, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -37,7 +36,7 @@ from .core.rate_limit import global_limiter
 from .core.tracing import RequestIdFilter, new_request_id, set_request_id
 from .core.version import get_version
 from .mcp.web_tools import close_http_client as close_web_http_client
-from .migrations import load_vision_focuses, migrate_global_llm_keys, migrate_home_info
+from .migrations import load_vision_focuses, migrate_camera_frame_interval, migrate_global_llm_keys, migrate_home_info
 from .services.health_check import HealthChecker
 from .services.metrics_service import MetricsService
 from .services.scheduler_service import SchedulerService
@@ -105,7 +104,8 @@ summarization_service = _services["summarization_service"]
 rule_service = _services["rule_service"]
 rule_registry_service = _services["rule_registry_service"]
 automation_service = _services["automation_service"]
-langgraph_agent = _services["langgraph_agent"]
+# LangGraph Agent：lifespan 内构建（见 _rebuild_agent / dispatcher.set_agent 唯一通道）
+langgraph_agent = None
 ha_client = _services["ha_client"]
 ha_service = _services["ha_service"]
 _automation_agent_ref = _services["automation_agent_ref"]
@@ -113,7 +113,6 @@ _host_integrations_ref: list = []  # 宿主侧集成实例列表（通用加载�
 _ha_catalog_cache_ref = _services["ha_catalog_cache_ref"]
 _ha_client_ref = _services["ha_client_ref"]
 discovery_service = _services["discovery_service"]
-_ha_controls_cache_ref = [""]
 
 # Metrics 服务（轻量内存计数器）
 metrics_service = MetricsService()
@@ -123,8 +122,9 @@ health_checker = HealthChecker()
 
 # 初始化 DI 容器
 _container = init_container(_services, metrics_service)
-# 补充 main.py 特有的可变引用
-_container.ha_controls_cache_ref = _ha_controls_cache_ref
+# 与 catalog 同源：复用容器创建的 controls 缓存 ref（catalog 走 bootstrap→services，
+# controls 走容器默认值，这里不再新建覆盖，保持两条 ref 路径对称）
+_ha_controls_cache_ref = _container.ha_controls_cache_ref
 # 注入 catalog 刷新回调：set_entity_note 写完备注立即触发，
 # 让新备注进 _ha_controls_cache_ref，不必等后台 60 秒循环。
 # 用 lambda 延迟引用 _refresh_ha_catalog（它在模块后部定义，调用时才解析）。
@@ -163,11 +163,37 @@ async def _rebuild_agent() -> None:
     # 旧客户端的回收交给 dispatcher.set_agent（它内部 close_all_agent_clients）
     global langgraph_agent
     langgraph_agent = new_agent
-    _services["langgraph_agent"] = new_agent
-    _services["langchain_tools"] = langchain_tools
     if dispatcher is not None:
         await dispatcher.set_agent(new_agent, tools=langchain_tools, clients=new_clients)
     logger.info("Agent rebuilt with %d tools", len(langchain_tools))
+
+
+def sync_ha_runtime_refs(new_client, new_service) -> None:
+    """ha_routes 保存 HA 配置热替换 client/service 后，同步各持有旧对象的组件。
+
+    覆盖三类持有点：
+    - main 模块全局（刷新循环/服务定义闭包按名字查全局，重新赋值即生效）；
+    - 构造期捕获旧对象的组件：dispatcher / rule_service 设备提供者 /
+      集成 host_deps（经 update_ha_refs 重绑）/ ToolDeps.ha_service；
+    - camera_manager（已有 set_ha_service 通道）。
+    不做这一步，改一次 HA 配置后旧 client 已 close，目录刷新、设备名映射、
+    插件反向 call_service 等会持续失败直到重启进程。
+    """
+    global ha_client, ha_service
+    ha_client = new_client
+    ha_service = new_service
+    rule_service.set_ha_devices_provider(new_service.get_all_devices)
+    if dispatcher is not None:
+        dispatcher.set_ha_service(new_service)
+    il = _container.integration_layer if _container is not None else None
+    if il is not None:
+        il.update_ha_refs(new_client, new_service)
+    cm = _services.get("camera_manager")
+    if cm is not None:
+        cm.set_ha_service(new_service)
+    td = getattr(_container, "tool_deps", None)
+    if td is not None:
+        td.ha_service = new_service
 
 
 # ============ 公共工具函数 ============
@@ -242,15 +268,16 @@ async def _refresh_ha_catalog() -> None:
 
 
 async def _ha_catalog_refresh_loop() -> None:
-    """后台定时刷新 HA 设备目录缓存(每 60 秒)。"""
+    """后台定时刷新 HA 设备目录缓存(每 60 秒)。
+
+    _refresh_ha_catalog 内部已吞掉业务异常，循环里只需处理取消。
+    """
     await asyncio.sleep(5)
     while True:
         try:
             await _refresh_ha_catalog()
         except asyncio.CancelledError:
             break
-        except Exception:  # noqa: BLE001
-            logger.warning("HA catalog refresh loop error")
         await asyncio.sleep(60)
 
 
@@ -308,6 +335,8 @@ async def lifespan(_: FastAPI):
 
     await migrate_home_info(db)
 
+    await migrate_camera_frame_interval(db)
+
     await load_vision_focuses(db, vision_service)
 
     # 设置 HA 设备目录提供者
@@ -337,6 +366,8 @@ async def lifespan(_: FastAPI):
         camera_manager=_services.get("camera_manager"),   # 唯一摄像头来源(多路)
     )
     register_all_tools(tool_deps)
+    # 挂到容器：sync_ha_runtime_refs 热替换 HA service 时同步 ToolDeps 持有的引用
+    _container.tool_deps = tool_deps
 
     # 所有工具已注册完毕，重新转换并重建 LangGraph Agent
     from .mcp.langchain_tools import convert_all_tools
@@ -345,8 +376,6 @@ async def lifespan(_: FastAPI):
     global langgraph_agent
     langchain_tools = convert_all_tools(mcp_client_manager)
     langgraph_agent, _global_clients = build_chat_agent(tools=langchain_tools)
-    _services["langgraph_agent"] = langgraph_agent
-    _services["langchain_tools"] = langchain_tools
 
     # ── 集成插件平台启动（Dispatcher 之前，因 Dispatcher 要拿 sink_manager）──
     integration_enabled = bool(get_config("integration.enabled", False))
@@ -367,7 +396,8 @@ async def lifespan(_: FastAPI):
             max_restarts=int(get_config("integration.max_restarts", 3)),
             broadcast_enabled=get_broadcast_enabled(),
             host_deps={"ha_client": ha_client, "ha_service": ha_service,
-                       "llm_chat_client": llm_chat_client},
+                       "llm_chat_client": llm_chat_client,
+                       "camera_manager": _services.get("camera_manager")},
         )
         try:
             await integration_layer.start()
@@ -447,6 +477,7 @@ async def lifespan(_: FastAPI):
         camera_manager.set_db(Database.get())
         camera_manager.set_ha_service(ha_service)
         camera_manager.set_automation_service(automation_service)
+        automation_service.set_camera_manager(camera_manager)
         discovery_service.set_db(Database.get())
         try:
             await camera_manager.initialize()
@@ -458,13 +489,9 @@ async def lifespan(_: FastAPI):
             logger.exception("CameraManager initialize failed (non-fatal)")
 
     # 后台捕获摄像头 MAC（首次配对，不阻塞启动）
-    # Task 7:单摄旧路径 + 多路遍历 discovery_enabled 且 device_mac 为空的路
+    # Task 7:多路遍历 discovery_enabled 且 device_mac 为空的路（写回 cameras 表，
+    # 表是唯一真源；旧的全局 config.json 单摄路径已随多路化移除）
     async def _startup_capture_mac():
-        try:
-            await discovery_service.capture_mac_on_startup()
-        except Exception:
-            logger.exception("startup MAC capture failed (legacy path)")
-        # 多路:遍历所有 discovery_enabled 且 device_mac 为空的路
         if camera_manager is not None:
             try:
                 for row in await Database.get().cameras_all():
@@ -562,8 +589,6 @@ def _reset_global_state() -> None:
     global dispatcher, langgraph_agent  # noqa: PLW0603
     dispatcher = None
     langgraph_agent = None
-    _services["langgraph_agent"] = None
-    _services.pop("langchain_tools", None)
     _container.dispatcher = None
 
 
@@ -581,8 +606,8 @@ from .routes.scheduler_routes import router as scheduler_router
 from .routes.session_routes import router as session_router
 from .routes.ha_routes import router as ha_router
 from .routes.mcp_routes import router as mcp_router
-from .routes.discovery_routes import router as discovery_router
 from .routes.camera_routes import router as camera_router
+from .routes.vision_log_routes import router as vision_log_router
 from .routes.setup_routes import router as setup_router
 from .routes.doc_routes import router as doc_router
 from .routes.sg_routes import router as sg_router
@@ -605,8 +630,8 @@ app.include_router(scheduler_router, prefix="/api")
 app.include_router(session_router, prefix="/api")
 app.include_router(ha_router, prefix="/api")
 app.include_router(mcp_router, prefix="/api")
-app.include_router(discovery_router, prefix="/api")  # ONVIF 摄像头发现：/api/discovery/*
 app.include_router(camera_router, prefix="/api")     # Task 6:多摄像头统一入口 /api/cameras/* + /api/ha/areas
+app.include_router(vision_log_router, prefix="/api")  # 识别日志：/api/vision-logs
 app.include_router(automation_router, prefix="/api")  # 自动化：/api/automation/*
 app.include_router(simulator_router, prefix="/api")  # 虚拟设备开关：/api/simulator/*
 app.include_router(setup_router)  # 无 prefix，包含 / 和 /favicon.ico
@@ -638,35 +663,6 @@ app.add_middleware(
 
 # 可选接口令牌（向后兼容，新代码使用 JWT）
 APP_TOKEN = (os.getenv("APP_TOKEN") or "").strip()
-
-
-@app.middleware("http")
-async def request_tracing(request: Request, call_next):
-    """请求追踪 middleware：生成/传递 request_id，记录请求耗时和 metrics。"""
-    # 从 header 取或生成新 request_id
-    rid = request.headers.get("X-Request-ID") or new_request_id()
-    set_request_id(rid)
-    start = time.perf_counter()
-    error = False
-
-    try:
-        response = await call_next(request)
-        response.headers["X-Request-ID"] = rid
-        error = response.status_code >= 500
-        return response
-    except Exception:
-        error = True
-        raise
-    finally:
-        elapsed = time.perf_counter() - start
-        metrics_service.record_request(elapsed, error=error)
-        logger.info(
-            "%s %s %.3fs",
-            request.method,
-            request.url.path,
-            elapsed,
-        )
-        set_request_id("-")  # 重置
 
 
 @app.middleware("http")
@@ -736,6 +732,38 @@ async def global_rate_limit(request: Request, call_next):
             ).model_dump(),
         )
     return await call_next(request)
+
+
+# 请求追踪 middleware：生成/传递 request_id，记录请求耗时和 metrics。
+# 注册顺序=代码顺序，FastAPI 后注册者在最外层——tracing 必须最后注册，
+# 否则被限流(429)/鉴权(401)拒绝的响应不经过 tracing：无 X-Request-ID 回写头、
+# 不进 metrics、日志无 request_id，客户端无法关联被拒请求。
+@app.middleware("http")
+async def request_tracing(request: Request, call_next):
+    # 从 header 取或生成新 request_id
+    rid = request.headers.get("X-Request-ID") or new_request_id()
+    set_request_id(rid)
+    start = time.perf_counter()
+    error = False
+
+    try:
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = rid
+        error = response.status_code >= 500
+        return response
+    except Exception:
+        error = True
+        raise
+    finally:
+        elapsed = time.perf_counter() - start
+        metrics_service.record_request(elapsed, error=error)
+        logger.info(
+            "%s %s %.3fs",
+            request.method,
+            request.url.path,
+            elapsed,
+        )
+        set_request_id("-")  # 重置
 
 
 # ============ 系统状态路由 ============
@@ -889,24 +917,19 @@ def _stop_host_integrations(started_list):
 
 
 def _primary_camera_state() -> dict:
-    """取主摄像头状态(第一个 enabled)。多路 CameraManager 是唯一摄像头来源。
+    """取主摄像头状态(CameraManager.primary_camera_id:预览路优先)。
 
-    全局 health/state 端点用此保持兼容 —— 返回主摄像头状态,/camera 弹窗外
-    的前端引用不崩。manager 未 initialize 或无路时返回空 CameraState。
+    全局 health 端点用此填充 camera 字段 —— manager 未 initialize 或
+    无路时返回空 CameraState。
     """
     cm = _services.get("camera_manager")
     if cm is None:
-        return {"camera_id": "", "camera_opened": False, "backend_name": "unknown",
-                "frame_width": 0, "frame_height": 0, "fps": 0.0, "last_frame_at": 0.0,
-                "last_error": None, "action": "idle", "feedback": "", "details": None,
-                "confirmed": False}
-    cams = cm.list_cameras()
-    if cams:
-        return cm.get_state(cams[0]["id"])
-    return {"camera_id": "", "camera_opened": False, "backend_name": "unknown",
-            "frame_width": 0, "frame_height": 0, "fps": 0.0, "last_frame_at": 0.0,
-            "last_error": None, "action": "idle", "feedback": "", "details": None,
-            "confirmed": False}
+        return dict(Dispatcher.EMPTY_CAMERA_STATE)
+    getter = getattr(cm, "primary_camera_id", None)
+    cid = getter() if callable(getter) else None
+    if not cid:
+        return dict(Dispatcher.EMPTY_CAMERA_STATE)
+    return cm.get_state(cid)
 
 
 @app.get("/api/health")
@@ -931,12 +954,6 @@ async def health() -> ApiResponse[HealthData]:
 async def metrics() -> ApiResponse[dict]:
     """返回内存指标快照：请求计数、延迟、工具调用、LLM 调用等。"""
     return ApiResponse(data=metrics_service.snapshot())
-
-
-@app.get("/api/state")
-async def state() -> ApiResponse[CameraStateModel]:
-    current_state = _primary_camera_state()   # Task 10:主摄像头
-    return ApiResponse(data=CameraStateModel.model_validate(current_state))
 
 
 # ============ RAG 文档助手 ============

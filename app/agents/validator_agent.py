@@ -58,6 +58,11 @@ class ValidatorAgent:
         # 这里只缓存已构建的 ChatOpenAI 实例。
         self._user_llms: dict[str, ChatOpenAI] = {}
 
+    @property
+    def max_retries(self) -> int:
+        """校验重试上限（dispatcher 的失败重试上限以此对齐，避免跨类读私有属性）。"""
+        return self._max_retries
+
     def invalidate_user(self, user_id: str) -> None:
         """用户修改 chat key 后清除其缓存的 per-user LLM，下次 should_retry 重建。
 

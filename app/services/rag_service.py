@@ -19,8 +19,13 @@ import httpx
 import numpy as np
 
 from ..core.config import get_config
+from ..core.loop_utils import LoopUnavailableError, submit_and_wait
 
 logger = logging.getLogger(__name__)
+
+# run_coroutine_threadsafe 结果等待上限：目标事件循环停止后其 Future 永远不会
+# 完成，不带超时会让构建线程永久阻塞（曾把测试进程的退出卡死）。
+_EMBED_RESULT_TIMEOUT = 60
 
 
 class RagService:
@@ -48,6 +53,10 @@ class RagService:
         self._last_fingerprint: dict[str, list[int]] | None = None
         # 索引持久化目录（与 SQLite 同卷 aether-data，跨重启复用）
         self._index_dir = base_dir / "data" / "rag_index"
+        # 文档聊天 LLM 客户端缓存：user_id → ((api_key, base_url, model), client, model)。
+        # 每条文档聊天消息都构建客户端（doc_routes/ws_routes），不缓存会反复
+        # 重建 httpx 连接池且从不关闭；按签名缓存，key 变更自动重建并关旧客户端。
+        self._llm_clients: dict[str, tuple[tuple, object, str]] = {}
 
     @property
     def is_ready(self) -> bool:
@@ -81,7 +90,12 @@ class RagService:
         启动时先尝试从磁盘加载持久化索引（docs 内容 + embed 模型未变则复用），
         命中则跳过全量向量化；未命中才重建并落盘。
         构建失败时自动重试 2 次（间隔递增），应对 SSL/网络偶发错误。
+
+        进入即置 _rebuilding（finally 复位）：所有提交入口（启动 lifespan、
+        模型热更 maybe_rebuild_if_model_changed）共用这一个并发闸，防止两路
+        safe_build 并发写 faiss_index/chunks。
         """
+        self._rebuilding = True
         max_retries = 3
         try:
             for attempt in range(1, max_retries + 1):
@@ -239,15 +253,26 @@ class RagService:
         embed_client = self._embed_client
 
         def _embed_batch(texts: list[str], retries: int = 3) -> list[list[float]]:
-            """批量向量化，带重试（SSL 偶发错误自动重试）。"""
+            """批量向量化，带重试（SSL 偶发错误自动重试）。
+
+            投递统一走 loop_utils.submit_and_wait：loop 已死时立即失败
+            （重试同样失败），等待有界（循环在投递后、完成前停止也不会挂死）。
+            """
             last_err = None
             for attempt in range(retries):
                 try:
-                    fut = asyncio.run_coroutine_threadsafe(
-                        embed_client.post_embeddings_batch(texts),
-                        loop,
+                    return submit_and_wait(
+                        embed_client.post_embeddings_batch(texts), loop,
+                        timeout_seconds=_EMBED_RESULT_TIMEOUT,
                     )
-                    return fut.result()
+                except LoopUnavailableError:
+                    raise RuntimeError("RAG 主事件循环已停止，无法向量化") from None
+                except TimeoutError:
+                    last_err = TimeoutError(f"embed 批次等待超过 {_EMBED_RESULT_TIMEOUT}s")
+                    logger.warning(
+                        "RAG embed batch timed out after %ss (attempt %d/%d)",
+                        _EMBED_RESULT_TIMEOUT, attempt + 1, retries,
+                    )
                 except Exception as e:
                     last_err = e
                     logger.warning("RAG embed batch failed (attempt %d/%d): %s", attempt + 1, retries, e)
@@ -323,16 +348,18 @@ class RagService:
         embed_client = self._embed_client
 
         def _embed_and_search():
-            # 此函数在线程池内执行，没有 running loop；用启动时 bind_loop 捕获的主循环投递
+            # 此函数在线程池内执行，没有 running loop；用启动时 bind_loop 捕获的主循环投递。
+            # submit_and_wait 带超时与循环活性检查，循环停止时立即失败而非挂死线程。
             loop = self._loop
-            fut = asyncio.run_coroutine_threadsafe(
+            resp = submit_and_wait(
                 embed_client.post_embedding({
                     "model": embed_client.model,
                     "prompt": query,
                 }),
                 loop,
+                timeout_seconds=_EMBED_RESULT_TIMEOUT,
             )
-            q_vec = np.array(fut.result()["embedding"], dtype=np.float32).reshape(1, -1)
+            q_vec = np.array(resp["embedding"], dtype=np.float32).reshape(1, -1)
             # 维度守卫：模型变更后 query 维度可能与索引不一致，跳过检索避免 FAISS 崩溃
             if q_vec.shape[1] != self.faiss_index.d:
                 logger.warning(
@@ -353,62 +380,49 @@ class RagService:
             return ""
         return "\n\n---\n\n".join(context_chunks)
 
-    def build_llm_client(self, user_id: str = "") -> tuple:
-        """构建 RAG 用的 OpenAI 客户端，返回 (client, model_name)。
+    async def build_llm_client(self, user_id: str = "") -> tuple:
+        """构建（或复用缓存的）RAG 用 OpenAI 客户端，返回 (client, model_name)。
 
-        有 user_id 时优先用该用户的 chat key，无配置则回退全局。
+        有 user_id 时优先用该用户的 chat key（经 langgraph_agent.
+        load_model_config_for_user 统一解析，per-user 与主聊天同一套逻辑），
+        无配置则回退全局 llm_keys。按 (api_key, base_url, model) 签名缓存
+        客户端，key 变更自动重建并关闭旧客户端。
         """
-        import openai
-
-        chat_key = ""
-        chat_base = ""
-        chat_model = "glm-4-flash"
-
+        cfg = None
         if user_id:
+            from ..agents.langgraph_agent import load_model_config_for_user
             try:
-                import asyncio
-                from ..core.key_resolver import resolve_key_for_role_user
-
-                async def _resolve():
-                    return await resolve_key_for_role_user("chat", user_id)
-
-                try:
-                    # 不在事件循环中 → 直接 asyncio.run
-                    asyncio.get_running_loop()
-                    in_loop = True
-                except RuntimeError:
-                    in_loop = False
-
-                if not in_loop:
-                    key_info = asyncio.run(_resolve())
-                else:
-                    # 已在事件循环中 → 用线程池跑 asyncio.run
-                    import concurrent.futures
-                    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-                    try:
-                        key_info = pool.submit(
-                            lambda: asyncio.run(_resolve())
-                        ).result(timeout=10)
-                    finally:
-                        pool.shutdown(wait=False)
-
-                if key_info and key_info.get("api_key"):
-                    chat_key = key_info["api_key"]
-                    chat_base = key_info["base_url"]
-                    chat_model = key_info["model"]
+                cfg = await load_model_config_for_user(user_id)
             except Exception:
                 logger.debug("Failed to resolve per-user chat key for RAG, using global", exc_info=True)
+                cfg = None
 
-        if not chat_key:
+        if cfg:
+            chat_key = cfg["api_key"]
+            chat_base = cfg["base_url"]
+            chat_model = cfg["model"]
+        else:
             llm_keys = get_config("llm_keys", [])
             chat_cfg = next((k for k in llm_keys if k.get("type") == "chat"), {})
             chat_key = os.environ.get(chat_cfg.get("api_key_env", ""), "")
             chat_base = chat_cfg.get("base_url", "")
             chat_model = chat_cfg.get("model", "glm-4-flash")
 
+        sig = (chat_key, chat_base, chat_model)
+        cached = self._llm_clients.get(user_id)
+        if cached is not None and cached[0] == sig:
+            return cached[1], cached[2]
+
+        import openai
         transport = httpx.HTTPTransport(retries=0)
         client = openai.OpenAI(
             api_key=chat_key, base_url=chat_base,
             http_client=httpx.Client(transport=transport, timeout=60.0, trust_env=False),
         )
+        if cached is not None:
+            try:
+                cached[1].close()
+            except Exception:
+                logger.debug("close stale RAG llm client failed", exc_info=True)
+        self._llm_clients[user_id] = (sig, client, chat_model)
         return client, chat_model

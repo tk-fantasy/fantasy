@@ -201,23 +201,6 @@ class AdvancedConfigRequest(BaseModel):
     rtsp_password: str = ""
 
 
-class ManualIpRequest(BaseModel):
-    """POST /discovery/manual-ip 请求体 — 手动填摄像头 IP 兜底。"""
-    ip: str = ""
-
-    @field_validator("ip")
-    @classmethod
-    def _ip_must_be_valid(cls, v: str) -> str:
-        v = v.strip()
-        if v:
-            import ipaddress
-            try:
-                ipaddress.ip_address(v)
-            except ValueError as e:
-                raise ValueError(f"IP 格式错误: {e}") from e
-        return v
-
-
 # --------------- 语义图参数 ---------------
 
 class SgConfigRequest(BaseModel):
@@ -364,49 +347,6 @@ class MCPConnectRequest(BaseModel):
     name: str = Field(min_length=1)
     cmd: str = Field(min_length=1)
     args: list[str] = Field(default_factory=list)
-
-
-# --------------- PTZ 云台 ---------------
-
-class PtzMoveRequest(BaseModel):
-    """POST /ptz/move 请求体。direction: up/down/left/right。"""
-    direction: str = Field(min_length=1)
-
-
-class PtzStepRequest(BaseModel):
-    """POST /ptz/step 请求体。direction: up/down/left/right。"""
-    direction: str = Field(min_length=1)
-
-
-class PtzConfigRequest(BaseModel):
-    """POST /ptz/config 请求体 — PTZ 云台配置。
-
-    密码走顶层 password 字段，路由层写 .env（PTZ_PASSWORD 变量），
-    config.json 只存变量名 password_env。留空表示不修改。
-
-    ip 非空时必须是合法 IPv4（排斥中文、域名、带协议的 URL），把明显错的
-    输入挡在 schema 层，避免浪费一次 ONVIF probe。
-    """
-    enabled: bool = False
-    ip: str = ""
-    port: int = Field(default=80, ge=1, le=65535)
-    username: str = ""
-    password: str = ""
-    speed: float = 0.5
-    step_ms: int = 300
-
-    @field_validator("ip")
-    @classmethod
-    def _ip_must_be_ipv4_if_present(cls, v: str) -> str:
-        v = v.strip()
-        # 留空 = 未配置，跳过
-        if not v:
-            return v
-        # 简单 IPv4 校验：四段数字 0-255
-        parts = v.split(".")
-        if len(parts) != 4 or not all(p.isdigit() and 0 <= int(p) <= 255 for p in parts):
-            raise ValueError("ip 必须是合法 IPv4 地址（如 192.168.1.100），不能带 http:// 或中文")
-        return v
 
 
 # --------------- Model Test ---------------

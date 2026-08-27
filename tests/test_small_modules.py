@@ -302,3 +302,59 @@ class TestMetricsService:
         snap = svc.snapshot()
         assert snap["http"]["latency_samples"] == 200
         assert snap["http"]["total"] == 300  # count 不限
+
+
+class TestLlmRoles:
+    """app/core/roles.py — per-user 角色常量策略。"""
+
+    def test_per_user_roles_content(self):
+        from app.core.roles import PER_USER_ROLES
+
+        assert PER_USER_ROLES == {"chat", "summary", "stt"}
+
+    def test_global_roles_not_isolated(self):
+        """vision/embed 历史上全局共享，不进 per-user DB。"""
+        from app.core.roles import PER_USER_ROLES
+
+        assert "vision" not in PER_USER_ROLES
+        assert "embed" not in PER_USER_ROLES
+
+
+class TestDispatcherPrimaryCamera:
+    """dispatcher._primary_camera_id 与 CameraManager.primary_camera_id 对齐——
+    预览路优先，否则第一个 enabled；不再无视预览单例自己取第一路。
+    """
+
+    def _make(self):
+        from app.agents.dispatcher import Dispatcher
+
+        return Dispatcher.__new__(Dispatcher)  # 绕过 __init__（依赖过重）
+
+    def test_prefers_active_preview_via_manager(self):
+        d = self._make()
+        calls = {}
+
+        class _Mgr:
+            def primary_camera_id(self):
+                calls["hit"] = True
+                return "cam_preview"
+
+        d._camera_manager = _Mgr()
+        assert d._primary_camera_id() == "cam_preview"
+        assert calls.get("hit") is True
+
+    def test_falls_back_to_first_enabled_without_method(self):
+        """duck-type 兼容：manager 没有 primary_camera_id 时退回首个 enabled。"""
+        d = self._make()
+
+        class _Legacy:
+            def list_cameras(self):
+                return [{"id": "cam_old"}]
+
+        d._camera_manager = _Legacy()
+        assert d._primary_camera_id() == "cam_old"
+
+    def test_none_manager_returns_empty(self):
+        d = self._make()
+        d._camera_manager = None
+        assert d._primary_camera_id() == ""

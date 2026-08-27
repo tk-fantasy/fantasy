@@ -47,7 +47,7 @@ async def doc_chat(request: Request, container: AppContainer = Depends(get_conta
     system = RAG_SYSTEM_PROMPT_TEMPLATE.format(context=context)
 
     # 2. LLM 流式调用
-    client, chat_model = rag_service.build_llm_client(user_id=current_user.get("user_id", ""))
+    client, chat_model = await rag_service.build_llm_client(user_id=current_user.get("user_id", ""))
     loop = asyncio.get_running_loop()
 
     def _run_stream():

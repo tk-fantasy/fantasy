@@ -62,6 +62,7 @@ class PluginProcess:
         rpc_timeout: float = 30.0,
         env: dict[str, str] | None = None,
         host_registry: HostMethodRegistry | None = None,
+        on_stopped=None,
     ) -> None:
         self.manifest = manifest
         self._plugin_root = plugin_root
@@ -69,6 +70,9 @@ class PluginProcess:
         # 方向 2 反向方法注册表：插件 → Aether 调用时按 method dispatch（Phase 3）。
         # None 时插件发反向请求会收到 "宿主未注入" 错误（向后兼容旧部署）。
         self._host_registry = host_registry
+        # 进程停止（含崩溃后回收）回调，签名 callback(plugin_id)。
+        # IntegrationLayer 用它兜底清理插件注册的宿主侧资源（虚拟摄像头等）。
+        self._on_stopped = on_stopped
         # 子进程环境沙箱：只白名单继承子进程运行必需的系统变量，
         # 不全量继承宿主 os.environ——否则插件能读走 JWT_SECRET /
         # RTSP_PASSWORD / PTZ_PASSWORD 等宿主密钥（开放第三方插件时的安全边界）。
@@ -100,6 +104,13 @@ class PluginProcess:
         if root:
             old = self._env.get("PYTHONPATH", "")
             self._env["PYTHONPATH"] = str(root) + (os.pathsep + old if old else "")
+            # 插件上传目录（宿主 /api/integrations/{id}/files 落盘处）。
+            # 注入路径让插件识别"归自己管的文件"（如删除登记时连文件一并回收）；
+            # 目录不必已存在（首次上传时才创建）。
+            self._env.setdefault(
+                "AETHER_PLUGIN_UPLOAD_DIR",
+                str(Path(root) / "app" / "data" / "uploads" / self.manifest.id),
+            )
 
         # 管理页保存的插件配置注入子进程（SDK 在 setup 前把它覆盖进
         # manifest config_schema 的 default，插件代码无感读取）。
@@ -229,6 +240,10 @@ class PluginProcess:
         rid = msg.get("id")
         method = msg.get("method", "")
         params = msg.get("params", {}) or {}
+        # 注入插件身份：camera.register 等宿主方法据此绑定注册者，
+        # 插件无法伪造他人 plugin_id（值来自宿主侧 manifest，非插件入参）。
+        if isinstance(params, dict):
+            params = {**params, "_plugin_id": self.manifest.id}
         try:
             if self._host_registry is None:
                 raise RuntimeError("宿主未注入反向方法注册表")
@@ -267,9 +282,11 @@ class PluginProcess:
         if self._process is None:
             return
 
-        # 1) 尽力发 shutdown（不强制等响应）
+        # 1) 尽力发 shutdown（不强制等响应；插件侧无内置 handler 时会快速
+        #    回 unknown method 错误，被下方 except 吞掉，实际停止靠第 3 步关 stdin）
         try:
-            await asyncio.wait_for(self.call("shutdown", {}), timeout=3.0)
+            from .rpc_protocol import METHOD_SHUTDOWN
+            await asyncio.wait_for(self.call(METHOD_SHUTDOWN, {}), timeout=3.0)
         except (RuntimeError, asyncio.TimeoutError, asyncio.CancelledError):
             pass
 
@@ -302,15 +319,27 @@ class PluginProcess:
         # 注意：不把 self._process 置 None——保留 Process 对象供调用方检查 returncode
         # （握手失败清理测试依赖此契约）；进程已被 wait 回收，非僵尸。call() 靠
         # stdin.is_closing() 防御已停止的进程，无需靠 _process is None 判断。
+        # 进程可能已自行退出（守规矩的插件在 stdin EOF 后毫秒级退出，此时
+        # terminate 对已死进程抛 OSError）——清理必须继续，on_stopped 兜底
+        # 宿主侧资源（虚拟摄像头注销），绝不能因早退跳过。
         proc = self._process
         try:
-            proc.terminate()
-        except (ProcessLookupError, OSError):
-            return
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=2.0)
-        except asyncio.TimeoutError:
-            with suppress(ProcessLookupError, OSError):
-                proc.kill()
-            with suppress(asyncio.TimeoutError):
+            try:
+                proc.terminate()
+            except (ProcessLookupError, OSError):
+                pass  # 进程已退出，直接回收
+            try:
                 await asyncio.wait_for(proc.wait(), timeout=2.0)
+            except asyncio.TimeoutError:
+                with suppress(ProcessLookupError, OSError):
+                    proc.kill()
+                with suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(proc.wait(), timeout=2.0)
+        finally:
+            # 停止收尾：无论进程以何种方式退出，宿主侧资源清理必须执行
+            # （虚拟摄像头注销等）。回调异常只记日志——清理失败不该让 stop() 本身失败。
+            if self._on_stopped is not None:
+                try:
+                    self._on_stopped(self.manifest.id)
+                except Exception:  # noqa: BLE001
+                    logger.exception("插件 %s on_stopped 回调失败", self.manifest.id)

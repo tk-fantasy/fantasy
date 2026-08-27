@@ -10,19 +10,17 @@ import app.main as main
 
 
 def test_reset_global_state_clears_runtime_globals():
-    """_reset_global_state 把 dispatcher / _services 载体清回初始态。"""
+    """_reset_global_state 把 dispatcher / langgraph_agent / 容器载体清回初始态。"""
     # 模拟 lifespan 期间注入的运行时对象
     main.dispatcher = object()
     main.langgraph_agent = object()
-    main._services["langgraph_agent"] = object()
-    main._services["langchain_tools"] = [object()]
+    main._container.dispatcher = object()
 
     main._reset_global_state()
 
     assert main.dispatcher is None
     assert main.langgraph_agent is None
-    assert main._services["langgraph_agent"] is None
-    assert "langchain_tools" not in main._services
+    assert main._container.dispatcher is None
 
 
 def test_reset_global_state_is_idempotent():

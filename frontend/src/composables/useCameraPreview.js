@@ -29,7 +29,7 @@ export function useCameraPreview(activeCameraId, cameras, loadCameras) {
   const videoFeedUrl = ref('')
   const videoFeedKey = ref(0)  // 用于强制刷新 img src
   // 流断连状态：'live' 正常 | 'reconnecting' 重连中 | 'disconnected' 放弃
-  // 状态来源：'device'（设备掉线，由 /api/state 的 camera_opened 驱动）
+  // 状态来源：'device'（设备掉线，由 /api/cameras/{id}/state 的 camera_opened 驱动）
   //           'network'（HTTP 流断，由 <img> @error 驱动）
   const feedStatus = ref('live')
   const feedStatusSource = ref('network')
@@ -47,9 +47,10 @@ export function useCameraPreview(activeCameraId, cameras, loadCameras) {
     feedStatusSource.value = 'network'
     videoFeedKey.value++
     const cid = activeCameraId.value
+    // 无选中路（摄像头列表为空）时不构造 URL——单摄兼容端点已删除
     videoFeedUrl.value = cid
       ? `/api/cameras/${cid}/video_feed?_t=${videoFeedKey.value}`
-      : `/api/video_feed?_t=${videoFeedKey.value}`
+      : ''
   }
 
   function onVideoFeedError() {
@@ -74,7 +75,7 @@ export function useCameraPreview(activeCameraId, cameras, loadCameras) {
       const cid = activeCameraId.value
       videoFeedUrl.value = cid
         ? `/api/cameras/${cid}/video_feed?_t=${videoFeedKey.value}`
-        : `/api/video_feed?_t=${videoFeedKey.value}`
+        : ''
     }, delay)
   }
 
@@ -130,9 +131,9 @@ export function useCameraPreview(activeCameraId, cameras, loadCameras) {
   async function fetchCameraState() {
     try {
       const cid = activeCameraId.value
-      // 有 activeCameraId 走 per-camera state;无则走主摄像头兼容端点
-      const url = cid ? `/api/cameras/${cid}/state` : '/api/state'
-      const res = await fetch(url)
+      // 无选中路（摄像头列表为空）不请求——单摄兼容端点 /api/state 已删除
+      if (!cid) return
+      const res = await fetch(`/api/cameras/${cid}/state`)
       const json = await res.json()
       cameraState.value = json.data || json
       syncFeedStatusWithDevice()

@@ -1,15 +1,13 @@
-"""MCP 动态管理路由 — MCP server 连接、Agent 状态、视频流。"""
+"""MCP 动态管理路由 — MCP server 连接、Agent 状态。"""
 from __future__ import annotations
 
 import asyncio
 import logging
 
-from fastapi import APIRouter, Depends, Request
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends
 
 from ..container import AppContainer, get_container
 from ..core.api_models import ApiResponse
-from ..core.auth import extract_token_from_request, verify_token
 from ..core.config import get_config
 from ..core.exceptions import AppException
 from ..schema.api_schemas import MCPConnectRequest
@@ -99,33 +97,3 @@ async def disconnect_mcp_server(name: str, container: AppContainer = Depends(get
             raise AppException(f"server '{name}' 未找到", code="not_found", http_status=404)
         await _rebuild_agent()
     return ApiResponse(data={"disconnected": True, "name": name})
-
-
-@router.get("/video_feed")
-async def video_feed(request: Request, container: AppContainer = Depends(get_container)) -> StreamingResponse:
-    """视频流端点，需要 JWT 认证。"""
-    token = extract_token_from_request(request)
-    if token:
-        try:
-            verify_token(token)
-        except Exception:
-            raise AppException("未认证", code="unauthorized", http_status=401)
-    else:
-        raise AppException("未提供认证信息", code="missing_auth", http_status=401)
-
-    camera_manager = container.camera_manager
-    cid = camera_manager.primary_camera_id() if camera_manager else None
-    if cid is None:
-        raise AppException("无可用摄像头", code="no_camera", http_status=503)
-    return StreamingResponse(
-        camera_manager.mjpeg_generator(cid),
-        media_type="multipart/x-mixed-replace; boundary=frame",
-        headers={
-            # 禁止任何中间层（Nginx/uvicorn/浏览器代理）缓冲这个流：
-            # MJPEG 是实时帧流，缓冲会导致浏览器看到几秒甚至几十秒前的旧画面。
-            "X-Accel-Buffering": "no",
-            "Cache-Control": "no-cache, no-store, must-revalidate",
-            "Pragma": "no-cache",
-            "Connection": "close",
-        },
-    )

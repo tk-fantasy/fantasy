@@ -30,7 +30,6 @@ class TestConfigPathResolution:
         try:
             _ = get_config("ha.url")
             _ = get_config("llm.enabled")
-            _ = get_config("storage.session_file")
         except Exception as e:
             pytest.fail(f"Config loading failed: {e}")
 

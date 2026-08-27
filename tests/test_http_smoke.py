@@ -19,7 +19,13 @@ from app.core.auth import create_access_token
 
 @pytest.fixture(scope="module")
 def client():
-    """启动 FastAPI app（不进入 lifespan，跳过重启动副作用）。"""
+    """启动 FastAPI app，进入完整 lifespan（health/中间件依赖启动期状态）。
+
+    注意：lifespan 会提交 RAG 后台索引构建到 stream 线程池；此前该线程通过
+    run_coroutine_threadsafe 死等已停止的事件循环，导致 pytest 进程退出时被
+    join 卡死。该问题已在 rag_service._embed_batch 内修复（投递前验循环活性
+    + result 带超时），故这里可以安全使用上下文管理器。
+    """
     import app.main as m
     with TestClient(m.app) as c:
         yield c
@@ -101,7 +107,6 @@ class TestRouteRegistration:
     @pytest.mark.parametrize("path,method", [
         ("/api/health", "GET"),
         ("/api/metrics", "GET"),
-        ("/api/state", "GET"),
         ("/api/auth/login", "POST"),
         ("/api/scheduled-tasks", "GET"),
         ("/api/sg/status", "GET"),
@@ -110,3 +115,12 @@ class TestRouteRegistration:
         """这些路由应该存在（不是 404）。未认证会 401，但不是 404。"""
         resp = client.request(method, path, headers=_auth_header())
         assert resp.status_code != 404, f"{method} {path} 未注册"
+
+    def test_legacy_single_camera_endpoints_removed(self, client: TestClient):
+        """单摄兼容层已删除：/api/state 与 /api/video_feed 应 404。
+
+        多路化后前端一律走 /api/cameras/*，这两个旧入口已无消费方
+        （useCameraPreview 的回退分支同步移除）。
+        """
+        assert client.get("/api/state", headers=_auth_header()).status_code == 404
+        assert client.get("/api/video_feed", headers=_auth_header()).status_code == 404

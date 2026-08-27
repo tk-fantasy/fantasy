@@ -73,14 +73,6 @@ export function useCamera() {
     if (!res.ok) throw new Error(`删除关注项失败:HTTP ${res.status}`)
   }
 
-  // ONVIF 发现
-  async function findDevice(id) {
-    return await apiPost(`/api/cameras/${id}/discovery/find`, {})
-  }
-  async function manualIp(id, ip) {
-    return await apiPost(`/api/cameras/${id}/discovery/manual-ip`, { ip })
-  }
-
   // 自动化规则(per-camera):后端 /api/rules 返回全部,前端按 camera_id 过滤
   async function loadRules(cameraId) {
     const all = await apiGet('/api/rules')
@@ -111,7 +103,7 @@ export function useCamera() {
     cameras, areas, loading,
     loadCameras, loadAreas, createCamera, updateCamera, deleteCamera,
     testStream, enableDisplay, disableDisplay,
-    loadFocuses, addFocus, updateFocus, deleteFocus, findDevice, manualIp,
+    loadFocuses, addFocus, updateFocus, deleteFocus,
     loadRules, createRule, toggleRule, deleteRule,
   }
 }

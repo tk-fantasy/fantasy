@@ -21,13 +21,15 @@ class PluginSupervisor:
 
     def __init__(self, rpc_timeout: float = 30.0, max_restarts: int = 3,
                  env_per_plugin: dict[str, dict[str, str]] | None = None,
-                 host_registry=None) -> None:
+                 host_registry=None, on_plugin_stopped=None) -> None:
         self._rpc_timeout = rpc_timeout
         self._max_restarts = max_restarts
         # 每个插件的环境变量注入（如小爱需要 HA 凭证）
         self._env_per_plugin = env_per_plugin or {}
         # 方向 2 反向方法注册表（Phase 3）：透传给每个 PluginProcess
         self._host_registry = host_registry
+        # 插件停止回调：透传给 PluginProcess，宿主据此清理插件注册的资源
+        self._on_plugin_stopped = on_plugin_stopped
         self._processes: dict[str, PluginProcess] = {}  # plugin_id → process
         self._manifests: dict[str, Manifest] = {}
 
@@ -53,6 +55,7 @@ class PluginSupervisor:
                 rpc_timeout=self._rpc_timeout,
                 env=env,
                 host_registry=self._host_registry,
+                on_stopped=self._on_plugin_stopped,
             )
             try:
                 await proc.start()

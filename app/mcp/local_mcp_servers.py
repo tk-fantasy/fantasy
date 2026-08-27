@@ -233,7 +233,6 @@ def create_verify_action_handler(ha_client):
         # 在入口统一 strip，避免下游每个比较点都要单独处理。
         entity_id = str(parameters.get("entity_id", "")).strip()
         expected_state = str(parameters.get("expected_state", "") or "").strip()
-        action_desc = str(parameters.get("action_description", "") or "").strip()
         data = parameters.get("data") or {}
 
         if not entity_id:

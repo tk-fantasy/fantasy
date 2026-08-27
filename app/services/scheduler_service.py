@@ -504,9 +504,6 @@ class SchedulerService:
         """列出全部任务（按创建时间正序）。"""
         return sorted(self._tasks.values(), key=lambda t: t.get("created_at", 0))
 
-    async def get_task(self, task_id: str) -> dict | None:
-        return self._tasks.get(task_id)
-
     async def set_enabled(self, task_id: str, enabled: bool) -> dict | None:
         """启停任务。启用时重算 next_run。"""
         return await self.update_task(task_id, {"enabled": enabled})

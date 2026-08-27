@@ -11,6 +11,10 @@ from .manifest_loader import load_manifests
 from .plugin_supervisor import PluginSupervisor
 from .rpc_protocol import (
     METHOD_HOST_BROADCAST,
+    METHOD_HOST_CAM_PUSH,
+    METHOD_HOST_CAM_REGISTER,
+    METHOD_HOST_CAM_SET_FLAGS,
+    METHOD_HOST_CAM_UNREGISTER,
     METHOD_HOST_HA_CALL,
     METHOD_HOST_HA_DEVICES,
     METHOD_HOST_HA_STATES,
@@ -43,18 +47,49 @@ class IntegrationLayer:
         # 方向 2 反向方法注册表：先建空表传给 supervisor（PluginProcess 持同一引用），
         # sink_manager 构造后再注册 handler（broadcast handler 需要 sink_manager）。
         self._host_registry = HostMethodRegistry()
+        camera_manager = (host_deps or {}).get("camera_manager")
+
+        def _on_plugin_stopped(plugin_id: str) -> None:
+            """插件进程停止（含崩溃回收）→ 注销其注册的虚拟摄像头。
+
+            崩溃重启时插件 setup 会重新 register，注销-重注册闭环。
+            """
+            if camera_manager is None:
+                return
+            try:
+                import asyncio
+                loop = asyncio.get_running_loop()
+                loop.create_task(camera_manager.unregister_plugin_cameras(plugin_id))
+            except Exception:  # noqa: BLE001
+                logger.warning("注销插件 %s 虚拟摄像头失败", plugin_id, exc_info=True)
+
         self._supervisor = PluginSupervisor(
             rpc_timeout=rpc_timeout, max_restarts=max_restarts,
             env_per_plugin=env_per_plugin,
             host_registry=self._host_registry,
+            on_plugin_stopped=_on_plugin_stopped,
         )
         self.sink_manager = SinkManager(self._supervisor,
                                         broadcast_enabled=broadcast_enabled)
+        # 保留 host_deps 供 HA 配置热替换后重绑（update_ha_refs）
+        self._host_deps = host_deps or {}
         self._register_host_methods(host_deps)
-        self._started = False
         # 宿主侧集成注册表（非子进程插件，如飞书 WebSocket 长连接）
         # key=集成名, value={"name","description","alive"}
         self.host_integrations: dict[str, dict] = {}
+
+    def update_ha_refs(self, new_client, new_service) -> None:
+        """HA 配置热替换后重绑反向 RPC 的 ha handler（main.sync_ha_runtime_refs 调用）。
+
+        _register_host_methods 的闭包捕获构造时的 client/service 对象，
+        旧对象被 close 后插件反向调用会持续失败。重跑一遍注册（register
+        为字典覆盖语义，幂等）让闭包捕获新对象。
+        """
+        if not self._host_deps:
+            return
+        self._host_deps["ha_client"] = new_client
+        self._host_deps["ha_service"] = new_service
+        self._register_host_methods(self._host_deps)
 
     def _register_host_methods(self, host_deps: dict | None) -> None:
         """注册方向 2 宿主能力到 host_registry。
@@ -67,6 +102,7 @@ class IntegrationLayer:
         ha_client = host_deps.get("ha_client")
         ha_service = host_deps.get("ha_service")
         llm_chat_client = host_deps.get("llm_chat_client")
+        camera_manager = host_deps.get("camera_manager")
         reg = self._host_registry
 
         if ha_client is not None:
@@ -100,6 +136,41 @@ class IntegrationLayer:
             return {"ok": True}
         reg.register(METHOD_HOST_BROADCAST, _broadcast, required_permission="broadcast")
 
+        if camera_manager is not None:
+            async def _cam_register(params: dict) -> dict:
+                # plugin_id 由 PluginProcess 分发时注入（params["_plugin_id"]），
+                # 插件无法伪造他人 id 注册。
+                pid = str(params.get("_plugin_id") or "")
+                if not pid:
+                    raise RuntimeError("camera.register: missing plugin identity")
+                spec = params.get("spec") or {}
+                return await camera_manager.register_virtual_camera(pid, spec)
+
+            async def _cam_push(params: dict) -> dict:
+                return camera_manager.push_frame(
+                    str(params.get("camera_id", "")), str(params.get("jpeg_b64", ""))
+                )
+
+            async def _cam_unregister(params: dict) -> dict:
+                pid = str(params.get("_plugin_id") or params.get("plugin_id") or "")
+                if not pid:
+                    raise RuntimeError("camera.unregister: missing plugin identity")
+                ok = await camera_manager.unregister_plugin_cameras(pid)
+                return {"ok": ok}
+
+            async def _cam_set_flags(params: dict) -> dict:
+                ok = camera_manager.set_virtual_flag(
+                    str(params.get("camera_id", "")),
+                    str(params.get("key", "")),
+                    params.get("value"),
+                )
+                return {"ok": ok}
+
+            reg.register(METHOD_HOST_CAM_REGISTER, _cam_register, required_permission="camera")
+            reg.register(METHOD_HOST_CAM_PUSH, _cam_push, required_permission="camera")
+            reg.register(METHOD_HOST_CAM_UNREGISTER, _cam_unregister, required_permission="camera")
+            reg.register(METHOD_HOST_CAM_SET_FLAGS, _cam_set_flags, required_permission="camera")
+
     async def start(self) -> None:
         """加载清单 + 启动所有插件进程（跳过禁用的）。
 
@@ -117,11 +188,9 @@ class IntegrationLayer:
                     len(manifests) - len(subprocess_plugins),
                     [m.id for m in manifests])
         await self._supervisor.start_all(subprocess_plugins, self._plugin_dir)
-        self._started = True
 
     async def stop(self) -> None:
         """停止所有插件进程。"""
-        self._started = False
         await self._supervisor.stop_all()
 
     def list_plugins(self) -> list[dict]:
@@ -255,6 +324,8 @@ class IntegrationLayer:
 
         持久化启用状态 + 热启动进程。
         子进程天然隔离，无需 OpenClaw 那样的原子注册表交换。
+        进程内能力插件（model_adapter）无进程可启动——启用即重扫
+        适配器注册表（set_plugin_enabled 内已热刷新），直接返回成功。
         返回是否启动成功。
         """
         # 找 manifest（从全部已安装的里找，含禁用的）
@@ -264,6 +335,8 @@ class IntegrationLayer:
         if target is None:
             return False
         self.set_plugin_enabled(plugin_id, enabled=True)
+        if not target.needs_subprocess:
+            return True
         return await self._supervisor.start_one(target, self._plugin_dir)
 
     async def route_inbound(self, text: str, mode: str) -> dict:
@@ -291,24 +364,3 @@ class IntegrationLayer:
                         logger.warning("路由到插件 %s 失败: %s", manifest.id, exc)
                         return {"ok": False, "error": f"插件 {manifest.id} 路由失败"}
         return {"ok": False, "error": "no inbound router available"}
-
-    async def speak_to(self, plugin_id: str, text: str, context: dict) -> dict:
-        """定向调某插件的 sink.speak（带上下文，如飞书 chat_id）。
-
-        与 broadcast 的区别：只发给指定插件，不走 fan-out。
-        用于飞书 webhook 拿到回复后定向发到对应 chat_id。
-        chat_id 作为 msg_id 传入（飞书 speak 从 msg_id 读 chat_id）。
-        """
-        from .rpc_protocol import METHOD_SPEAK
-
-        proc = self._supervisor.get_process(plugin_id)
-        if proc and proc.is_alive:
-            chat_id = context.get("chat_id", "")
-            try:
-                return await proc.call(
-                    METHOD_SPEAK, {"text": text, "msg_id": chat_id}
-                )
-            except Exception as exc:
-                logger.warning("speak_to %s 失败: %s", plugin_id, exc)
-                return {"ok": False, "error": str(exc)}
-        return {"ok": False, "error": f"插件 {plugin_id} 未运行"}

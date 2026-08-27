@@ -107,6 +107,24 @@ class TestLayerSkipsInProcessPlugins:
         asyncio.new_event_loop().run_until_complete(go())
         supervisor.start_one.assert_not_called()
 
+    def test_enable_in_process_plugin_never_spawns(self, tmp_path, monkeypatch):
+        """管理页「启用」toggle 对进程内插件不得 spawn——占位 entry spawn 后
+        立刻退出，握手按 rpc_timeout×(max_restarts+1) 重试熔断，请求挂数十秒，
+        表现为禁用后再也启用不了（连点还会翻回禁用）。"""
+        _write_plugin(tmp_path, "fake-adapter", "model_adapter")
+        layer, supervisor = self._make_layer(tmp_path)
+        # set_plugin_enabled 会写真实 config.json 并重扫真实插件目录，测试拦截
+        monkeypatch.setattr("app.integration.config_helper.set_plugin_disabled",
+                            lambda pid, disabled: [])
+        monkeypatch.setattr("app.agents.model_family_adapters.refresh_plugin_adapters",
+                            lambda *a, **k: 0)
+
+        async def go():
+            assert await layer.start_plugin("fake-adapter") is True
+
+        asyncio.new_event_loop().run_until_complete(go())
+        supervisor.start_one.assert_not_called()
+
 
 class _FakeAdapter:
     """测试用假适配器——不 import 插件体系，直接验证节点调用契约。"""

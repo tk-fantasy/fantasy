@@ -10,8 +10,9 @@ import { usePtz } from '../composables/usePtz'
 import { useCameraPreview } from '../composables/useCameraPreview'
 import { useGreeting } from '../composables/useGreeting'
 import { useAuth } from '../composables/useAuth'
-import { apiGet, apiPost } from '../utils/api'
+import { apiGet } from '../utils/api'
 import PluginSlot from '../components/integration/PluginSlot.vue'
+import CameraSwitcher from '../components/CameraSwitcher.vue'
 
 const router = useRouter()
 
@@ -23,14 +24,14 @@ const { cameras, loadCameras } = useCamera()
 const activeCameraId = ref('')   // 当前弹窗预览的摄像头 id
 
 // PTZ 云台控制（依赖 activeCameraId / cameras）
-const { ptzEnabled, ptzMoving, ptzStepMs, fetchPtzStatus, ptzStep } = usePtz(activeCameraId, cameras)
+const { ptzEnabled, ptzMoving, fetchPtzStatus, ptzStep } = usePtz(activeCameraId, cameras)
 
 // 摄像头预览模态框（feed 状态机 + 多路切换 + 状态轮询，依赖上面的三项）
 const {
-  videoFeedUrl, videoFeedKey, feedStatus, feedStatusSource, feedRetryCount,
+  videoFeedUrl, feedStatus, feedStatusSource, feedRetryCount,
   showCamera, cameraState,
   refreshVideoFeed, onVideoFeedError, onVideoFeedLoad,
-  openCamera, closeCamera, switchCamera, fetchCameraState,
+  openCamera, closeCamera, switchCamera,
 } = useCameraPreview(activeCameraId, cameras, loadCameras)
 
 // 编排：打开/切路后同步 PTZ 配置（composable 不感知 PTZ，由调用方编排）
@@ -42,6 +43,14 @@ async function switchCameraRoute(id) {
   await switchCamera(id)
   fetchPtzStatus()
 }
+
+// 当前预览的摄像头是否为插件虚拟摄像头（source_type='test'）。
+// 测试插件面板（文件路径导入/演练开关/识别日志）只挂在虚拟摄像头这一路，
+// 切到真实摄像头时不显示——不污染普通摄像头预览。
+const activeCameraIsVirtual = computed(() => {
+  const cam = cameras.value.find(c => c.id === activeCameraId.value)
+  return cam?.source_type === 'test'
+})
 
 // ============ State ============
 const messages = ref([])
@@ -385,11 +394,6 @@ function scrollToBottom() {
 // ============ Send Message ============
 function onModeChanged(e) {
   chatMode.value = e.detail.mode
-}
-
-function selectAetherMode() {
-  chatMode.value = 'aether'
-  apiPost('/api/integrations/action/set_mode', { mode: 'aether' }).catch(() => {})
 }
 
 function handleInterrupt() {
@@ -810,16 +814,8 @@ onUnmounted(() => {
                 <button class="camera-modal-close" @click="closeCamera">关闭</button>
               </div>
             </div>
-            <!-- Task 12:多路切换标签 — 遍历 cameras,click 切路(D4 AI 预览单例) -->
-            <div v-if="cameras.length > 1" class="camera-tabs">
-              <button
-                v-for="cam in cameras"
-                :key="cam.id"
-                class="camera-tab"
-                :class="{ active: activeCameraId === cam.id }"
-                @click="switchCameraRoute(cam.id)"
-              >{{ cam.name || cam.id }}</button>
-            </div>
+            <!-- Task 12:多路切换 — ≤4 路标签一行,更多路换下拉防换行撑爆弹窗(D4 AI 预览单例) -->
+            <CameraSwitcher :cameras="cameras" :modelValue="activeCameraId" @change="switchCameraRoute" />
             <div class="camera-stage">
               <img
                 :src="videoFeedUrl"
@@ -901,8 +897,11 @@ onUnmounted(() => {
               <div class="value">{{ cameraState?.feedback || '等待识别。' }}</div>
             </div>
             <div class="camera-hint">
-              💡 当前预览的摄像头即 AI 对话中 vision_chat 工具默认使用的摄像头。切换上方标签可改变 AI 看哪路。
+              💡 当前预览的摄像头即 AI 对话中 vision_chat 工具默认使用的摄像头。切换上方的标签或下拉列表可改变 AI 看哪路。
             </div>
+            <!-- 插件面板挂载点（仅当预览的是插件虚拟摄像头时显示，如 test-camera：
+                 视频导入/演练开关/识别日志；真实摄像头预览不受影响） -->
+            <PluginSlot v-if="activeCameraIsVirtual" slot="camera_preview_panel" />
           </div>
         </div>
       </Transition>
@@ -1535,37 +1534,6 @@ onUnmounted(() => {
   gap: var(--space-6);
 }
 
-/* Task 12:多路切换标签 */
-.camera-tabs {
-  display: flex;
-  gap: var(--space-2);
-  padding: var(--space-6) var(--space-16) 0;
-  flex-wrap: wrap;
-}
-
-.camera-tab {
-  padding: var(--space-3) var(--space-12);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  background: transparent;
-  color: var(--color-text-secondary);
-  font-size: var(--text-sm);
-  cursor: pointer;
-  transition: all var(--duration-fast) var(--ease-out);
-}
-
-.camera-tab:hover {
-  background: var(--color-surface-hover);
-  color: var(--color-text);
-}
-
-.camera-tab.active {
-  background: var(--color-primary-light);
-  border-color: var(--color-primary);
-  color: var(--color-primary);
-  font-weight: var(--weight-semibold);
-}
-
 .camera-badge {
   font-size: var(--text-xs);
   font-weight: var(--weight-medium);
@@ -1606,9 +1574,13 @@ onUnmounted(() => {
   min-height: 300px;
 }
 
+/* 画面随 stage 实际高度 contain 缩放：stage 被 flex 压扁(短视口/下方面板多)时,
+   固有尺寸的 <img> 会垂直居中对称溢出,盖住上方摄像头切换器拦截点击。 */
 .camera-feed {
-  max-width: 100%;
+  width: 100%;
+  height: 100%;
   max-height: 400px;
+  object-fit: contain;
   border-radius: var(--radius-md);
 }
 

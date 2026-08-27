@@ -7,6 +7,7 @@ on:
     branches: [master, main]
 
 jobs:
+  # 默认回归：单测 + mock 级 e2e（真实子进程的 slow 用例不在此跑）
   test:
     runs-on: ubuntu-latest
 
@@ -23,3 +24,46 @@ jobs:
 
       - name: Run tests
         run: pytest -m "not slow" --tb=short -q
+
+  # slow E2E：拉起真实插件子进程走 RPC（~4 分钟），合入前必须全绿
+  e2e-slow:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run slow E2E tests
+        run: pytest -m slow --tb=short -q
+
+  # 前端（Vue3 + Vitest）
+  frontend:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test

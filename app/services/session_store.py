@@ -92,7 +92,9 @@ class SessionState:
 
 
 class SessionStore:
-    def __init__(self, storage_path: str | None = None) -> None:
+    """会话存储：内存缓存 + SQLite 持久化（sessions 表）。"""
+
+    def __init__(self) -> None:
         self._sessions: dict[str, SessionState] = {}
         self._lock = asyncio.Lock()
         self._loaded = False

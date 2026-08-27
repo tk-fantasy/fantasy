@@ -79,7 +79,7 @@ Aether 默认就需要登录——首次使用要先**注册一个账号**。这
 - 前端静态页面、`/assets/*`、`/`（SPA 本身能打开）
 - `/api/output/latest/graph.json`（语义图公开数据）
 
-也就是说：**`/api/health`、`/api/state`、`/api/automation/status`、`/api/video_feed` 全都要登录才能访问。** 这点要特别注意——如果你想做 Docker/k8s 的无认证健康探针，目前没有现成的免认证端点，得自己加或用 cookie。
+也就是说：**`/api/health`、`/api/automation/status` 全都要登录才能访问。** 这点要特别注意——如果你想做 Docker/k8s 的无认证健康探针，目前没有现成的免认证端点，得自己加或用 cookie。
 
 ### WebSocket 鉴权
 

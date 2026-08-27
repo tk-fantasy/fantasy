@@ -5,7 +5,7 @@ import json
 from app.integration.rpc_protocol import (
     build_request, build_response, build_error,
     parse_message, METHOD_SPEAK, METHOD_INTERRUPT,
-    METHOD_HEALTH, METHOD_HANDSHAKE, METHOD_SHUTDOWN,
+    METHOD_HANDSHAKE, METHOD_SHUTDOWN,
 )
 
 
@@ -15,8 +15,8 @@ def test_build_request_with_params():
 
 
 def test_build_request_without_params():
-    msg = build_request(msg_id=2, method="health.check")
-    assert msg == {"jsonrpc": "2.0", "id": 2, "method": "health.check"}
+    msg = build_request(msg_id=2, method="handshake")
+    assert msg == {"jsonrpc": "2.0", "id": 2, "method": "handshake"}
 
 
 def test_build_response():
@@ -49,6 +49,5 @@ def test_parse_message_empty_line_returns_none():
 def test_method_constants():
     assert METHOD_SPEAK == "sink.speak"
     assert METHOD_INTERRUPT == "sink.interrupt"
-    assert METHOD_HEALTH == "health.check"
     assert METHOD_HANDSHAKE == "handshake"
     assert METHOD_SHUTDOWN == "shutdown"

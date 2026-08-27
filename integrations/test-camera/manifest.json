@@ -1,0 +1,23 @@
+{
+    "id": "test-camera",
+    "name": "测试摄像头",
+    "version": "1.0.0",
+    "aether_api_version": "1",
+    "author": "Aether",
+    "description": "导入服务器本地视频文件作为一路虚拟摄像头，走真实视觉链路（dHash 运动触发 → VL 规则评估 → 动作执行），用于端到端测试自动化规则。动作默认演练，面板可开真实执行。",
+    "entry": "plugin.py",
+    "capabilities": [],
+    "permissions": ["camera"],
+    "secrets": [],
+    "ui_contributions": [
+        {
+            "slot": "camera_preview_panel",
+            "type": "custom_component"
+        }
+    ],
+    "resources": {
+        "max_memory_mb": 256,
+        "restart_on_crash": true,
+        "max_restarts": 3
+    }
+}

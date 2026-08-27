@@ -9,25 +9,27 @@ import pytest
 from app.services.automation_service import AutomationService
 
 
-class TestInCooldown:
+class TestCooldownRemaining:
+    """_cooldown_remaining 返回距冷却结束的剩余秒数（>0 = 冷却中）。"""
+
     def setup_method(self):
         self.svc = AutomationService.__new__(AutomationService)
 
     def test_no_last_triggered(self):
         rule = {"cooldown_seconds": 10, "last_triggered_at": 0.0}
-        assert self.svc._in_cooldown(rule, time.time()) is False
+        assert self.svc._cooldown_remaining(rule, time.time()) <= 0
 
     def test_just_triggered(self):
         rule = {"cooldown_seconds": 10, "last_triggered_at": time.time()}
-        assert self.svc._in_cooldown(rule, time.time()) is True
+        assert self.svc._cooldown_remaining(rule, time.time()) > 0
 
     def test_cooldown_expired(self):
         rule = {"cooldown_seconds": 10, "last_triggered_at": time.time() - 20}
-        assert self.svc._in_cooldown(rule, time.time()) is False
+        assert self.svc._cooldown_remaining(rule, time.time()) <= 0
 
     def test_default_cooldown(self):
         rule = {"last_triggered_at": time.time()}
-        assert self.svc._in_cooldown(rule, time.time()) is True
+        assert self.svc._cooldown_remaining(rule, time.time()) > 0
 
     def test_default_cooldown_reads_config(self, monkeypatch):
         """cooldown 缺省时读 automation.default_cooldown_seconds（P0：10→config 驱动）。"""
@@ -35,10 +37,10 @@ class TestInCooldown:
         monkeypatch.setitem(cfg.CONFIG["automation"], "default_cooldown_seconds", 7)
         # 3s < 7s → 在冷却内
         rule_in = {"last_triggered_at": time.time() - 3}
-        assert self.svc._in_cooldown(rule_in, time.time()) is True
+        assert self.svc._cooldown_remaining(rule_in, time.time()) > 0
         # 10s > 7s → 过期
         rule_out = {"last_triggered_at": time.time() - 10}
-        assert self.svc._in_cooldown(rule_out, time.time()) is False
+        assert self.svc._cooldown_remaining(rule_out, time.time()) <= 0
 
 
 class TestResolveToolName:

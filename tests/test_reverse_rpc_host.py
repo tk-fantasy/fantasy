@@ -57,7 +57,9 @@ async def test_handle_reverse_dispatches_and_writes_success():
     assert len(written) == 1
     assert written[0]["id"] == 1
     assert written[0]["result"]["ok"] is True
-    assert written[0]["result"]["got"] == {"domain": "light"}
+    # 宿主分发前注入插件身份（camera.register 等方法据此绑定注册者，
+    # 插件无法伪造他人 id），业务参数原样透传
+    assert written[0]["result"]["got"] == {"domain": "light", "_plugin_id": "p1"}
 
 
 @pytest.mark.asyncio

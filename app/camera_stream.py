@@ -41,13 +41,11 @@ class CameraState:
     action: str = "idle"
     feedback: str = "等待识别。"
     details: dict | None = None
-    confirmed: bool = False
     model_fps: float = 3.0
     motion_distance: int = -1
     motion_threshold: int = 5
     last_infer_at: float = 0.0
     infer_count: int = 0
-    infer_busy: bool = False
 
 
 class CameraStream:
@@ -147,7 +145,7 @@ class CameraStream:
         # 规则引擎用的多帧环形缓冲:按 frame_interval_ms 间隔存最近 N 帧,
         # 供条件评估做时间序列理解(如“正在坐下”)。推理完成回调降低规则响应延迟。
         self._frame_count = max(1, int(c.get("vision_use_img_count", 3)))
-        self._frame_interval_ms = max(0, int(c.get("frame_interval_ms", 2000)))
+        self._frame_interval_ms = max(0, int(c.get("frame_interval_ms", 1000)))
         self._frame_buffer: deque[np.ndarray] = deque(maxlen=self._frame_count)
         self._frame_timestamps: deque[float] = deque(maxlen=self._frame_count)
         self._last_buffer_push = 0.0
@@ -365,10 +363,6 @@ class CameraStream:
     def stop_display(self) -> None:
         """CameraManager 停掉该路预览推理的入口(D4 薄封装)。"""
         self.set_display_enabled(False)
-
-    def set_camera_vl_display_enabled(self, enabled: bool) -> None:
-        """已废弃别名 → set_display_enabled(过渡期保留,Step 7 清理调用方后删)。"""
-        self.set_display_enabled(enabled)
 
     def set_motion_threshold(self, threshold: int) -> None:
         """热更新 dhash 运动判定阈值（与 /automation/dhash-threshold 滑块联动）。
@@ -726,44 +720,8 @@ class CameraStream:
                     logger.debug("Recovered after read retry")
                     # recovered：落到下面的正常处理流程
 
-                self._maybe_schedule_inference(frame)
-                with self._lock:
-                    result = self._latest_result
-                display_result = self._resolve_display_result(result)
-                display_frame = self._prepare_display_frame(frame)
-                # 从 config 读取 JPEG 质量，默认 50（降低以提高帧率）
-                jpeg_quality = int(get_config("vision.jpeg_quality", 50))
-                encoded, jpeg = cv2.imencode(".jpg", display_frame, [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_quality])
-                if not encoded:
-                    logger.warning("Failed to encode preview frame")
-                    continue
+                self._process_frame(frame)
 
-                with self._lock:
-                    self._latest_frame = frame
-                    self._latest_jpeg = jpeg.tobytes()
-                    # 按 frame_interval_ms 间隔把帧存进环形缓冲(避免缓冲全是相邻同帧)
-                    now_ms = time.time() * 1000
-                    if not self._frame_timestamps or (now_ms - self._last_buffer_push) >= self._frame_interval_ms:
-                        try:
-                            # 异步入队，不阻塞主循环
-                            self._buffer_queue.put_nowait(frame)
-                            self._last_buffer_push = now_ms
-                        except queue.Full:
-                            pass  # 丢弃旧帧，保持最新
-                    self._state.camera_opened = True
-                    self._state.frame_width = int(frame.shape[1])
-                    self._state.frame_height = int(frame.shape[0])
-                    self._state.fps = float(self._cap.get(cv2.CAP_PROP_FPS) or 0.0)
-                    self._state.last_frame_at = time.time()
-                    self._state.last_error = None
-                    self._state.action = display_result.action
-                    self._state.feedback = display_result.feedback
-                    self._state.details = display_result.details
-                    self._state.confirmed = display_result.action not in {"idle", "no_event", "waiting_confirm"}
-                    self._state.last_infer_at = self._last_model_run_at
-                    self._state.infer_count = self._infer_count
-                    self._state.infer_busy = self._infer_busy
-                
                 # 每10秒记录一次帧率，用于诊断"循环播放几帧"问题
                 frame_count += 1
                 now = time.time()
@@ -784,6 +742,58 @@ class CameraStream:
                 logger.exception("Camera worker crashed")
                 self._clear_cached_frame("摄像头线程异常")
                 time.sleep(0.5)
+
+    def _read_source_fps(self) -> float:
+        """当前采集源的标称 FPS（虚拟摄像头无 cap，由子类覆盖）。"""
+        if self._cap is not None:
+            try:
+                return float(self._cap.get(cv2.CAP_PROP_FPS) or 0.0)
+            except Exception:  # noqa: BLE001
+                return 0.0
+        return 0.0
+
+    def _process_frame(self, frame: np.ndarray) -> None:
+        """处理一帧：运动门控推理调度 + JPEG 编码 + 最新帧/环形缓冲/状态更新。
+
+        从 _worker 尾部抽出（纯搬运）。真实采集循环与虚拟摄像头注入帧共用
+        此入口，后续管线（dhash 运动触发、预览推理、MJPEG、get_recent_frames）
+        对两者无差别生效。
+        """
+        self._maybe_schedule_inference(frame)
+        with self._lock:
+            result = self._latest_result
+        display_result = self._resolve_display_result(result)
+        display_frame = self._prepare_display_frame(frame)
+        # 从 config 读取 JPEG 质量，默认 50（降低以提高帧率）
+        jpeg_quality = int(get_config("vision.jpeg_quality", 50))
+        encoded, jpeg = cv2.imencode(".jpg", display_frame, [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_quality])
+        if not encoded:
+            logger.warning("Failed to encode preview frame")
+            return
+
+        with self._lock:
+            self._latest_frame = frame
+            self._latest_jpeg = jpeg.tobytes()
+            # 按 frame_interval_ms 间隔把帧存进环形缓冲(避免缓冲全是相邻同帧)
+            now_ms = time.time() * 1000
+            if not self._frame_timestamps or (now_ms - self._last_buffer_push) >= self._frame_interval_ms:
+                try:
+                    # 异步入队，不阻塞主循环
+                    self._buffer_queue.put_nowait(frame)
+                    self._last_buffer_push = now_ms
+                except queue.Full:
+                    pass  # 丢弃旧帧，保持最新
+            self._state.camera_opened = True
+            self._state.frame_width = int(frame.shape[1])
+            self._state.frame_height = int(frame.shape[0])
+            self._state.fps = self._read_source_fps()
+            self._state.last_frame_at = time.time()
+            self._state.last_error = None
+            self._state.action = display_result.action
+            self._state.feedback = display_result.feedback
+            self._state.details = display_result.details
+            self._state.last_infer_at = self._last_model_run_at
+            self._state.infer_count = self._infer_count
 
     def _maybe_schedule_inference(self, frame: np.ndarray) -> None:
         """运动门控 + 自动化事件触发。
@@ -902,6 +912,12 @@ class CameraStream:
             )
             with self._lock:
                 self._latest_result = result
+            await self._record_vision_log("preview", {
+                "event": result.action,
+                "feedback": result.feedback,
+                "observation": (result.details or {}).get("observation", ""),
+                "elapsed_ms": round((time.time() - started) * 1000),
+            })
         except Exception as exc:  # noqa: BLE001
             logger.exception("Inference failed")
             with self._lock:
@@ -910,6 +926,14 @@ class CameraStream:
             with self._lock:
                 self._infer_busy = False
                 self._infer_started_at = 0.0
+
+    async def _record_vision_log(self, kind: str, content: dict) -> None:
+        """识别留痕（vision_logs 表）。数据库未初始化/写入失败只记 debug，不阻塞推理。"""
+        try:
+            from .core.database import Database
+            await Database.get().vision_log_insert(self.camera_id, kind, content)
+        except Exception:  # noqa: BLE001
+            logger.debug("vision log insert failed", exc_info=True)
 
     def _resolve_display_result(self, result: ActionResult) -> ActionResult:
         if not self._recognizer.enabled:

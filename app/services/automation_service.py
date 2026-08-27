@@ -4,6 +4,7 @@ import asyncio
 import logging
 import time
 import traceback
+from typing import Any
 
 from .rule_registry_service import RuleRegistryService
 from ..clients.client_factory import build_per_user_chat_client
@@ -32,10 +33,20 @@ class AutomationService:
         self._weather_cache_at: float = 0.0
         # 缓存 chat LLM 客户端，避免每次规则评估都重新读取配置和解析 API key
         self._chat_client = None
+        # per-user chat 客户端缓存：user_id → (key 签名, client)。
+        # 每轮仍解析 key（单条 DB 查询，用于探测变更），签名不变则复用客户端，
+        # 避免非视觉静默循环（默认 30s 一轮 × 每条规则）反复重建 httpx 连接池。
+        self._per_user_clients: dict[str, tuple[tuple, Any]] = {}
+        # CameraManager 引用（后注入）：虚拟摄像头演练开关（real_exec 标志）经它查询。
+        self._camera_manager = None
         # 运行状态计数(按管道,含运动触发;/automation/status 展示用)。
         # agent 侧另有循环轮数计数,只含兜底不含运动触发,勿混用。
         self._vision_eval_count = 0
         self._context_eval_count = 0
+
+    def set_camera_manager(self, cm) -> None:
+        """注入 CameraManager（虚拟摄像头演练开关查询用）。"""
+        self._camera_manager = cm
 
     async def evaluate(
         self,
@@ -97,11 +108,10 @@ class AutomationService:
                 logger.debug("Rule '%s' skipped: disabled", rule.get("name", ""))
                 skipped_count += 1
                 continue
-            if self._in_cooldown(rule, now):
-                cooldown = int(rule.get("cooldown_seconds", get_config("automation.default_cooldown_seconds", 5)))
-                last = float(rule.get("last_triggered_at", 0.0))
+            cooldown_left = self._cooldown_remaining(rule, now)
+            if cooldown_left > 0:
                 logger.debug("Rule '%s' skipped: in cooldown (%.1fs remaining)",
-                           rule.get("name", ""), cooldown - (now - last))
+                           rule.get("name", ""), cooldown_left)
                 skipped_count += 1
                 continue
             condition_text = str(rule.get("condition", "")).strip()
@@ -153,7 +163,7 @@ class AutomationService:
             except asyncio.TimeoutError:
                 logger.warning("Chat rule eval timed out after %ds, skipping chat group", _EVAL_TIMEOUT_SECONDS)
             else:
-                applied = await self._apply_results(chat_rules, results, now, applied)
+                applied = await self._apply_results(chat_rules, results, now, applied, camera_id=camera_id)
 
         # vision 路由：VL 看画面，无帧/无 vision_service 则跳过该组
         if vl_rules:
@@ -183,14 +193,15 @@ class AutomationService:
                 except asyncio.TimeoutError:
                     logger.warning("Vision rule eval timed out after %ds, skipping vision group", _EVAL_TIMEOUT_SECONDS)
                 else:
-                    applied = await self._apply_results(vl_rules, results, now, applied)
+                    applied = await self._apply_results(vl_rules, results, now, applied, camera_id=camera_id)
 
         if applied:
             logger.info("Automation rules applied", extra={"applied_count": len(applied)})
         return applied
 
-    async def _apply_results(self, rules: list[dict], results: list, now: float, applied: list[dict]) -> list[dict]:
-        """统一处理评估结果：异常记日志跳过，result==1 执行动作 + 记指标。"""
+    async def _apply_results(self, rules: list[dict], results: list, now: float,
+                             applied: list[dict], camera_id: str = "") -> list[dict]:
+        """统一处理评估结果：异常记日志跳过，result==1 执行动作 + 记指标 + 识别留痕。"""
         for rule, result in zip(rules, results):
             rule_id = rule.get("id", "")
             rule_name = rule.get("name", "")
@@ -205,6 +216,8 @@ class AutomationService:
                                rule_name, rule_id, result, tb_str)
                 continue
             logger.info("Rule '%s' (id=%s) eval result: %s", rule_name, rule_id, result)
+            # 识别留痕：模型对条件的判定（0/1）与条件原文
+            await self._record_eval_log(camera_id, rule, result)
             # 记录自动化评估
             try:
                 from ..container import get_container
@@ -212,13 +225,27 @@ class AutomationService:
             except Exception:
                 pass
             if result == 1:
-                applied.extend(await self._run_actions(rule, now))
+                applied.extend(await self._run_actions(rule, now, camera_id=camera_id))
         return applied
 
-    def _in_cooldown(self, rule: dict, now: float) -> bool:
+    async def _record_eval_log(self, camera_id: str, rule: dict, result) -> None:
+        """规则条件判定留痕（vision_logs, kind=rule_eval）。失败静默。"""
+        try:
+            from ..core.database import Database
+            await Database.get().vision_log_insert(camera_id, "rule_eval", {
+                "rule_id": rule.get("id", ""),
+                "rule_name": rule.get("name", ""),
+                "condition": str(rule.get("condition", "")),
+                "result": int(result) if isinstance(result, (int, float)) else str(result),
+            })
+        except Exception:  # noqa: BLE001
+            logger.debug("rule eval log insert failed", exc_info=True)
+
+    def _cooldown_remaining(self, rule: dict, now: float) -> float:
+        """距冷却结束的剩余秒数（负数/0 = 已过冷却）。"""
         cooldown = int(rule.get("cooldown_seconds", get_config("automation.default_cooldown_seconds", 5)))
         last = float(rule.get("last_triggered_at", 0.0))
-        return (now - last) < cooldown
+        return cooldown - (now - last)
 
     # ---------- 设备状态门控 ----------
 
@@ -301,27 +328,47 @@ class AutomationService:
             return True
         return False
 
-    async def _run_actions(self, rule: dict, now: float) -> list[dict]:
+    def _virtual_dry_run(self, camera_id: str) -> bool:
+        """该摄像头是否为演练模式：虚拟摄像头且未开真实执行开关。
+
+        非虚拟摄像头恒 False（生产行为不变）；camera_manager 未注入恒 False。
+        """
+        if not camera_id or self._camera_manager is None:
+            return False
+        try:
+            if not self._camera_manager.is_virtual_camera(camera_id):
+                return False
+            return not bool(self._camera_manager.get_virtual_flag(camera_id, "real_exec", False))
+        except Exception:  # noqa: BLE001
+            return False
+
+    async def _run_actions(self, rule: dict, now: float, camera_id: str = "") -> list[dict]:
         """执行规则的所有动作，记录触发时间。"""
         out: list[dict] = []
+        dry_run = self._virtual_dry_run(camera_id)
         for task in rule.get("actions", []):
-            result = await self._execute_action(task)
+            result = await self._execute_action(task, camera_id=camera_id, dry_run=dry_run)
             if result is not None:
                 out.append({"rule": rule.get("name") or rule.get("summary") or rule.get("id"), "result": result})
         if out:
             self._rule_registry.update_trigger_time(rule["id"], now)
         return out
 
-    async def _execute_action(self, task: dict) -> dict | None:
-        """通过 MCP 工具调用执行动作。"""
+    async def _execute_action(self, task: dict, camera_id: str = "", dry_run: bool = False) -> dict | None:
+        """通过 MCP 工具调用执行动作。dry_run=True 只记录不执行（虚拟摄像头演练）。"""
         tool_name = task.get("mcp_tool_name") or task.get("tool_name")
         if not tool_name:
             logger.warning("Action has no tool_name, skipping", extra={"task": task})
             return None
+        tool_input = task.get("mcp_tool_input") or task.get("parameters") or {}
+        if dry_run:
+            logger.info("[演练] 虚拟摄像头 %s 规则命中，将执行: %s input: %s",
+                        camera_id, tool_name, tool_input)
+            await self._record_action_log(camera_id, tool_name, tool_input, attempted=False)
+            return {"dry_run": True, "tool": tool_name, "input": tool_input}
         if self._tool_executor is None:
             logger.warning("Tool executor not available, cannot execute action", extra={"tool": tool_name})
             return None
-        tool_input = task.get("mcp_tool_input") or task.get("parameters") or {}
         resolved = self._tool_executor.resolve_tool_name(str(tool_name))
         logger.info("Executing action: %s input: %s", resolved, tool_input)
         try:
@@ -340,22 +387,68 @@ class AutomationService:
                 get_container().metrics_service.record_tool_call(resolved, error=True)
             except Exception:
                 pass
+            await self._record_action_log(camera_id, resolved, tool_input, attempted=True, error="execution failed")
             return None
         if isinstance(result, dict) and result.get("success") is False:
             logger.warning("Rule MCP action returned failure", extra={"tool": resolved, "error": result.get("error")})
+            await self._record_action_log(camera_id, resolved, tool_input, attempted=True,
+                                          error=str(result.get("error", "")))
             return None
         logger.info("Action succeeded: %s", resolved)
+        await self._record_action_log(camera_id, resolved, tool_input, attempted=True,
+                                      result_summary=result if not isinstance(result, dict) else
+                                      {k: result[k] for k in list(result)[:5]})
         return {"tool": resolved, "result": result}
+
+    async def _record_action_log(self, camera_id: str, tool: str, tool_input: dict,
+                                 attempted: bool, error: str = "", result_summary=None) -> None:
+        """动作执行/演练留痕（vision_logs, kind=action）。失败静默。
+
+        attempted：True=真实执行过（成败看 error/result 字段），False=演练（dry-run）。
+        旧记录里的 executed/dry_run 双字段已合并为此单字段。
+        """
+        try:
+            from ..core.database import Database
+            content = {
+                "tool": tool,
+                "input": tool_input,
+                "attempted": attempted,
+            }
+            if error:
+                content["error"] = error
+            if result_summary is not None:
+                content["result"] = result_summary
+            await Database.get().vision_log_insert(camera_id, "action", content)
+        except Exception:  # noqa: BLE001
+            logger.debug("action log insert failed", exc_info=True)
 
     async def _resolve_chat_client(self, user_id: str = ""):
         """按 user_id 解析 per-user chat client；无配置或 user_id 为空则回退全局 self._chat_client。
 
         per-user 客户端构造走 build_per_user_chat_client（强制 _enabled=True，绕过全局
         llm.enabled 占位符禁用态）。无 per-user 配置时 lazy init 全局 client 复用。
+
+        per-user 客户端按 (api_key, base_url, model) 签名缓存：每轮仍解析 key
+        探测变更（单条 DB 查询），签名不变则复用已构建的客户端与连接池。
         """
-        per_user = await build_per_user_chat_client("chat", user_id, force_enabled=True)
-        if per_user is not None:
-            return per_user
+        if user_id:
+            from ..core.key_resolver import resolve_key_for_role_user
+            try:
+                key_info = await resolve_key_for_role_user("chat", user_id)
+            except Exception:
+                key_info = None
+            if key_info and key_info.get("api_key"):
+                sig = (key_info.get("api_key"), key_info.get("base_url"), key_info.get("model"))
+                cached = self._per_user_clients.get(user_id)
+                if cached is not None and cached[0] == sig:
+                    return cached[1]
+                per_user = await build_per_user_chat_client("chat", user_id, force_enabled=True)
+                if per_user is not None:
+                    self._per_user_clients[user_id] = (sig, per_user)
+                    return per_user
+            else:
+                # per-user 配置已删除：清缓存回退全局
+                self._per_user_clients.pop(user_id, None)
         # 回退全局：lazy init 一次，后续复用
         if self._chat_client is None:
             from ..clients.llm_chat_client import LlmChatClient

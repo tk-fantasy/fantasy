@@ -197,6 +197,109 @@ async def manual_broadcast(req: BroadcastRequest, container=Depends(get_containe
     return {"success": True}
 
 
+class PluginMethodRequest(BaseModel):
+    """插件自定义方法调用请求体（params 为任意 JSON）。"""
+    params: dict = {}
+
+
+# —— 插件数据文件上传（通用：面板上传视频等大文件到宿主持久卷）——
+# 存 app/data/uploads/<plugin_id>/（named volume，容器重建不丢）；
+# 删除插件时整目录物理回收（见 delete_plugin）。流式写盘不占内存。
+MAX_PLUGIN_FILE_SIZE = 2 * 1024 * 1024 * 1024  # 2GB（视频测试场景）
+_UPLOAD_CHUNK = 1024 * 1024
+
+
+def _upload_root() -> Path:
+    """插件上传文件根目录（与 SQLite 同层，落在已持久化的 app/data 卷内）。"""
+    return Path(BASE_DIR) / "app" / "data" / "uploads"
+
+
+def _sanitize_filename(name: str) -> str:
+    """保留下划线/点/中文等常规字符，剥路径分隔与控制符，防穿越。"""
+    cleaned = re.sub(r"[^\w.\-\u4e00-\u9fff]+", "_", name).strip("._") or "upload.bin"
+    return cleaned[:120]  # 防超长文件名
+
+
+@router.post("/integrations/{plugin_id}/files")
+async def upload_plugin_file(
+    plugin_id: str,
+    file: UploadFile = File(...),
+    admin: dict = Depends(get_current_admin),
+):
+    """上传一个数据文件给指定插件（管理员）。流式落盘，返回文件的服务器路径。
+
+    插件面板（如 test-camera 的视频导入）经此上传；随后插件拿返回的 path
+    走自己的登记逻辑（videos.add 等），宿主不做语义解释。
+    """
+    import time as _time
+
+    if not _PLUGIN_ID_RE.match(plugin_id):
+        return {"success": False, "message": "非法插件 id"}
+    if not (_resolve_plugin_dir() / plugin_id).is_dir():
+        return {"success": False, "message": f"插件 {plugin_id} 不存在"}
+
+    raw_name = Path(file.filename or "upload.bin").name
+    dest_dir = _upload_root() / plugin_id
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / f"{_time.strftime('%Y%m%d_%H%M%S')}_{_sanitize_filename(raw_name)}"
+
+    size = 0
+    try:
+        with dest.open("wb") as out:
+            while True:
+                chunk = await file.read(_UPLOAD_CHUNK)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > MAX_PLUGIN_FILE_SIZE:
+                    raise ValueError(
+                        f"文件过大（> {MAX_PLUGIN_FILE_SIZE // 1024 // 1024 // 1024}GB 上限）")
+                out.write(chunk)
+    except Exception as exc:
+        dest.unlink(missing_ok=True)  # 失败清理半截文件
+        logger.warning("插件 %s 文件上传失败: %s", plugin_id, exc)
+        return {"success": False, "message": f"上传失败: {exc}"}
+    logger.info("插件 %s 上传文件 %s (%d bytes)", plugin_id, dest.name, size)
+    return {"success": True, "data": {
+        "path": str(dest), "name": raw_name, "size": size,
+    }}
+
+
+# 插件自定义 method 白名单约束：宿主只转发非框架方法（框架方法 sink.speak 等
+# 不允许经此入口随意调用，防绕过语义），且不允许多跳名（纯命名空间标识）。
+_FRAMEWORK_METHODS = {"handshake", "sink.speak", "sink.interrupt", "router.handle",
+                      "health.check", "shutdown"}
+
+
+@router.post("/integrations/{plugin_id}/method/{method}")
+async def call_plugin_method(
+    plugin_id: str,
+    method: str,
+    req: PluginMethodRequest | None = None,
+    container=Depends(get_container),
+    admin: dict = Depends(get_current_admin),
+):
+    """调用插件自定义 RPC 方法（管理员）。插件在 setup 里 register_method 注册。
+
+    插件面板（ui_contributions 的 custom_component）经此入口与插件子进程交互：
+    参数透传、结果透传，宿主不做语义解释。
+    """
+    if method in _FRAMEWORK_METHODS:
+        return {"success": False, "message": f"框架方法不允许经此入口调用: {method}"}
+    layer = container.integration_layer
+    if layer is None:
+        return {"success": False, "message": "集成平台未启用"}
+    proc = layer._supervisor.get_process(plugin_id)
+    if proc is None or not proc.is_alive:
+        return {"success": False, "message": f"插件 {plugin_id} 未运行"}
+    try:
+        params = (req.params if req is not None else {}) or {}
+        result = await proc.call(method, params)
+    except Exception as exc:
+        return {"success": False, "message": f"调用失败: {exc}"}
+    return {"success": True, "data": result}
+
+
 # ── UI 贡献机制：插件声明 UI，Aether 通用路由读状态/触发动作 ──
 
 @router.get("/integrations/ui_contributions")
@@ -450,7 +553,7 @@ async def delete_plugin(plugin_id: str, container=Depends(get_container), admin:
     if not plugin_dir.is_dir():
         return {"success": False, "message": f"插件 {plugin_id} 不存在"}
 
-    # 若运行中，先停进程
+    # 若运行中，先停进程（stop 内 on_stopped 回调会注销其虚拟摄像头）
     layer = container.integration_layer
     if layer is not None:
         proc = layer._supervisor.get_process(plugin_id) if hasattr(layer, "_supervisor") else None
@@ -459,6 +562,22 @@ async def delete_plugin(plugin_id: str, container=Depends(get_container), admin:
                 await proc.stop()
             except Exception as exc:
                 logger.warning("停止插件 %s 进程失败: %s", plugin_id, exc)
+        # 兜底注销该插件的虚拟摄像头（进程未运行时 stop 回调不会触发）
+        try:
+            from ..main import _services
+            cm = _services.get("camera_manager")
+            if cm is not None:
+                await cm.unregister_plugin_cameras(plugin_id)
+        except Exception:
+            logger.warning("注销插件 %s 虚拟摄像头失败", plugin_id, exc_info=True)
+        # 清理该插件虚拟摄像头的识别日志（vcam_<plugin_id>）
+        try:
+            from ..core.database import Database
+            await Database.get().vision_logs_delete_camera(f"vcam_{plugin_id}")
+        except Exception:
+            logger.debug("清理插件 %s 识别日志失败（数据库未初始化？）", plugin_id, exc_info=True)
+        # 物理回收该插件上传的全部数据文件（视频等）
+        shutil.rmtree(_upload_root() / plugin_id, ignore_errors=True)
 
     shutil.rmtree(plugin_dir, ignore_errors=True)
     _refresh_model_adapters()

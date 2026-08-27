@@ -31,10 +31,6 @@ def unregister(user_id: str, websocket: Any) -> None:
         _sockets.pop(user_id, None)
 
 
-def online(user_id: str) -> bool:
-    return bool(_sockets.get(user_id))
-
-
 async def push_to_user(user_id: str, payload: dict) -> None:
     """把一条 JSON 推给该用户所有在线 socket。"""
     for ws in list(_sockets.get(user_id, ())):

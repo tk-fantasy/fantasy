@@ -405,6 +405,10 @@ async def set_ha_config(payload: HAConfigRequest, container: AppContainer = Depe
     container.ha_client_ref[0] = new_client
     container.ha_service = HAService(client=new_client)
     await old_client.close()
+    # 同步 main/dispatcher/集成 host_deps 等处持有的旧引用（旧 client 已 close，
+    # 不同步则目录刷新、设备名映射、插件反向调用持续失败直到重启）
+    from ..main import sync_ha_runtime_refs
+    sync_ha_runtime_refs(new_client, container.ha_service)
     token_val = new_cfg.get("token", "")
     return ApiResponse(
         data={

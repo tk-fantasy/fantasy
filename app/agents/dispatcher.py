@@ -234,26 +234,41 @@ class Dispatcher:
             self._agent_clients[id(agent)] = clients
 
     def _primary_camera_id(self) -> str:
-        """Task 9:取主摄像头 id(第一个 enabled)。camera_manager 为空返回空串。"""
+        """Task 9:取主摄像头 id。
+
+        与 CameraManager.primary_camera_id 对齐(预览路优先,否则第一个
+        enabled)——旧实现永远取第一个 enabled,用户把 AI 预览切到别路后,
+        聊天侧摄像头状态/关注项注入仍指旧路,与 vision_chat 的取帧口径不一致。
+        """
         if self._camera_manager is None:
             return ""
+        getter = getattr(self._camera_manager, "primary_camera_id", None)
+        if callable(getter):
+            return getter() or ""
+        # duck-type 兜底:测试桩/旧 mock 没有 primary_camera_id 时保持旧行为
         cams = self._camera_manager.list_cameras()
         return cams[0]["id"] if cams else ""
+
+    # 空摄像头状态（manager 未注入/无路时兜底）。与 CameraStateModel 字段对齐，
+    # main._primary_camera_state 用同一份，加字段改一处即可。
+    EMPTY_CAMERA_STATE: dict = {
+        "camera_id": "", "camera_opened": False, "backend_name": "unknown",
+        "frame_width": 0, "frame_height": 0, "fps": 0.0, "last_frame_at": 0.0,
+        "last_error": None, "action": "idle", "feedback": "", "details": None,
+    }
+
+    def set_ha_service(self, svc) -> None:
+        """HA 配置热替换后重绑（main.sync_ha_runtime_refs 调用）。"""
+        self._ha_service = svc
 
     def _get_camera_state(self) -> dict:
         """取主摄像头状态。camera_manager 为空或无路时返回完整空状态字典。"""
         if self._camera_manager is None:
-            return {"camera_id": "", "camera_opened": False, "backend_name": "unknown",
-                    "frame_width": 0, "frame_height": 0, "fps": 0.0, "last_frame_at": 0.0,
-                    "last_error": None, "action": "idle", "feedback": "", "details": None,
-                    "confirmed": False}
+            return dict(self.EMPTY_CAMERA_STATE)
         cid = self._primary_camera_id()
         if cid:
             return self._camera_manager.get_state(cid)
-        return {"camera_id": "", "camera_opened": False, "backend_name": "unknown",
-                "frame_width": 0, "frame_height": 0, "fps": 0.0, "last_frame_at": 0.0,
-                "last_error": None, "action": "idle", "feedback": "", "details": None,
-                "confirmed": False}
+        return dict(self.EMPTY_CAMERA_STATE)
 
     @staticmethod
     def _build_failure_retry_message(failed_tools: list[dict]) -> HumanMessage:
@@ -723,7 +738,8 @@ class Dispatcher:
             failure_retry_count += 1
             logger.info("Failure retry (%d/%d) [%s]: %d tools failed",
                         failure_retry_count, self._max_failure_retries, path, len(state.failed_tools))
-            # 告知用户部分操作失败正在重试
+            # 告知用户部分操作失败正在重试（REST 也发：test_dispatcher 锁定此行为；
+            # 与 validator 重试轮"仅 WS"不同，属历史决定，见讨论项）
             await emit(
                 Instruction.build_instruction(
                     UI.Status(phase="retrying", detail="部分操作失败，正在重试"),
@@ -754,16 +770,15 @@ class Dispatcher:
         retry_count = 0
         while (state.tool_call_count == 0 and not state.has_error
                and await self._validator.should_retry(state.final_content, state.tool_call_count, user_id=user_id)
-               and retry_count < self._validator._max_retries):
+               and retry_count < self._validator.max_retries):
             retry_count += 1
-            logger.info("Validator: auto-retry (%d/%d) [%s]", retry_count, self._validator._max_retries, path)
-            # retrying 状态：仅 WS（REST 原实现不发）
-            if stream_tokens:
-                await emit(
-                    Instruction.build_instruction(
-                        UI.Status(phase="retrying"), request_id, session_id,
-                    )
+            logger.info("Validator: auto-retry (%d/%d) [%s]", retry_count, self._validator.max_retries, path)
+            # retrying 状态：与失败重试轮一致，REST 也发（统一策略）
+            await emit(
+                Instruction.build_instruction(
+                    UI.Status(phase="retrying"), request_id, session_id,
                 )
+            )
             lc_messages.append(self._validator.build_retry_message())
             # Validator 重试轮同样补注入家族开关
             self._inject_family_switch(lc_messages, ctx.get("chat_model", ""),

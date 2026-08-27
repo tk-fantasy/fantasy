@@ -21,6 +21,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from ..core.loop_utils import submit_and_wait
 from ..sg.sg_config import SgConfig
 
 logger = logging.getLogger(__name__)
@@ -262,18 +263,17 @@ class SemanticGraphService:
         embed_client = self._embed_client
 
         def embed_fn(texts: list[str]) -> list[list[float]]:
-            assert loop is not None
             results: list[list[float]] = []
-            # 逐条 embedding（pipeline 侧已分批，这里一条一请求）
+            # 逐条 embedding（pipeline 侧已分批，这里一条一请求）。
+            # submit_and_wait 带超时与循环活性检查，循环停止时立即失败而非挂死。
             for text in texts:
-                fut = asyncio.run_coroutine_threadsafe(
+                resp = submit_and_wait(
                     embed_client.post_embedding({
                         "model": embed_client.model,
                         "prompt": text,
                     }),
                     loop,
                 )
-                resp = fut.result()  # 同步等待
                 results.append(resp["embedding"])
             return results
 
@@ -282,18 +282,18 @@ class SemanticGraphService:
     def _make_chat_fn(self):
         """构造同步 chat_fn(messages, max_tokens) -> str。
 
-        pipeline 线程内调用，投递到主循环等待 LLM 返回。
+        pipeline 线程内调用，投递到主循环等待 LLM 返回（chat 超时 120s，
+        等待上限 130s 略高于它）。
         """
         loop = self._loop
         chat_client = self._chat_client
 
         def chat_fn(messages: list[dict], max_tokens: int = 1024) -> str:
-            assert loop is not None
-            fut = asyncio.run_coroutine_threadsafe(
+            return submit_and_wait(
                 chat_client.chat(messages, timeout=120),
                 loop,
+                timeout_seconds=130,
             )
-            return fut.result()
 
         return chat_fn
 

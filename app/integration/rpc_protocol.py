@@ -17,8 +17,8 @@ METHOD_HANDSHAKE = "handshake"
 METHOD_SPEAK = "sink.speak"
 METHOD_INTERRUPT = "sink.interrupt"
 METHOD_ROUTE = "router.handle"
-METHOD_HEALTH = "health.check"
-METHOD_SHUTDOWN = "shutdown"
+METHOD_SHUTDOWN = "shutdown"  # 停止通知：plugin_process.stop 发送；插件侧无内置
+# handler（可经 register_method("shutdown", ...) 自定义），实际停止靠关 stdin。
 
 # ── 方法名常量（方向 2: 插件 → Aether 反向调用）──
 METHOD_HOST_HA_CALL = "ha.call_service"
@@ -26,6 +26,10 @@ METHOD_HOST_HA_STATES = "ha.get_states"
 METHOD_HOST_HA_DEVICES = "ha.get_devices_grouped"
 METHOD_HOST_LLM_CHAT = "llm.chat"
 METHOD_HOST_BROADCAST = "sink.broadcast"
+METHOD_HOST_CAM_REGISTER = "camera.register"
+METHOD_HOST_CAM_PUSH = "camera.push_frame"
+METHOD_HOST_CAM_UNREGISTER = "camera.unregister"
+METHOD_HOST_CAM_SET_FLAGS = "camera.set_flags"
 
 JSONRPC_VERSION = "2.0"
 

@@ -56,8 +56,8 @@ def initialize_services() -> dict[str, Any]:
     services["llm_chat_client"] = llm_chat_client
     services["summary_client"] = summary_client
 
-    # 会话存储
-    session_store = SessionStore(get_config("storage.session_file") or None)
+    # 会话存储（持久化走 SQLite sessions 表）
+    session_store = SessionStore()
     services["session_store"] = session_store
 
     # MCP 工具管理
@@ -69,9 +69,9 @@ def initialize_services() -> dict[str, Any]:
     services["mcp_client_manager"] = mcp_client_manager
     services["tool_executor"] = tool_executor
 
-    # LangGraph Agent 和工具列表在 main.py lifespan 中构建（所有工具注册完毕后）
-    services["langgraph_agent"] = None
-    services["langchain_tools"] = None
+    # LangGraph Agent 与工具列表在 main.py lifespan 中构建（所有工具注册完毕后），
+    # 持有方是 main.langgraph_agent 模块全局 + dispatcher（set_agent 唯一通道），
+    # 不再进 services dict（此前只写不读，属三份冗余引用）。
 
     # RAG 相关服务
     summarization_service = SummarizationService(chat_client=summary_client)

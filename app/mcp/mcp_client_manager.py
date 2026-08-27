@@ -47,7 +47,8 @@ class MCPClientManager:
         """
         for server in self._external_servers:
             if server.name == name:
-                logger.info("External MCP server already connected", extra={"name": name})
+                # name 是 LogRecord 保留字段，不能进 extra（makeRecord KeyError）
+                logger.info("External MCP server already connected %s", name)
                 return self._list_tools_by_client(name)
 
         server = ExternalMCPServer(name, cmd, args)
@@ -78,7 +79,7 @@ class MCPClientManager:
             self.register_tool(tool)
             registered.append(tool)
 
-        logger.info("External MCP server connected", extra={"name": name, "tools": len(registered)})
+        logger.info("External MCP server connected %s tools=%d", name, len(registered))
         return registered
 
     def _make_external_handler(self, server: ExternalMCPServer, tool_name: str) -> ToolHandler:

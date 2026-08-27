@@ -125,26 +125,6 @@ class VisionService:
         """
         enabled = [f["text"] for f in self._vision_focuses.get(camera_id, []) if f.get("enabled", True)]
         return "；".join(enabled)
-
-    # ---- 向后兼容旧单条 API ----
-
-    def set_vision_focus(self, focus: str) -> None:
-        """兼容旧接口：添加一条新的 focus。空串不落库(不虚构默认关注)。"""
-        if not (focus or "").strip():
-            return
-        self.add_focus(focus)
-
-    def get_vision_focus(self) -> str:
-        """兼容旧接口：返回第一条 focus 的 text；未配置时返回空字符串。
-
-        _vision_focuses 是 {camera_id: [items]} 字典，不能用整数索引。
-        取第一个 bucket 的第一项（插入顺序，py3.7+ dict 保序）。
-        注意：这里只反映"用户配置"，无配置返回 ""，推理侧对空 focus
-        不拼"关注"行，不要在此虚构默认值。
-        """
-        for bucket in self._vision_focuses.values():
-            if bucket:
-                return bucket[0]["text"]
         return ""
 
     async def evaluate_condition(

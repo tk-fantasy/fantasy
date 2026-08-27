@@ -26,13 +26,11 @@ class CameraStateModel(BaseModel):
     action: str
     feedback: str
     details: dict[str, Any] | None
-    confirmed: bool
     model_fps: float
     motion_distance: int = -1
     motion_threshold: int = 5
     last_infer_at: float = 0.0
     infer_count: int = 0
-    infer_busy: bool = False
 
 
 class HealthData(BaseModel):

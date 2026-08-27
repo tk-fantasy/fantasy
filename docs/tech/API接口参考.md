@@ -306,7 +306,7 @@ JWT 细节：access 24h / refresh 7d，HS256，`JWT_SECRET` 环境变量（自�
 
 ## 9. 摄像头（多路） /cameras
 
-多摄像头由 `CameraManager`（`app/services/camera_manager.py`）统一管理，配置存数据库 `cameras` 表（老单摄配置首次启动自动迁移成一行）。`/api/state`、`/api/video_feed` 为兼容旧入口（返回主摄像头）。
+多摄像头由 `CameraManager`（`app/services/camera_manager.py`）统一管理，配置存数据库 `cameras` 表（老单摄配置首次启动自动迁移成一行）。单摄兼容入口 `/api/state`、`/api/video_feed` 已删除，一律走 `/api/cameras/*`。
 
 | 方法 | 路径 | 认证 | Body | 说明 |
 | --- | --- | --- | --- | --- |
@@ -336,30 +336,16 @@ JWT 细节：access 24h / refresh 7d，HS256，`JWT_SECRET` 环境变量（自�
   "vision_use_img_count": 3, "frame_interval_ms": 2000 }
 ```
 
-### 9.1 旧单摄接口 /state, /video_feed
+### 9.1 旧单摄接口 /state, /video_feed（已删除）
 
-| 方法 | 路径 | 认证 | Body | 说明 |
-| --- | --- | --- | --- | --- |
-| GET | `/api/state` | JWT | 无 | 主摄像头状态 `CameraStateModel` |
-| GET | `/api/video_feed` | JWT | 无 | 主摄像头 MJPEG 视频流 |
+| 方法 | 路径 | 状态 |
+| --- | --- | --- |
+| GET | `/api/state` | ❌ 已删除，用 `GET /api/cameras/{camera_id}/state` 替代 |
+| GET | `/api/video_feed` | ❌ 已删除，用 `GET /api/cameras/{camera_id}/video_feed` 替代 |
 
-```jsonc
-// /api/state 返回 CameraStateModel（含 presence/action/infer_count 等）
-```
+> 旧全局 PTZ 路由（`/api/ptz/*`）已删除——云台配置收敛到 per-camera（`cameras` 表的 `ptz_*` 字段），控制走 `POST /api/cameras/{camera_id}/ptz/move|stop|step`。新前端已全部走 `/api/cameras/*`（含每路 PTZ）。PTZ 走 ONVIF（zeep，`asyncio.to_thread` 包同步调用）。详见《05-摄像头视觉/摄像头接入与配置》。
 
-> 旧全局 PTZ 路由（`/api/ptz/*`）已删除——云台配置收敛到 per-camera（`cameras` 表的 `ptz_*` 字段），控制走 `POST /api/cameras/{camera_id}/ptz/move|stop|step`。新前端已全部走 `/api/cameras/*`（含每路 PTZ）。`/api/video_feed` 在 handler 内显式校验 JWT（除了全局中间件）。PTZ 走 ONVIF（zeep，`asyncio.to_thread` 包同步调用）。详见《05-摄像头视觉/摄像头接入与配置》。
-
----
-
-## 9.2 ONVIF 摄像头发现 /discovery
-
-| 方法 | 路径 | 认证 | Body | 说明 |
-| --- | --- | --- | --- | --- |
-| GET | `/api/discovery/status` | JWT | 无 | 发现服务状态 |
-| POST | `/api/discovery/find` | JWT | `{target_mac?, subnet?, timeout?}` | 扫描子网找摄像头（camera_id 空时用旧配置） |
-| POST | `/api/discovery/manual-ip` | JWT | `{new_ip}` | 手动指定 IP |
-
-> 多路模式优先走 `/api/cameras/{id}/discovery/*`（按 cameras 行读 MAC/子网/凭证）；worker 掉线连续开流失败时也会自动触发发现找回 IP。
+> 旧全局发现路由（`/api/discovery/status`、`/api/discovery/find`）已删除——发现能力收敛到 per-camera：`POST /api/cameras/{id}/discovery/find`、`POST /api/cameras/{id}/discovery/manual-ip`（见 9.1，按 cameras 行读 MAC/子网/凭证）；worker 掉线连续开流失败时也会自动触发发现找回 IP。
 
 ---
 

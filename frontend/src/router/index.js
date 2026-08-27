@@ -116,7 +116,6 @@ const router = createRouter({
 // 业务组件在后端 startup 期发 /api/* → 502。用此标志做全局门控。
 let backendReady = false
 export function markBackendReady() { backendReady = true }
-export function isBackendReady() { return backendReady }
 
 // 路由守卫：未登录重定向到 /login；后端未就绪重定向到 /loading
 router.beforeEach((to, from, next) => {

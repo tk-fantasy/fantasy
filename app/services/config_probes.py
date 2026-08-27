@@ -1,4 +1,4 @@
-"""配置项保存前预校验（probe）—— 4 个服务的「真连一次才允许落盘」逻辑。
+"""配置项保存前预校验（probe）——「真连一次才允许落盘」逻辑。
 
 每个 probe 接受**候选凭证作参数**（不读 config，避免「先写脏数据再回滚」的脏写
 竞态），独立建临时连接，失败时按 reason 分类返回。复用 HA 那套模式：
@@ -6,22 +6,18 @@
     ProbeResult.ok=False      → 路由层拒绝，前端按 reason 展示差异化提示
 
 reason 取值（前端按这个分支显示文案）：
-    "unauthorized"  凭证无效/过期（URL/IP 可达，但鉴权失败）
+    "unauthorized"  凭证无效/过期（URL 可达，但鉴权失败）
     "unreachable"   地址不可达（DNS/连接/超时）
     "bad_format"    格式错误（schema 层已挡掉绝大多数，这里兜底）
-    "busy"          资源被占（RTSP 单流被既有连接占用）
     "error"         其他（带原始异常文本）
 """
 from __future__ import annotations
 
-import asyncio
 import base64
 import json
 import logging
-import os
 import time
 from dataclasses import dataclass, field
-from typing import Any
 
 import httpx
 
@@ -166,196 +162,6 @@ async def probe_exa(api_key: str) -> ProbeResult:
         reason, detail = _classify_httpx_error(e)
         logger.warning("Exa probe failed: %s (%s)", reason, detail)
         return ProbeResult(ok=False, reason=reason, detail=detail)
-
-
-# ============================ RTSP 摄像头 ============================
-
-_RTSP_PROBE_TIMEOUT = 12.0
-
-
-def _probe_rtsp_sync(url: str) -> ProbeResult:
-    """同步拉一次 RTSP 流。路由层用 asyncio.to_thread 包。
-
-    cv2/ffmpeg 的 C 层 warning 直接写 fd 2，绕过 Python 的 sys.stderr
-    重定向，所以无法可靠地从 warning 文本里区分鉴权失败/不可达/单流占用。
-    改用两步策略：
-      1. 先裸 TCP 连 554 端口（或 URL 里的端口）—— 连不通 = unreachable
-      2. 端口通但 cv2 打不开 = unauthorized 或 busy（detail 里说明）
-    这样至少把「地址不通」和「凭证/资源问题」分开，前者修 URL，后者修凭证/停占流。
-    """
-    import socket
-    from urllib.parse import urlparse
-
-    import cv2
-
-    # 解析 host/port 做端口探测
-    parsed = urlparse(url)
-    host = parsed.hostname or ""
-    port = parsed.port or 554
-    if not host:
-        return ProbeResult(ok=False, reason="bad_format", detail=f"URL 解析不到 host：{url}")
-
-    # 第 1 步：TCP 端口可达性
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(4)
-    try:
-        sock.connect((host, port))
-    except (socket.timeout, ConnectionRefusedError, OSError) as e:
-        return ProbeResult(
-            ok=False, reason="unreachable",
-            detail=f"摄像头 {host}:{port} 不可达：{e}",
-        )
-    finally:
-        sock.close()
-
-    # 第 2 步：端口通了，用 cv2 拉流验证凭证 + 流路
-    # 跟 _open_network_stream 一致的低延迟参数 + TCP
-    os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
-        "rtsp_transport;tcp"
-        "|buffer_size;256k"
-        "|max_delay;100000"
-        "|fflags;nobuffer+discardcorrupt"
-        "|flags;low_delay"
-    )
-
-    cap = None
-    try:
-        cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
-        if not cap.isOpened():
-            # 端口通但 cv2 打不开：凭证错、路径错、或单流被占
-            return ProbeResult(
-                ok=False, reason="unauthorized",
-                detail=(
-                    "摄像头端口可达但无法开流（常见原因：用户名/密码错、"
-                    "RTSP 路径错、或单流已被其他客户端占用）"
-                ),
-            )
-        # isOpened=True，再读 1 帧确认（有些摄像头 isOpened=True 但 read 失败）
-        for _ in range(5):
-            ok, frame = cap.read()
-            if ok and frame is not None:
-                h, w = frame.shape[:2]
-                return ProbeResult(
-                    ok=True,
-                    detail=f"RTSP 连接成功，分辨率 {w}x{h}",
-                    extra={"frame_size": [w, h]},
-                )
-            time.sleep(0.3)
-        return ProbeResult(
-            ok=False, reason="busy",
-            detail="RTSP 流已打开但读不到帧（可能是单流被其他客户端占用）",
-        )
-    except Exception as e:
-        return ProbeResult(ok=False, reason="error", detail=f"RTSP 探测异常：{e}")
-    finally:
-        if cap is not None:
-            try:
-                cap.release()
-            except Exception:
-                pass
-
-
-async def probe_rtsp(url: str, username: str, password: str) -> ProbeResult:
-    """验证 RTSP 凭证 + URL：用候选凭证拼完整 URL，cv2 开流读 1 帧。"""
-    url = (url or "").strip()
-    if not url:
-        return ProbeResult(ok=False, reason="bad_format", detail="RTSP URL 不能为空")
-    if not url.startswith("rtsp://"):
-        return ProbeResult(ok=False, reason="bad_format", detail="URL 必须以 rtsp:// 开头")
-
-    # 拼完整 URL（跟 _resolve_rtsp_url 一致的逻辑，但用候选凭证）
-    full_url = url
-    user = (username or "").strip()
-    pwd = (password or "").strip()
-    if user and pwd and "://" in url:
-        scheme, rest = url.split("://", 1)
-        # 去掉可能已存在的凭证
-        if "@" in rest.split("/", 1)[0]:
-            host_part = rest.split("/", 1)
-            host_only = host_part[0].split("@", 1)[1]
-            rest = host_only + ("/" + host_part[1] if len(host_part) > 1 else "")
-        full_url = f"{scheme}://{user}:{pwd}@{rest}"
-
-    # 同步 cv2 调用放线程池，避免阻塞事件循环
-    return await asyncio.to_thread(_probe_rtsp_sync, full_url)
-
-
-# ============================ PTZ 云台（ONVIF）============================
-
-_PTZ_PROBE_TIMEOUT = 8.0
-
-
-async def probe_ptz(ip: str, port: int, username: str, password: str) -> ProbeResult:
-    """验证 ONVIF PTZ 凭证：构造临时 ONVIFCamera，update_xaddrs + GetProfiles。
-
-    不复用 ptz_service 单例（避免污染运行中的连接状态）。
-    """
-    ip = (ip or "").strip()
-    if not ip:
-        return ProbeResult(ok=False, reason="bad_format", detail="PTZ IP 不能为空")
-    try:
-        port = int(port)
-    except (TypeError, ValueError):
-        return ProbeResult(ok=False, reason="bad_format", detail="PTZ 端口必须是数字")
-
-    try:
-        import onvif
-        from onvif import ONVIFCamera
-    except ImportError:
-        return ProbeResult(
-            ok=False, reason="error",
-            detail="ONVIF 库未安装，无法验证 PTZ 配置",
-        )
-
-    wsdl_dir = os.path.join(os.path.dirname(onvif.__file__), "wsdl")
-    cam = None
-    try:
-        # 用 asyncio.waitaround 包超时（onvif-zeep-async 的 update_xaddrs 没有自带超时）
-        async def _connect() -> ProbeResult:
-            nonlocal cam
-            cam = ONVIFCamera(ip, port, (username or "").strip(), (password or "").strip(), wsdl_dir=wsdl_dir)
-            await cam.update_xaddrs()
-            media = await cam.create_media_service()
-            profiles = await media.GetProfiles()
-            if not profiles:
-                return ProbeResult(
-                    ok=False, reason="error",
-                    detail="摄像头可达但无媒体 profile（可能不支持 PTZ）",
-                )
-            return ProbeResult(
-                ok=True,
-                detail=f"PTZ 连接成功，profile token={profiles[0].token}",
-                extra={"profile_count": len(profiles)},
-            )
-
-        return await asyncio.wait_for(_connect(), timeout=_PTZ_PROBE_TIMEOUT)
-    except asyncio.TimeoutError:
-        return ProbeResult(
-            ok=False, reason="unreachable",
-            detail=f"PTZ 连接超时（{_PTZ_PROBE_TIMEOUT}s），请检查 IP/端口是否可达",
-        )
-    except Exception as e:
-        msg = str(e).lower()
-        # onvif 鉴权失败通常表现为 zeep 抛 "not authorized" 或 Fault
-        if "auth" in msg or "not authorized" in msg or "unauthorized" in msg or "401" in msg:
-            return ProbeResult(
-                ok=False, reason="unauthorized",
-                detail=f"PTZ 凭证无效：{e}",
-            )
-        if "connection" in msg or "refused" in msg or "timeout" in msg or "resolve" in msg:
-            return ProbeResult(
-                ok=False, reason="unreachable",
-                detail=f"PTZ 不可达：{e}",
-            )
-        return ProbeResult(ok=False, reason="error", detail=f"PTZ 探测失败：{e}")
-    finally:
-        # 显式关闭 ONVIF transport(zeep/aiohttp 连接),不依赖 GC 回收。
-        # _connect 超时可能在赋值 cam 前抛出,故先判 None。
-        if cam is not None:
-            try:
-                await cam.close()
-            except Exception:  # noqa: BLE001
-                logger.debug("probe_ptz ONVIFCamera close failed", exc_info=True)
 
 
 # ============================ 天气（和风）============================

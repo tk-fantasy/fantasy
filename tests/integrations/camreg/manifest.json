@@ -1,0 +1,12 @@
+{
+    "id": "camreg",
+    "name": "Camera Register Test",
+    "version": "1.0.0",
+    "aether_api_version": "1",
+    "author": "Aether",
+    "description": "虚拟摄像头注册生命周期 e2e 测试插件（camera.* 反向 RPC）",
+    "entry": "plugin.py",
+    "capabilities": [],
+    "permissions": ["camera"],
+    "secrets": []
+}
