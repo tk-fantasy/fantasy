@@ -89,6 +89,19 @@ services:
         condition: service_healthy
       homeassistant:
         condition: service_started
+    # 存活探针：/healthz 无需认证，事件循环卡死（单 loop 承载全部后台循环）
+    # 时请求无法被处理 → 探活失败 → Docker 自动重启。进程退出场景由
+    # restart: unless-stopped 兜底，这里是补上"活着但冻结"的自愈路径。
+    # slim 镜像没有 curl/wget，用 python 标准库。
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/healthz', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+    # 内存上限：aether 装 opencv+faiss+langgraph，失控会顶爆 Docker Desktop
+    # WSL2 VM 拖垮同宿主的 HA 等全部容器。按需调整（视觉/RAG 大规模时观察后放宽）。
+    mem_limit: 2g
     restart: unless-stopped
 
   # 纯内网本地模型（可选，默认不启动）：

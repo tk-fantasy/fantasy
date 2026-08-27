@@ -62,12 +62,117 @@ class Database:
             return cls._instance
 
         DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            db = await cls._open_connection()
+        except Exception as first_err:
+            # SQLite 文件损坏（典型：宿主掉电打断 WAL 写入）→ 此前直接抛异常
+            # → uvicorn 退出 → Docker 重启 → 再失败，启动崩溃循环直到人工介入。
+            # 自愈路径：损坏文件 rename 保留现场 → 从 backups/ 找最近一次 db
+            # 备份恢复 → 都没有则裸建新库（丢历史但服务能起来）。
+            db = await cls._recover_from_corruption(first_err)
+        try:
+            await cls._finish_init(db)
+        except Exception:
+            # 建表/迁移阶段失败同样要回收连接（同 _open_connection 的理由）
+            try:
+                await db.close()
+            except Exception:  # noqa: BLE001
+                pass
+            raise
+        return cls._instance  # type: ignore[return-value]
+
+    @classmethod
+    async def _open_connection(cls) -> aiosqlite.Connection:
         db = await aiosqlite.connect(str(DB_PATH))
-        # 设 Row 工厂:cameras_all/cameras_get 用 dict(r) 转字典;
-        # Row 同时支持索引访问(r[1]),现有 rules_all 等不受影响。
         db.row_factory = aiosqlite.Row
-        await db.execute("PRAGMA journal_mode=WAL")
-        await db.execute("PRAGMA synchronous=NORMAL")
+        try:
+            await db.execute("PRAGMA journal_mode=WAL")
+            await db.execute("PRAGMA synchronous=NORMAL")
+            # 快速完整性探针：损坏文件在建表/查询时才炸，连接成功不代表可用
+            await db.execute("SELECT count(*) FROM sqlite_master")
+            return db
+        except Exception:
+            # 失败连接必须关闭：aiosqlite worker 线程持有文件句柄，Windows 下
+            # 不关就无法 move/unlink 损坏文件；且该线程非 daemon，泄漏后会
+            # 卡死解释器退出（pytest 全绿但进程挂起的根因）
+            try:
+                await db.close()
+            except Exception:  # noqa: BLE001
+                pass
+            raise
+
+    @classmethod
+    async def _recover_from_corruption(cls, first_err: Exception) -> aiosqlite.Connection:
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        corrupt = DB_PATH.with_suffix(f".db.corrupt-{ts}")
+        logger.error("Database open failed (%s); attempting self-recovery: "
+                     "rename to %s and restore/create fresh", first_err, corrupt.name)
+        try:
+            await asyncio.to_thread(cls._move_corrupt_files, corrupt)
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to move corrupt db files; forcing delete")
+            # move 失败退化为强制删除（连接已关，句柄应已释放）
+            for p in (DB_PATH, Path(str(DB_PATH) + "-wal"), Path(str(DB_PATH) + "-shm")):
+                try:
+                    p.unlink(missing_ok=True)
+                except OSError:
+                    pass
+        # backups/ 里的 db 备份（ops/backup.py 产物，命名 aether.db / *.db）
+        restored = await asyncio.to_thread(cls._try_restore_backup)
+        if restored is not None:
+            logger.warning("Database restored from backup: %s", restored)
+            try:
+                return await cls._open_connection()
+            except Exception:  # noqa: BLE001
+                logger.exception("Restored backup still fails to open; creating fresh db")
+                await asyncio.to_thread(lambda: DB_PATH.exists() and DB_PATH.unlink())
+        logger.warning("No usable db backup found; creating fresh database "
+                       "(chat history/users saved in the corrupt file are at %s)",
+                       corrupt.name)
+        return await cls._open_connection()
+
+    @staticmethod
+    def _move_corrupt_files(corrupt: Path) -> None:
+        """把损坏的 db 及 WAL/SHM 伴生文件挪走（保留现场供取证）。"""
+        import shutil
+        if DB_PATH.exists():
+            shutil.move(str(DB_PATH), str(corrupt))
+        for suffix in ("-wal", "-shm"):
+            side = Path(str(DB_PATH) + suffix)
+            if side.exists():
+                shutil.move(str(side), str(corrupt) + suffix)
+
+    @staticmethod
+    def _try_restore_backup() -> Path | None:
+        """从 backups/ 找最近的 .db 备份恢复到 DB_PATH。找不到返回 None。"""
+        import shutil
+        backup_root = DB_PATH.parent.parent.parent / "backups"
+        if not backup_root.is_dir():
+            return None
+        candidates = sorted(
+            (p for p in backup_root.rglob("*.db") if p.is_file()),
+            key=lambda p: p.stat().st_mtime, reverse=True)
+        for cand in candidates[:3]:  # 只试最近 3 个，防全损坏时反复炸
+            try:
+                shutil.copyfile(str(cand), str(DB_PATH))
+                # 副本完整性由 _open_connection 的探针验证；失败则试下一个
+                import sqlite3
+                conn = sqlite3.connect(str(DB_PATH))
+                conn.execute("SELECT count(*) FROM sqlite_master")
+                conn.close()
+                return cand
+            except Exception:  # noqa: BLE001
+                logger.warning("Backup candidate %s unusable, trying older", cand.name)
+        # 全部候选失败：清掉半恢复的目标文件，让裸建分支生效
+        if DB_PATH.exists():
+            DB_PATH.unlink()
+        return None
+
+    @classmethod
+    async def _finish_init(cls, db: aiosqlite.Connection) -> None:
+        cls._db = db
+        cls._write_lock = asyncio.Lock()
+        cls._open_conns.append(db)
 
         await db.executescript("""
             CREATE TABLE IF NOT EXISTS kv (
@@ -194,10 +299,6 @@ class Database:
                     "(SELECT id FROM users ORDER BY created_at LIMIT 1)"
                 )
         await db.commit()
-
-        cls._db = db
-        cls._open_conns.append(db)
-        cls._write_lock = asyncio.Lock()
         cls._instance = cls()
 
         # —— 单摄像头 → 多路迁移(KV 标记幂等)——

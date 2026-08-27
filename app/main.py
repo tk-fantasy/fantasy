@@ -527,6 +527,28 @@ async def lifespan(_: FastAPI):
 
     _background_task_mgr.spawn(_startup_health_check(), name="health_check")
 
+    # 周期健康复检：此前只在启动时探一次，运行期 HA 挂掉/恢复完全无感知，
+    # /api/health 一直是启动时刻的冻结值。HA 探测是本地 REST 调用零成本，
+    # 每 60s 一次；LLM 探测要真实消耗 token，默认关闭
+    # （health.llm_interval_seconds 配 300 等值可开启）。
+    async def _periodic_health_loop():
+        ha_every = max(15, int(get_config("health.ha_interval_seconds", 60)))
+        llm_every = int(get_config("health.llm_interval_seconds", 0))
+        ticks = 0
+        while True:
+            await asyncio.sleep(ha_every)
+            ticks += 1
+            try:
+                await health_checker.check_ha(ha_client)
+                if llm_every > 0 and ticks % max(1, llm_every // ha_every) == 0:
+                    await health_checker.check_llm(llm_chat_client)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning("periodic health check failed", exc_info=True)
+
+    _background_task_mgr.spawn(_periodic_health_loop(), name="periodic_health")
+
     # 后台构建 RAG 索引（不阻塞启动；曾在模块级提交，现移到 lifespan 启动阶段）
     # 绑定主事件循环后再提交：RAG 向量化在后台线程内投递 async embed 调用回主循环
     rag_service.bind_loop(asyncio.get_running_loop())
@@ -545,38 +567,47 @@ async def lifespan(_: FastAPI):
 
     # 关闭
     _startup_progress.stop()
-    catalog_task.cancel()
-    # 宿主侧集成停止（通用，不硬编码插件名）
+    if catalog_task is not None:
+        catalog_task.cancel()
+
+    async def _safe_stop(label: str, fn) -> None:
+        """逐项停机：任一失败不得跳过其余清理（此前异常会中断整条停机链，
+        session pending 写入、aiosqlite 连接等后续步骤全部跳过）。"""
+        try:
+            await fn()
+            logger.info("%s stopped", label)
+        except Exception:
+            logger.exception("%s stop failed (non-fatal)", label)
+
+    # 宿主侧集成停止（通用，不硬编码插件名）——内部自带逐项 try/except，
+    # 包一层 async 以统一走 _safe_stop
     if _host_integrations_ref:
-        _stop_host_integrations(_host_integrations_ref)
+        async def _stop_hosts():
+            _stop_host_integrations(_host_integrations_ref)
+        await _safe_stop("host integrations", _stop_hosts)
     if _automation_agent_ref[0]:
-        await _automation_agent_ref[0].stop()
+        await _safe_stop("automation agent", _automation_agent_ref[0].stop)
     if _container.scheduler_service is not None:
-        await _container.scheduler_service.stop()
+        await _safe_stop("scheduler", _container.scheduler_service.stop)
     # 集成插件平台停止（停止所有插件子进程）
     if _container.integration_layer is not None:
-        try:
-            await _container.integration_layer.stop()
-            logger.info("集成插件平台已停止")
-        except Exception:
-            logger.exception("IntegrationLayer stop failed (non-fatal)")
-    await mcp_client_manager.disconnect_all_external()
-    await session_store.shutdown()
+        await _safe_stop("integration layer", _container.integration_layer.stop)
+    await _safe_stop("external MCP servers", mcp_client_manager.disconnect_all_external)
+    await _safe_stop("session store", session_store.shutdown)
     # 多路停止
     cm = _services.get("camera_manager")
     if cm is not None:
-        try:
-            cm.stop()
-        except Exception:
-            logger.exception("CameraManager stop failed (non-fatal)")
+        await _safe_stop("camera manager", asyncio.to_thread(cm.stop))
     # 回收 dispatcher 持有的所有 agent httpx 客户端（全局 + per-user），防连接池泄漏
     if dispatcher is not None:
-        await dispatcher.close_all_agent_clients()
-    await ha_client.close()
-    await close_web_http_client()
+        await _safe_stop("dispatcher clients", dispatcher.close_all_agent_clients)
+        if dispatcher._validator is not None:
+            await _safe_stop("validator clients", dispatcher._validator.close_all)
+    await _safe_stop("HA client", ha_client.close)
+    await _safe_stop("web http client", close_web_http_client)
     from .clients.llm_base_client import close_shared_client
-    await close_shared_client()
-    await Database.close()
+    await _safe_stop("shared LLM client", close_shared_client)
+    await _safe_stop("database", Database.close)
     _reset_global_state()
     logger.info("Application shutdown")
 
@@ -942,6 +973,25 @@ def _primary_camera_state() -> dict:
     if not cid:
         return dict(Dispatcher.EMPTY_CAMERA_STATE)
     return cm.get_state(cid)
+
+
+_APP_START_MONOTONIC = time.monotonic()
+
+
+@app.get("/healthz")
+async def healthz() -> dict:
+    """无认证存活探针（docker healthcheck 专用）。
+
+    刻意不用 /api 前缀——api_token_guard 守 /api/*，探活拿不到 JWT。
+    只返回极简信息；事件循环卡死时本请求无法被处理，docker 探活超时
+    判定 unhealthy 触发重启——这是单 loop 架构下"进程活着但全站冻结"
+    唯一的自愈路径。
+    """
+    return {
+        "status": "ok",
+        "uptime_seconds": round(time.monotonic() - _APP_START_MONOTONIC),
+        "version": get_version(),
+    }
 
 
 @app.get("/api/health")

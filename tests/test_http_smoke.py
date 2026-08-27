@@ -60,6 +60,25 @@ class TestMiddlewareAuthGuard:
         resp = client.get("/api/health", headers={"Authorization": "Bearer not.a.real.token"})
         assert resp.status_code == 401
 
+    def test_healthz_no_auth_needed(self, client: TestClient):
+        """/healthz 无认证可达（docker healthcheck 探针，不在 /api 前缀下）。"""
+        resp = client.get("/healthz")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "ok"
+        assert "uptime_seconds" in body
+        assert "version" in body
+
+    def test_options_preflight_passes_guard(self, client: TestClient):
+        """跨域预检 OPTIONS 不被 api_token_guard 401（CORS 中间件在 guard 内层，
+        预检不带凭据，放行给 CORSMiddleware 应答）。"""
+        resp = client.options(
+            "/api/health",
+            headers={"Origin": "http://192.168.1.20:5173",
+                     "Access-Control-Request-Method": "GET"},
+        )
+        assert resp.status_code != 401
+
     # 注：refresh token 中间件拒绝的端到端测试见 test_auth.py 的
     # test_refresh_token_rejected_by_middleware_logic（纯逻辑，不启动 app）。
     # 此处不重复 TestClient 版本——本机摄像头副作用会让 TestClient 卡住。

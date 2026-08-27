@@ -10,17 +10,23 @@ faiss-cpu>=1.8.0
 scikit-learn>=1.4.0
 umap-learn>=0.5.5
 joblib>=1.3.0
-openai>=1.0.0
+openai>=1.0.0,<3.0
+# 钉上界：主链路（agent/vision/summary）全走 openai 客户端，大版本跳跃
+# （1.x→2.x 有破坏性变更）会在下次 rebuild 镜像时才爆，生产设备不可复现
 httpx==0.28.1
 markdownify>=0.13.1
 websockets>=12.0
-aiosqlite
+aiosqlite==0.22.1
+# 钉死：0.22.1 的 worker 线程非 daemon，tests/conftest.py 有对应回收逻辑；
+# aiosqlite 历史上小版本改线程模型，浮动约束对 7x24 设备是延迟雷
 # ONVIF PTZ（云台上下左右）控制 — ptz_service.py 依赖
 onvif-zeep-async>=4.0.0
 croniter>=2.0.0
-langchain-core>=0.3.0
-langchain-openai>=0.3.0
-langgraph>=0.4.0
+langchain-core>=0.3.0,<2.0
+langchain-openai>=0.3.0,<2.0
+langgraph>=0.4.0,<2.0
+# langchain 系 0.x/1.x 的 minor 也常有破坏性变更，统一加 <2.0 上界并
+# 在 CI 锁定具体版本（当前实测组合：core 1.5.5 / openai 1.5.1 / langgraph 1.2.11）
 PyJWT>=2.8.0
 cryptography>=41.0.0
 passlib[bcrypt]>=1.7.4

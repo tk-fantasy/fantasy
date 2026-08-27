@@ -119,6 +119,7 @@ class SessionStore:
         except Exception:
             logger.warning("Failed to load sessions from database, starting fresh", exc_info=True)
         self._loaded = True
+        self._evict_overflow_locked()
 
     def _save_session_async(self, session: SessionState) -> None:
         """异步持久化会话到 SQLite（带重试）。
@@ -202,6 +203,48 @@ class SessionStore:
         """记录后台任务的异常，避免静默丢失。"""
         if not task.cancelled() and task.exception() is not None:
             logger.error("Background DB task failed: %s", task.exception(), exc_info=task.exception())
+
+    # ------------------------------------------------------------------
+    # 会话治理：每用户保留最近 N 个，超出淘汰最旧
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _max_sessions_per_user() -> int:
+        """上限从 config 读取（storage.max_sessions_per_user，默认 50；
+        0 = 关闭淘汰）。7x24 长跑下无上限会话全量驻内存 + 每条消息全量
+        JSON upsert，数月后启动变慢、内存线性上涨。"""
+        from ..core.config import get_config
+        try:
+            return int(get_config("storage.max_sessions_per_user", 50))
+        except (TypeError, ValueError):
+            return 50
+
+    def _evict_overflow_locked(self) -> int:
+        """按用户淘汰最旧会话（内存 + DB）。须持 self._lock 调用。
+
+        updated_at 在每次 get_or_create/store_session 都会刷新，活跃会话
+        天然沉顶；被淘汰的都是长期不用的旧会话。淘汰的 DB 删除走与保存
+        相同的链式队列，不会与待写保存竞态复活。
+        """
+        limit = self._max_sessions_per_user()
+        if limit <= 0:
+            return 0
+        by_user: dict[str, list[SessionState]] = {}
+        for s in self._sessions.values():
+            by_user.setdefault(s.user_id or "", []).append(s)
+        evicted = 0
+        for sessions in by_user.values():
+            if len(sessions) <= limit:
+                continue
+            sessions.sort(key=lambda s: s.updated_at)
+            for old in sessions[:-limit]:
+                self._sessions.pop(old.session_id, None)
+                self._delete_session_async(old.session_id)
+                evicted += 1
+        if evicted:
+            logger.info("Session eviction: %d sessions beyond per-user limit %d",
+                        evicted, limit)
+        return evicted
 
     async def shutdown(self) -> None:
         """等待所有 pending 的 DB 写入任务完成。"""
@@ -332,6 +375,7 @@ class SessionStore:
             self._truncate_history(session)
             self._sessions[session.session_id] = session
             self._save_session_async(session)
+            self._evict_overflow_locked()
 
     @staticmethod
     def _truncate_history(session: SessionState) -> None:

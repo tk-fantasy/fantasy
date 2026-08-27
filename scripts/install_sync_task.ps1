@@ -34,7 +34,12 @@ if (-not (Test-Path $QuietBash)) {
     $BashToUse = $QuietBash
 }
 
-$Action = "$BashToUse -lc 'cd /d/Aether && bash scripts/sync_ha_ip.sh >> /d/Aether/logs/sync_ha_ip.log 2>&1'"
+# 任务命令：先做日志截断（超 1MB 保留末尾 200 行），再跑同步脚本追加日志。
+# 截断必须在 ">> $log" 重定向打开之前完成——否则 truncate/mv 换掉 inode，
+# 已打开的追加句柄写进旧文件，日志从此静默停更。
+# 每 10 分钟一行，200 行 ≈ 1.4 天；此前纯 >> 追加无轮转，一年约 10MB 慢性增长。
+$LogCmd = 'log=logs/sync_ha_ip.log; [ -f $log ] && [ $(stat -c%s $log) -gt 1048576 ] && { tail -n 200 $log > $log.t && mv $log.t $log; }; bash scripts/sync_ha_ip.sh >> $log 2>&1'
+$Action = "$BashToUse -lc 'cd /d/Aether && $LogCmd'"
 $TaskName = "Aether\SyncHaIp"
 
 # 删除旧任务（若存在）

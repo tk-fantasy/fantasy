@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from queue import Queue as _Queue
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -142,6 +143,11 @@ async def chat_ws(websocket: WebSocket):
     except WebSocketDisconnect:
         logger.info("Chat websocket disconnected")
     finally:
+        # 注意：不 cancel 进行中的 current_task——断连瞬间正在跑的这轮对话
+        # 继续执行完：小爱语音播报照常（sink 广播与页面无关），回复完整落库，
+        # 用户重连后历史里能看到。dispatcher 的 emit 已做断连静音（见
+        # dispatch_stream），不会因发送失败丢本轮（与 doc_chat 的纯文本流
+        # 不同：那边断连即无人消费，停流是纯收益）。
         ws_registry.unregister(user_id, websocket)
         heartbeat_task.cancel()
 
@@ -186,6 +192,10 @@ async def doc_chat_ws(websocket: WebSocket):
             client, chat_model = await rag_service.build_llm_client(user_id=user_id)
 
             token_queue: _Queue = _Queue()
+            # 断连停止标志：客户端离开后停止消费上游流——继续读完只是白烧
+            # token + 占住 _stream_executor 线程池槽位（8 线程被僵尸流占满
+            # 后，新文档问答会全部排队）
+            stream_stop = threading.Event()
 
             def _run_stream():
                 try:
@@ -198,6 +208,12 @@ async def doc_chat_ws(websocket: WebSocket):
                         stream=True
                     )
                     for chunk in stream:
+                        if stream_stop.is_set():
+                            try:
+                                stream.close()
+                            except Exception:  # noqa: BLE001
+                                pass
+                            return
                         if chunk.choices[0].delta.content:
                             token_queue.put(("token", chunk.choices[0].delta.content))
                     token_queue.put(("done", None))
@@ -220,7 +236,11 @@ async def doc_chat_ws(websocket: WebSocket):
                         await websocket.send_json({"type": "error", "message": content})
                         break
                     await websocket.send_json({"type": "token", "content": content})
-            except WebSocketDisconnect:
+            except (WebSocketDisconnect, RuntimeError):
+                # RuntimeError：连接已关后 send_json 的表现之一
+                stream_stop.set()
+                # 解开可能阻塞在 queue.get 的读线程（否则默认线程池累积泄漏）
+                token_queue.put_nowait(("done", None))
                 break
             finally:
                 set_request_id("-")
