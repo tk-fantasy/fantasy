@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, Query
 from ..container import AppContainer, get_container
 from ..clients.ha_client import HomeAssistantClient
 from ..core.api_models import ApiResponse
+from ..core.auth import get_current_admin
 from ..core.config import get_config, update_config_section
 from ..core.exceptions import AppException
 from ..schema.api_schemas import HAConfigRequest, HAServiceCallRequest, ModelTestRequest, UniqueSettingsRequest, EntityAliasRequest, EntityNoteRequest, EntityOperableRequest, ActionMapRequest
@@ -365,8 +366,12 @@ def _classify_ha_error(e: Exception) -> dict:
 
 
 @router.post("/ha/config")
-async def set_ha_config(payload: HAConfigRequest, container: AppContainer = Depends(get_container)) -> ApiResponse[dict]:
-    """保存 HA 配置。
+async def set_ha_config(
+    payload: HAConfigRequest,
+    current_user: dict = Depends(get_current_admin),
+    container: AppContainer = Depends(get_container),
+) -> ApiResponse[dict]:
+    """保存 HA 配置（改写全屋设备连接指向，仅管理员）。
 
     安全策略：用户传了新 token 时，先用 (url, token) 建临时 client 连一次 HA
     /api/，验证通过才写入 config.json。这样从根上杜绝「存进去的 token 连不上」
@@ -374,6 +379,10 @@ async def set_ha_config(payload: HAConfigRequest, container: AppContainer = Depe
     好配置覆盖成坏的。
     """
     url = payload.url.strip().rstrip("/")
+    from ..core.net_guard import url_scheme_error, HTTP_SCHEMES
+    scheme_err = url_scheme_error(url, HTTP_SCHEMES)
+    if scheme_err:
+        return ApiResponse(success=False, message=scheme_err, data={"saved": False})
     new_token = str(payload.token).strip() if payload.token is not None else None
 
     # 只传了 url（没传 token）：用现有 token 验证 url 是否可达

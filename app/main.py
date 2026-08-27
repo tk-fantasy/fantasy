@@ -293,6 +293,12 @@ async def lifespan(_: FastAPI):
         extra={"llm_enabled": llm_chat_client.enabled, "llm_model": llm_chat_client.model},
     )
 
+    # 全局令牌旁路是"全家共享后门"：设置后任何持令牌者可绕过 JWT 与用户
+    # 隔离直接访问全部 API。当前部署未使用，一旦被设置必须让人看见。
+    if (os.getenv("APP_TOKEN") or "").strip():
+        logger.warning("APP_TOKEN 已设置：X-API-Token 可绕过用户认证访问全部 API，"
+                       "确认这是有意为之，否则从 .env 移除")
+
     _startup_progress.set("正在初始化数据库...")
     # 初始化数据库
     await Database.init()
@@ -670,6 +676,12 @@ async def api_token_guard(request, call_next):
     # 跳过 auth 路由和静态文件（非 /api 路径）
     if (request.url.path.startswith("/api/auth") or
         not request.url.path.startswith("/api")):
+        return await call_next(request)
+
+    # CORS 预检放行：本中间件在 CORSMiddleware 外层（后注册者在外），不带
+    # 凭据的 OPTIONS 请求若在此 401，响应缺少 CORS 头，浏览器跨域直接失败。
+    # 预检本身无业务语义，放行给内层的 CORSMiddleware 应答即可。
+    if request.method == "OPTIONS":
         return await call_next(request)
 
     # 检查 JWT token（header → cookie）

@@ -16,7 +16,8 @@ from fastapi import APIRouter, Depends
 
 from ..container import AppContainer, get_container
 from ..core.api_models import ApiResponse
-from ..core.config import get_config, update_config_section, write_secrets
+from ..core.auth import get_current_admin
+from ..core.config import get_config, update_config_section
 from ..schema.api_schemas import AdvancedConfigRequest, VisionConfig
 from ..services.config_probes import probe_exa
 
@@ -27,13 +28,18 @@ router = APIRouter()
 
 @router.get("/advanced/config")
 async def get_advanced_config() -> ApiResponse[dict]:
-    """获取高级配置（网页搜索、视觉、RAG）。"""
+    """获取高级配置（网页搜索、视觉、RAG）。
+
+    exa.api_key 不回传明文（家庭成员互相不该看到付费 key），回 has_exa_key
+    标志；前端保存时留空 = 不修改（见 set_advanced_config 的合并语义）。
+    """
     vision_cfg = dict(get_config("vision", {}))
     # 密码不回传明文，只回「是否已配置」标志（像 weather 的 has_private_key）
     pwd_env = str(vision_cfg.get("rtsp_password_env", "")).strip()
     vision_cfg["has_rtsp_password"] = bool(pwd_env and os.getenv(pwd_env))
+    exa_key = str(get_config("web_search.exa.api_key", "") or "")
     return ApiResponse(data={
-        "web_search": get_config("web_search", {}),
+        "web_search": {"exa": {"api_key": "", "has_exa_key": bool(exa_key)}},
         "vision": vision_cfg,
         "rag": get_config("rag", {}),
     })
@@ -42,17 +48,20 @@ async def get_advanced_config() -> ApiResponse[dict]:
 @router.post("/advanced/config")
 async def set_advanced_config(
     payload: AdvancedConfigRequest,
+    current_user: dict = Depends(get_current_admin),
 ) -> ApiResponse[dict]:
-    """保存高级配置。
+    """保存高级配置（系统级参数，仅管理员）。
 
     凭证类字段（Exa api_key）填了新值时，先用候选值 probe 一次，
     probe 失败拒绝落盘并返回 reason，前端据此展示差异化错误。
+    api_key 留空 = 保留已保存的旧值（GET 已脱敏不回明文，必须靠该语义
+    防止"打开面板→保存"把已配置的 key 清空）。
     """
     # ---- Exa ----
     if payload.web_search is not None:
         exa_data = payload.web_search.model_dump()
         new_api_key = (exa_data.get("exa", {}).get("api_key", "") or "").strip()
-        # 只有用户填了新 key 才 probe（留空 = 匿名/不修改，跳过）
+        # 只有用户填了新 key 才 probe（留空 = 不修改，跳过）
         if new_api_key:
             result = await probe_exa(new_api_key)
             if not result.ok:
@@ -62,6 +71,11 @@ async def set_advanced_config(
                     message=result.detail,
                     data={"saved": False, "section": "exa", **result.to_dict()},
                 )
+        else:
+            # 留空：保留旧 key（仅更新 exa 段其他字段，当前只有 api_key 一个字段）
+            old_key = str(get_config("web_search.exa.api_key", "") or "")
+            if old_key:
+                exa_data.setdefault("exa", {})["api_key"] = old_key
         update_config_section("web_search", exa_data)
         logger.info("Web search config updated: api_key_set=%s", bool(new_api_key))
 

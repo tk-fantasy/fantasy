@@ -36,6 +36,20 @@ router = APIRouter()
 
 # 二级密码验证限流：全局 key 的门禁，不能无限速暴力破解（与登录同规格 5 次/分钟/IP）
 _verify_limiter = RateLimiter(max_requests=5, window_seconds=60)
+# 写接口（带密码的保存/删除/设置）独立限流：比 verify 宽（连续保存多个 key 的
+# 正常操作不被卡），但仍远低于可爆破速率（PBKDF2 29k 轮 + 10 次/分钟 ≈ 60ms/次
+# 的服务端哈希成本让在线爆破不可行）
+_write_limiter = RateLimiter(max_requests=10, window_seconds=60)
+
+
+def _check_write_limited(request: Request) -> None:
+    """写接口共用：按 IP 限流，超限抛 429。防绕过 verify 接口直接爆破写接口。"""
+    client_ip = request.client.host if request.client else "unknown"
+    if not _write_limiter.check(client_ip):
+        logger.warning("Secondary password write rate limited: %s", client_ip)
+        raise AppException(
+            "尝试过于频繁，请稍后再试", code="rate_limited", http_status=429
+        )
 
 # 全局 key 热重载开关：True=改全局 chat key 后自动 rebuild agent；
 # 若 httpx 客户端误关导致在线请求断，改 False 退回"提示重启"。
@@ -110,10 +124,12 @@ async def list_global_llm_keys(
 @router.post("/global/llm_keys")
 async def upsert_global_llm_key_route(
     payload: GlobalLLMKeyRequest,
+    request: Request,
     current_user: dict = Depends(get_current_user),
     container: AppContainer = Depends(get_container),
 ) -> ApiResponse[dict]:
     """新增或更新全局 LLM Key。写 config.json + .env，触发热重载。需二级密码。"""
+    _check_write_limited(request)
     if not llm_key_service.is_secondary_password_set():
         raise AppException(
             "尚未设置全局配置二级密码，请先调用 /api/global/password 设置",
@@ -220,10 +236,12 @@ async def upsert_global_llm_key_route(
 async def delete_global_llm_key_route(
     key_id: str,
     payload: SecondaryPasswordVerifyRequest,
+    request: Request,
     current_user: dict = Depends(get_current_user),
     container: AppContainer = Depends(get_container),
 ) -> ApiResponse[dict]:
     """删除全局 LLM Key（.env 密钥保留，避免误伤其他引用）。需二级密码。"""
+    _check_write_limited(request)
     llm_key_service.verify_secondary_password(payload.password)
     keys = [k for k in (get_config("llm_keys", []) or []) if k.get("id") != key_id]
     saved = save_global_llm_keys(keys)
@@ -250,10 +268,12 @@ async def get_global_llm_settings(
 @router.post("/global/llm/settings")
 async def set_global_llm_settings(
     payload: GlobalLLMSettingsRequest,
+    request: Request,
     current_user: dict = Depends(get_current_user),
     container: AppContainer = Depends(get_container),
 ) -> ApiResponse[dict]:
     """写全局 providers 到 config.json（所有用户共享）。需二级密码。"""
+    _check_write_limited(request)
     llm_key_service.verify_secondary_password(payload.password)
     result = container.llm_settings_service.apply(
         role=payload.role, key_id=payload.key_id,

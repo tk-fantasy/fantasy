@@ -95,9 +95,15 @@ async def test_stream(camera_id: str, body: dict):
     """
     import os, time
     import cv2
+    from ..core.net_guard import STREAM_SCHEMES, url_scheme_error
     base = str(body.get("rtsp_url", "")).strip()
     if not base:
         return ApiResponse(data={"ok": False, "error": "rtsp_url 为空"})
+    # scheme 白名单：rtsp/rtsps/rtmp/http/https。FFmpeg 还能打开 file:/concat:/
+    # pipe: 等协议（file:// 可读本地文件），rtsp_url 用户可控必须拦。
+    scheme_err = url_scheme_error(base, STREAM_SCHEMES)
+    if scheme_err:
+        return ApiResponse(data={"ok": False, "error": scheme_err})
     # 复用 worker 在线状态:该路已在线 + body url 与当前 DB 配置一致 → 直接成功。
     # worker 持着该路 RTSP 连接,试连开第二个会被服务器并发拒绝(表现为 isOpened
     # False 但 worker 能抓帧);worker 在线 = 可达,无需重复开连接。

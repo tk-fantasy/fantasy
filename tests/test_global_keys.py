@@ -334,6 +334,7 @@ class TestGlobalLlmKeyRoutes:
             with pytest.raises(AppException) as exc:
                 await upsert_global_llm_key_route(
                     payload,
+                    request=_fake_request(),
                     current_user={"user_id": "u1", "username": "t"},
                     container=mock_container,
                 )
@@ -356,6 +357,7 @@ class TestGlobalLlmKeyRoutes:
             with pytest.raises(AppException) as exc:
                 await upsert_global_llm_key_route(
                     payload,
+                    request=_fake_request(),
                     current_user={"user_id": "u1", "username": "t"},
                     container=MagicMock(),
                 )
@@ -393,6 +395,7 @@ class TestGlobalLlmKeyRoutes:
              patch("app.routes.global_config_routes.GLOBAL_KEY_HOT_RELOAD", False):
             result = await upsert_global_llm_key_route(
                 payload,
+                request=_fake_request(),
                 current_user={"user_id": "u1", "username": "t"},
                 container=mock_container,
             )
@@ -445,6 +448,7 @@ class TestGlobalLlmKeyRoutes:
              patch("app.routes.global_config_routes.GLOBAL_KEY_HOT_RELOAD", False):
             result = await upsert_global_llm_key_route(
                 payload,
+                request=_fake_request(),
                 current_user={"user_id": "u1", "username": "t"},
                 container=mock_container,
             )
@@ -478,6 +482,7 @@ class TestGlobalLlmKeyRoutes:
             result = await delete_global_llm_key_route(
                 "del",
                 SecondaryPasswordVerifyRequest(password="correct-pw"),
+                request=_fake_request(),
                 current_user={"user_id": "u1", "username": "t"},
                 container=mock_container,
             )

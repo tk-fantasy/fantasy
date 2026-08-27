@@ -14,6 +14,17 @@ PASSWD_FILE="/mosquitto/config/passwd"
 MQTT_USER="${MQTT_USER:-aether}"
 MQTT_PASS="${MQTT_PASSWORD:-aether}"
 
+# 弱口令告警：不阻断启动（改密码需宿主 .env + compose 一起改，容器内无法
+# 单方面轮换——其他容器按同一环境变量取密码，单方面改会造成互相失联），
+# 但要在日志里喊出来，提醒去 .env 设置强 MQTT_PASSWORD。
+if [ "$MQTT_PASS" = "aether" ] || [ ${#MQTT_PASS} -lt 8 ]; then
+    echo "[init] ============================================================"
+    echo "[init] 警告: MQTT_PASSWORD 使用默认/弱口令（长度 ${#MQTT_PASS}）"
+    echo "[init] 宿主端口已仅绑定 127.0.0.1，风险已收窄；仍建议在宿主 .env"
+    echo "[init] 中设置 8 位以上强密码后 docker compose up -d 重建生效"
+    echo "[init] ============================================================"
+fi
+
 if [ ! -f "$PASSWD_FILE" ]; then
     echo "[init] passwd 文件不存在，生成默认凭证 $MQTT_USER/******"
     # -b: 命令行传密码（非交互）；-c: 创建新文件

@@ -516,11 +516,11 @@ class TestApplyFoundIpByCameraId:
         svc.set_db(db_mock)
 
         async def fake_get(cid):
-            return {"id": "cam_a", "rtsp_url": "", "ptz_ip": "1.1.1.1"}
+            return {"id": "cam_a", "rtsp_url": "", "ptz_ip": "192.168.1.1"}
         svc._db.cameras_get = fake_get
-        await svc.apply_found_ip("cam_a", "2.2.2.2")
+        await svc.apply_found_ip("cam_a", "192.168.1.2")
         fields = db_mock.cameras_update.call_args[0][1]
-        assert fields == {"ptz_ip": "2.2.2.2"}
+        assert fields == {"ptz_ip": "192.168.1.2"}
 
     @pytest.mark.asyncio
     async def test_apply_same_ip_skips_update_and_callback(self):

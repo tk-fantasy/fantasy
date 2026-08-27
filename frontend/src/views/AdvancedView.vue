@@ -45,6 +45,8 @@ const weatherConfig = ref({
 const webSearchConfig = ref({
   exa: { api_key: '' },
 })
+// exa key 是否已在服务端配置（GET 不回明文，只回 has_exa_key 标志）
+const exaKeyConfigured = ref(false)
 
 // 视觉参数 — 保留全部字段回传（避免 pydantic 默认值覆盖），模板只展示部分
 const visionConfig = ref({
@@ -164,7 +166,11 @@ async function loadAll() {
     if (advRes.ok) {
       const json = await advRes.json()
       const data = json.data || {}
-      if (data.web_search) webSearchConfig.value = { ...webSearchConfig.value, ...data.web_search }
+      if (data.web_search) {
+        webSearchConfig.value = { ...webSearchConfig.value, ...data.web_search }
+        // 后端已脱敏不回 api_key 明文：单独记"是否已配置"标志供卡片状态与输入提示
+        exaKeyConfigured.value = !!data.web_search.exa?.has_exa_key
+      }
       if (data.vision) visionConfig.value = { ...visionConfig.value, ...data.vision }
     }
     if (haRes.ok) {
@@ -576,7 +582,7 @@ async function toggleSimulator() {
 
 // ===== 卡片摘要 =====
 const weatherSummary = computed(() => weatherConfig.value.host || '未配置')
-const exaSummary = computed(() => webSearchConfig.value.exa?.api_key ? '已配置' : '匿名')
+const exaSummary = computed(() => (exaKeyConfigured.value || webSearchConfig.value.exa?.api_key) ? '已配置' : '匿名')
 const camParamsSummary = computed(() => `阈值${visionConfig.value.motion_threshold} · 间隔${visionConfig.value.min_infer_interval_seconds}s`)
 const haSummary = computed(() => haConfig.value.url || '未配置')
 const uniqueSummary = computed(() => personaCustomized.value ? '已自定义' : '默认')
@@ -837,7 +843,8 @@ onUnmounted(() => {
             <span class="label-text">API Key</span>
             <span class="label-desc">留空则匿名调用 Exa MCP（有速率限制）</span>
           </label>
-          <input v-model="webSearchConfig.exa.api_key" type="password" class="setting-input" placeholder="exa api key" />
+          <input v-model="webSearchConfig.exa.api_key" type="password" class="setting-input"
+            :placeholder="exaKeyConfigured ? '已配置（留空保持不变）' : 'exa api key'" />
         </div>
         <div class="setting-row test-row">
           <label class="setting-label">

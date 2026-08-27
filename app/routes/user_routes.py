@@ -158,11 +158,22 @@ async def save_user_llm_keys(
         update_memory_config("llm_keys", keys)
 
         # 更新 .env
+        # env 名只接受 LLM_KEY_ 前缀：api_key_env 由客户端 payload 提供，
+        # 不加限制可以用任意键名覆盖 .env/os.environ（如 JWT_SECRET、
+        # HA_TOKEN），重启后生效即全局投毒。非合规名只跳过 env 写入——
+        # per-user key 解析优先读 DB 里的 api_key 明文字段，不影响功能。
+        import re as _re
+        _safe_env = _re.compile(r"^LLM_KEY_[A-Za-z0-9_]+$")
         env_updates = {}
         for key in keys:
             env_name = key.get("api_key_env", "")
             api_key = key.get("api_key", "")
             if env_name and api_key:
+                if not _safe_env.match(env_name):
+                    logger.warning(
+                        "user %s: api_key_env %r 不符合 LLM_KEY_ 前缀约定，跳过写入 .env",
+                        username, env_name)
+                    continue
                 env_updates[env_name] = api_key
         if env_updates:
             write_secrets(env_updates)

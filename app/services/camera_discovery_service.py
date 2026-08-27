@@ -371,6 +371,12 @@ class CameraDiscoveryService:
         if not new_ip:
             logger.warning("apply_found_ip: empty ip, skip")
             return
+        # 只接受局域网 IPv4：发现功能语义上只指向内网 IPC；拦住把 rtsp host
+        # 改成公网地址（拿着摄像头凭证外连）或非 IP 主机名的输入
+        from ..core.net_guard import is_lan_ipv4
+        if not is_lan_ipv4(new_ip):
+            logger.warning("apply_found_ip: non-LAN-IPv4 target rejected: %s", new_ip)
+            return
 
         if camera_id and self._db is not None:
             # —— 多路:更新 cameras 行 ——

@@ -14,7 +14,11 @@ services:
     container_name: mosquitto
     image: eclipse-mosquitto:2
     ports:
-      - "1884:1884"
+      # 只绑宿主回环：HA/simulator 走 docker 内部网络访问 broker（服务名 mqtt），
+      # 宿主端口仅供本机调试。默认弱口令 aether/aether 若绑 0.0.0.0 等于把
+      # 设备控制面暴露给整个局域网。外部设备确需访问时自行改成 "1884:1884"
+      # 并务必在 .env 里设置强 MQTT_PASSWORD。
+      - "127.0.0.1:1884:1884"
     volumes:
       - ./mosquitto/config:/mosquitto/config
       - ./mosquitto/init.sh:/mosquitto/init.sh:ro

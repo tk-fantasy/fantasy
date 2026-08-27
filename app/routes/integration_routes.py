@@ -511,9 +511,14 @@ async def upload_plugin(file: UploadFile = File(...), admin: dict = Depends(get_
                 rel = n[len(manifest_subdir) + 1:]
             if not rel:
                 continue
-            # 防路径穿越：解析后必须在 target_dir 内
-            out_path = (target_dir / rel).resolve()
-            if not str(out_path).startswith(str(target_dir.resolve())):
+            # 防路径穿越：解析后必须落在 target_dir 内。用 relative_to 做真
+            # 包含判断——startswith 前缀匹配会被兄弟目录绕过
+            # （target=/x/foo 时 ../foo_evil/a.py 解析为 /x/foo_evil/a.py，
+            #  前缀 "/x/foo" 匹配通过，写出 target_dir 外）
+            try:
+                out_path = (target_dir / rel).resolve()
+                out_path.relative_to(target_dir.resolve())
+            except ValueError:
                 continue
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_bytes(zf.read(n))

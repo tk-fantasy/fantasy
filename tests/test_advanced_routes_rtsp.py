@@ -41,20 +41,26 @@ class TestAdvancedConfigVisionParamsOnly:
 
     @pytest.mark.asyncio
     async def test_post_with_legacy_rtsp_password_ignored(self):
-        """旧前端仍传 rtsp_password → 忽略,不写 .env(凭证在摄像头设置改)。"""
+        """旧前端仍传 rtsp_password → 忽略,不写 .env(凭证在摄像头设置改)。
+
+        本路由已不导入 write_secrets（模块级不存在该名字即不可能写 .env），
+        这里只验证保存成功且 rtsp_password 不会渗进任何配置段。
+        """
         from app.routes import advanced_routes
+
+        assert not hasattr(advanced_routes, "write_secrets")
 
         req = AdvancedConfigRequest(
             vision=VisionConfig(motion_threshold=15),
             rtsp_password="should_be_ignored",
         )
 
-        with patch.object(advanced_routes, "write_secrets") as mock_write, \
-             patch.object(advanced_routes, "update_config_section"):
+        with patch.object(advanced_routes, "update_config_section") as mock_update:
             result = await advanced_routes.set_advanced_config(req)
 
         assert result.data["saved"] is True
-        mock_write.assert_not_called()
+        mock_update.assert_called_once()
+        assert "should_be_ignored" not in str(mock_update.call_args)
 
     @pytest.mark.asyncio
     async def test_post_legacy_rtsp_url_never_blocks_save(self):

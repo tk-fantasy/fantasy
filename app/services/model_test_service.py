@@ -10,6 +10,7 @@ from typing import Any
 import httpx
 
 from ..clients.http_client import new_client
+from ..core.net_guard import HTTP_SCHEMES, url_scheme_error
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,13 @@ async def test_model_connection(
     Returns:
         {"ok": True} or {"ok": False, "error": "..."}
     """
+    # scheme 白名单：只允许 http/https。内网地址本身是合法目标（ollama/
+    # 局域网推理服务），但 file:// 等任意协议必须拦（httpx 不支持 file，
+    # 但留这层校验防止未来换客户端时打开攻击面，也统一报错文案）。
+    scheme_err = url_scheme_error(base_url, HTTP_SCHEMES)
+    if scheme_err:
+        return {"ok": False, "error": scheme_err}
+
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
