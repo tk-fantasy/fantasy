@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import BaseToggle from '../components/BaseToggle.vue'
 import EmojiPicker from '../components/EmojiPicker.vue'
 import SensorChart from '../components/SensorChart.vue'
@@ -430,6 +430,30 @@ async function loadEntities() {
   }
 }
 
+// 静默刷新：不触发 loading（避免操作后列表闪烁），同时同步弹窗内选中实体
+async function refreshEntitiesQuiet() {
+  try {
+    const [entitiesData, servicesData] = await Promise.all([
+      apiGet('/api/ha/entities'),
+      apiGet('/api/ha/services'),
+    ])
+    const freshEntities = entitiesData.entities || entitiesData || []
+    entities.value = freshEntities
+    devices.value = entitiesData.devices || []
+    services.value = servicesData || {}
+    if (selectedEntity.value) {
+      const fresh = freshEntities.find(e => e.entity_id === selectedEntity.value.entity_id)
+      if (fresh) {
+        selectedEntity.value.state = fresh.state
+        selectedEntity.value.attributes = fresh.attributes || {}
+        selectedEntity.value._controls = fresh._controls
+      }
+    }
+  } catch (e) {
+    console.error('Failed to refresh entities:', e)
+  }
+}
+
 // ========================
 //  Service calls
 // ========================
@@ -476,6 +500,8 @@ async function toggleDevice(entity) {
     const json = await res.json()
     if (!json.data?.success) {
       entity.state = oldState // 请求失败，回滚
+    } else {
+      await refreshEntitiesQuiet() // 回读 HA 实际状态，避免乐观值与真实状态漂移
     }
   } catch (e) {
     console.error('Failed to toggle device:', e)
@@ -543,6 +569,8 @@ async function handleCapability(cap, value) {
   }
 
   await callService(cap.service, cap.action, selectedEntity.value.entity_id, data)
+  // 无论成败都回读：成功时校准为 HA 真实状态，失败时撤掉乐观值
+  await refreshEntitiesQuiet()
 }
 
 async function handleAction(act) {
@@ -652,12 +680,22 @@ const displayAttributes = computed(() => {
     }))
 })
 
+// 定时轮询：感知页面外的状态变化（HA App / 物理开关 / AI 聊天控制）
+let entityPollTimer = null
+
 onMounted(() => {
   loadEntities()
   loadEmojiPrefs()
   loadEntityAliases()
   loadEntityNotes()
   loadEntityOperable()
+  entityPollTimer = setInterval(() => {
+    if (document.visibilityState === 'visible') refreshEntitiesQuiet()
+  }, 15000)
+})
+
+onUnmounted(() => {
+  if (entityPollTimer) clearInterval(entityPollTimer)
 })
 </script>
 

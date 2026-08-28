@@ -51,7 +51,9 @@ def register_local_tools(manager: MCPClientManager) -> None:
         MCPTool(
             client_id="local",
             tool_name="describe_state",
-            description="查询当前摄像头画面状态和最近一次工具调用结果",
+            description=("查询当前摄像头连接状态和最近一次工具调用结果。"
+                         "返回里 camera_opened=false 表示摄像头离线——涉及画面的回答必须"
+                         "说明摄像头离线、无法看到实时画面，不得描述画面内容"),
             parameters={"type": "object", "properties": {}},
             handler=describe_state_handler,
         )

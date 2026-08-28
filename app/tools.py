@@ -85,6 +85,13 @@ def _register_vision_chat(deps: ToolDeps) -> None:
                 used_camera_id = cams[0]["id"]
         if not used_camera_id:
             return {"answer": "摄像头当前没有画面,无法分析。", "question": question, "has_frame": False}
+        # 离线如实告知：缓冲里留着的是断连前的旧帧，拿去问模型等于让 AI 编造
+        # 实时场景（拔了摄像头还一本正经描述"画面里有人"）。明确返回离线状态。
+        cam_state = deps.camera_manager.get_state(used_camera_id) or {}
+        if not cam_state.get("camera_opened"):
+            return {"answer": "摄像头当前离线，无法查看实时画面。（最后画面停留在断连之前，不代表现在的场景）",
+                    "question": question, "has_frame": False,
+                    "camera_id": used_camera_id, "camera_offline": True}
         # 多帧:取规则引擎环形缓冲的最近几帧(frame_interval_ms 采样、时间有序),
         # 模型能结合帧间变化回答"正在做什么";缓冲为空(刚启动还没攒够采样)回退最新单帧。
         frames = deps.camera_manager.get_recent_frames(used_camera_id, 3)
@@ -101,7 +108,7 @@ def _register_vision_chat(deps: ToolDeps) -> None:
     deps.mcp_client_manager.register_tool(MCPTool(
         client_id="local",
         tool_name="vision_chat",
-        description="拍摄指定摄像头的最近连续画面，根据画面内容和变化回答用户问题（可用于判断动作/状态）。可用摄像头列表请调用 get_entities 查看。",
+        description="拍摄指定摄像头的最近连续画面，根据画面内容和变化回答用户问题（可用于判断动作/状态）。可用摄像头列表请调用 get_entities 查看。返回 has_frame=false 且带 camera_offline=true 表示摄像头已离线——此时必须如实告知用户摄像头离线，禁止描述画面内容。",
         parameters={"type": "object", "properties": {
             "question": {"type": "string"},
             "camera_id": {"type": "string", "description": "可选,指定摄像头ID;不传取当前查看路"},

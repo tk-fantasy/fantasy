@@ -232,6 +232,11 @@ async function toggleEnabled(p) {
     if (data?.enabled !== undefined) {
       p.enabled = data.enabled
     }
+    // 后端同时返回进程存活状态，回写以刷新“运行中/未启动”徽标
+    // （热启动可能失败：enabled=true 但 alive=false）
+    if (data?.alive !== undefined) {
+      p.alive = data.alive
+    }
   } catch (e) {
     console.error('toggle failed:', e)
   }

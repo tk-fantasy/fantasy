@@ -273,6 +273,12 @@ class AutomationAgent:
                 return
             for cam in self._camera_manager.list_cameras():
                 cid = cam["id"]
+                # 离线的路直接跳过：环形缓冲里是断连前的旧帧，拿来评估等于
+                # "摄像头都拔了 AI 还在识别"（time/weather 规则走 nonvision
+                # 循环，与摄像头无关，不受影响）
+                cam_state = self._camera_manager.get_state(cid) or {}
+                if not cam_state.get("camera_opened"):
+                    continue
                 frames = await asyncio.to_thread(
                     self._camera_manager.get_recent_frames, cid, 3
                 )

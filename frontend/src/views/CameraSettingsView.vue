@@ -93,6 +93,10 @@ async function saveSection(key) {
     sectionSaved.value = key
     setTimeout(() => { if (sectionSaved.value === key) sectionSaved.value = '' }, 2000)
     await loadCameras()
+    // 用重拉后的服务端数据回写弹窗（后端可能做了归一化），表单不再停留在旧副本；
+    // 密码字段服务端不回传则为空，正好维持"留空不改"语义
+    const fresh = cameras.value.find(c => c.id === editing.value.id)
+    if (fresh) editing.value = { ...fresh }
   } catch (e) {
     console.error(`saveSection(${key}) failed:`, e)
     alert('保存失败: ' + (e?.message || String(e)))

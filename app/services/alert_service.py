@@ -26,7 +26,9 @@ logger = logging.getLogger(__name__)
 Notifier = Callable[[str, str], Awaitable[None]]
 
 _ALERT_COOLDOWN_SECONDS = 30 * 60
-_MONITOR_INTERVAL_SECONDS = 60
+# 30s 一拍 + 连续 2 拍才报（_check_cameras）：离线后约 1 分钟收到告警。
+# 再调快收益有限（worker 自身重连退避可能撑住几秒的抖动），只会更吵。
+_MONITOR_INTERVAL_SECONDS = 30
 
 
 class AlertService:

@@ -27,6 +27,22 @@ logger = logging.getLogger(__name__)
 _TINY_JPEG = cv2.imencode('.jpg', np.full((1, 1, 3), 128, dtype=np.uint8))[1].tobytes()
 
 
+def _build_offline_jpeg() -> bytes:
+    """摄像头长时间离线的占位帧：深灰底 + NO SIGNAL 字样。
+
+    离线超过宽限期后替换 MJPEG 缓存的最后一帧——否则断连前的旧画面一直挂着，
+    会被误当成实时画面（也是"摄像头拔了 AI 还在描述画面"这类幻觉的来源）。
+    """
+    img = np.full((180, 320, 3), 55, dtype=np.uint8)
+    cv2.putText(img, "NO SIGNAL", (52, 100), cv2.FONT_HERSHEY_SIMPLEX,
+                1.3, (190, 190, 190), 2, cv2.LINE_AA)
+    ok, buf = cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+    return buf.tobytes() if ok else _TINY_JPEG
+
+
+_OFFLINE_JPEG = _build_offline_jpeg()
+
+
 @dataclass
 class CameraState:
     camera_id: str = ""
@@ -383,11 +399,29 @@ class CameraStream:
         """注入 ONVIF 发现服务(可选)。未注入则掉线走纯指数退避。"""
         self._discovery_service = svc
 
+    # 离线宽限期（秒）：keep_cache 留住的最后一帧只显示这么久，超过后 MJPEG
+    # 改发 NO SIGNAL 占位图（见 mjpeg_generator）。瞬时掉帧在该窗口内不闪断。
+    _OFFLINE_FRAME_HOLD_SECONDS = 10.0
+
     def mjpeg_generator(self):
         boundary = b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"
         last_jpeg = None
         keepalive_counter = 0
+        offline_since: float | None = None
         while self._running:
+            # 离线但缓存帧还在（_mark_camera_closed keep_cache=True）：宽限期内
+            # 继续显示，超过宽限推一次占位图，之后不再发缓存帧
+            if not self._state.camera_opened and self.get_jpeg() is not None:
+                if offline_since is None:
+                    offline_since = time.time()
+                if time.time() - offline_since >= self._OFFLINE_FRAME_HOLD_SECONDS:
+                    if last_jpeg is not _OFFLINE_JPEG:
+                        yield boundary + _OFFLINE_JPEG + b"\r\n"
+                        last_jpeg = _OFFLINE_JPEG
+                    time.sleep(0.5)
+                    continue
+            else:
+                offline_since = None
             frame = self.get_jpeg()
             if frame is None:
                 # 没有新帧时，每 100 次循环（约 5 秒）发一个 1x1 空白 JPEG 作为 keepalive

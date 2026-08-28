@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import BaseToggle from '../components/BaseToggle.vue'
 import EmojiPicker from '../components/EmojiPicker.vue'
 import ReviseChatModal from '../components/ReviseChatModal.vue'
@@ -106,15 +106,15 @@ function buildPayload() {
 const runningTaskId = ref('')
 const runNotice = ref(null) // {ok, text} 立即执行的结果横幅
 
-async function loadTasks() {
+async function loadTasks(quiet = false) {
   try {
-    loading.value = true
+    if (!quiet) loading.value = true
     const data = await apiGet('/api/scheduled-tasks')
     tasks.value = (data || []).map((t) => ({ ...t, enabled: t.enabled !== false }))
   } catch (e) {
     console.error('Failed to load scheduled tasks:', e)
   } finally {
-    loading.value = false
+    if (!quiet) loading.value = false
   }
 }
 
@@ -258,9 +258,20 @@ const previewPayload = computed(() => {
   try { return formatPayload(buildPayload()) } catch (e) { return e.message }
 })
 
+// 后台 scheduler 到点执行会更新 last_status/next_run_at，页面轮询保持与库同步；
+// quiet 加载避免每轮闪烁“加载中”
+let taskPollTimer = null
+
 onMounted(() => {
   loadTasks()
   loadEmojiPrefs()
+  taskPollTimer = setInterval(() => {
+    if (document.visibilityState === 'visible') loadTasks(true)
+  }, 15000)
+})
+
+onUnmounted(() => {
+  if (taskPollTimer) clearInterval(taskPollTimer)
 })
 </script>
 
