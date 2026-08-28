@@ -815,7 +815,7 @@ onUnmounted(() => {
                 <button class="camera-modal-close" @click="closeCamera">关闭</button>
               </div>
             </div>
-            <!-- Task 12:多路切换 — ≤4 路标签一行,更多路换下拉防换行撑爆弹窗(D4 AI 预览单例) -->
+            <!-- Task 12:多路切换 — 恒用下拉,高度恒定不随路数/窄屏换行撑弹窗(D4 AI 预览单例) -->
             <CameraSwitcher :cameras="cameras" :modelValue="activeCameraId" @change="switchCameraRoute" />
             <div class="camera-modal-body">
               <div class="camera-stage">
