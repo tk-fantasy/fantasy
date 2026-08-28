@@ -817,92 +817,94 @@ onUnmounted(() => {
             </div>
             <!-- Task 12:多路切换 — ≤4 路标签一行,更多路换下拉防换行撑爆弹窗(D4 AI 预览单例) -->
             <CameraSwitcher :cameras="cameras" :modelValue="activeCameraId" @change="switchCameraRoute" />
-            <div class="camera-stage">
-              <img
-                :src="videoFeedUrl"
-                alt="camera stream"
-                class="camera-feed"
-                :class="{ hidden: feedStatus !== 'live' }"
-                @error="onVideoFeedError"
-                @load="onVideoFeedLoad"
-              />
-              <div v-if="feedStatus !== 'live'" class="camera-disconnected">
-                <div class="camera-disconnected-icon">{{ feedStatus === 'disconnected' ? '📷' : '🔄' }}</div>
-                <div class="camera-disconnected-text">
-                  <template v-if="feedStatus === 'disconnected'">
-                    摄像头未连接，请检查设备后重试
-                  </template>
-                  <template v-else-if="feedStatusSource === 'device'">
-                    摄像头设备重连中…
-                  </template>
-                  <template v-else>
-                    视频流重连中…（第 {{ feedRetryCount }} 次）
-                  </template>
+            <div class="camera-modal-body">
+              <div class="camera-stage">
+                <img
+                  :src="videoFeedUrl"
+                  alt="camera stream"
+                  class="camera-feed"
+                  :class="{ hidden: feedStatus !== 'live' }"
+                  @error="onVideoFeedError"
+                  @load="onVideoFeedLoad"
+                />
+                <div v-if="feedStatus !== 'live'" class="camera-disconnected">
+                  <div class="camera-disconnected-icon">{{ feedStatus === 'disconnected' ? '📷' : '🔄' }}</div>
+                  <div class="camera-disconnected-text">
+                    <template v-if="feedStatus === 'disconnected'">
+                      摄像头未连接，请检查设备后重试
+                    </template>
+                    <template v-else-if="feedStatusSource === 'device'">
+                      摄像头设备重连中…
+                    </template>
+                    <template v-else>
+                      视频流重连中…（第 {{ feedRetryCount }} 次）
+                    </template>
+                  </div>
+                  <button v-if="feedStatus === 'disconnected'" class="camera-retry-btn" @click="refreshVideoFeed">重试</button>
+                  <button v-if="feedStatus === 'reconnecting'" class="camera-retry-btn" @click="closeCamera">关闭预览</button>
                 </div>
-                <button v-if="feedStatus === 'disconnected'" class="camera-retry-btn" @click="refreshVideoFeed">重试</button>
-                <button v-if="feedStatus === 'reconnecting'" class="camera-retry-btn" @click="closeCamera">关闭预览</button>
               </div>
-            </div>
-            <!-- PTZ 云台控制：点一下转一小段后自动停（按一下动一下）。仅 ptz.enabled 时显示 -->
-            <div v-if="ptzEnabled" class="ptz-panel">
-              <div class="ptz-dpad">
-                <button
-                  class="ptz-btn ptz-up"
-                  :class="{ pressing: ptzMoving }"
-                  :disabled="ptzMoving"
-                  @pointerdown.prevent="ptzStep('up')"
-                  aria-label="上"
-                >▲</button>
-                <button
-                  class="ptz-btn ptz-left"
-                  :class="{ pressing: ptzMoving }"
-                  :disabled="ptzMoving"
-                  @pointerdown.prevent="ptzStep('left')"
-                  aria-label="左"
-                >◀</button>
-                <div class="ptz-center" aria-hidden="true">
-                  <span class="ptz-center-dot"></span>
+              <!-- PTZ 云台控制：点一下转一小段后自动停（按一下动一下）。仅 ptz.enabled 时显示 -->
+              <div v-if="ptzEnabled" class="ptz-panel">
+                <div class="ptz-dpad">
+                  <button
+                    class="ptz-btn ptz-up"
+                    :class="{ pressing: ptzMoving }"
+                    :disabled="ptzMoving"
+                    @pointerdown.prevent="ptzStep('up')"
+                    aria-label="上"
+                  >▲</button>
+                  <button
+                    class="ptz-btn ptz-left"
+                    :class="{ pressing: ptzMoving }"
+                    :disabled="ptzMoving"
+                    @pointerdown.prevent="ptzStep('left')"
+                    aria-label="左"
+                  >◀</button>
+                  <div class="ptz-center" aria-hidden="true">
+                    <span class="ptz-center-dot"></span>
+                  </div>
+                  <button
+                    class="ptz-btn ptz-right"
+                    :class="{ pressing: ptzMoving }"
+                    :disabled="ptzMoving"
+                    @pointerdown.prevent="ptzStep('right')"
+                    aria-label="右"
+                  >▶</button>
+                  <button
+                    class="ptz-btn ptz-down"
+                    :class="{ pressing: ptzMoving }"
+                    :disabled="ptzMoving"
+                    @pointerdown.prevent="ptzStep('down')"
+                    aria-label="下"
+                  >▼</button>
                 </div>
-                <button
-                  class="ptz-btn ptz-right"
-                  :class="{ pressing: ptzMoving }"
-                  :disabled="ptzMoving"
-                  @pointerdown.prevent="ptzStep('right')"
-                  aria-label="右"
-                >▶</button>
-                <button
-                  class="ptz-btn ptz-down"
-                  :class="{ pressing: ptzMoving }"
-                  :disabled="ptzMoving"
-                  @pointerdown.prevent="ptzStep('down')"
-                  aria-label="下"
-                >▼</button>
               </div>
-            </div>
-            <div class="camera-stats">
-              <div class="camera-stat">
-                <div class="label">运动距离</div>
-                <div class="value">{{ cameraState?.motion_distance ?? '-' }}</div>
+              <div class="camera-stats">
+                <div class="camera-stat">
+                  <div class="label">运动距离</div>
+                  <div class="value">{{ cameraState?.motion_distance ?? '-' }}</div>
+                </div>
+                <div class="camera-stat">
+                  <div class="label">累计推理</div>
+                  <div class="value">{{ cameraState?.infer_count ?? 0 }}</div>
+                </div>
+                <div class="camera-stat">
+                  <div class="label">模型 FPS</div>
+                  <div class="value">{{ cameraState?.model_fps ? cameraState.model_fps.toFixed(1) : '-' }}</div>
+                </div>
               </div>
-              <div class="camera-stat">
-                <div class="label">累计推理</div>
-                <div class="value">{{ cameraState?.infer_count ?? 0 }}</div>
+              <div class="camera-feedback">
+                <div class="label">识别反馈</div>
+                <div class="value">{{ cameraState?.feedback || '等待识别。' }}</div>
               </div>
-              <div class="camera-stat">
-                <div class="label">模型 FPS</div>
-                <div class="value">{{ cameraState?.model_fps ? cameraState.model_fps.toFixed(1) : '-' }}</div>
+              <div class="camera-hint">
+                💡 当前预览的摄像头即 AI 对话中 vision_chat 工具默认使用的摄像头。切换上方的下拉列表可改变 AI 看哪路。
               </div>
+              <!-- 插件面板挂载点（仅当预览的是插件虚拟摄像头时显示，如 test-camera：
+                   视频导入/演练开关/识别日志；真实摄像头预览不受影响） -->
+              <PluginSlot v-if="activeCameraIsVirtual" slot="camera_preview_panel" />
             </div>
-            <div class="camera-feedback">
-              <div class="label">识别反馈</div>
-              <div class="value">{{ cameraState?.feedback || '等待识别。' }}</div>
-            </div>
-            <div class="camera-hint">
-              💡 当前预览的摄像头即 AI 对话中 vision_chat 工具默认使用的摄像头。切换上方的标签或下拉列表可改变 AI 看哪路。
-            </div>
-            <!-- 插件面板挂载点（仅当预览的是插件虚拟摄像头时显示，如 test-camera：
-                 视频导入/演练开关/识别日志；真实摄像头预览不受影响） -->
-            <PluginSlot v-if="activeCameraIsVirtual" slot="camera_preview_panel" />
           </div>
         </div>
       </Transition>
@@ -1514,6 +1516,14 @@ onUnmounted(() => {
   box-shadow: var(--shadow-xl);
 }
 
+/* 固定头部+滚动主体:矮视口下弹窗内容超高时在 body 内滚动,
+   而不是被 modal 的 overflow:hidden 直接裁掉不可达。min-height:0
+   是 flex 列布局里允许子项收缩、滚动生效的前提。 */
+.camera-modal-body {
+  overflow-y: auto;
+  min-height: 0;
+}
+
 .camera-modal-header {
   display: flex;
   align-items: center;
@@ -1572,7 +1582,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 300px;
+  min-height: clamp(140px, 32vh, 300px);
 }
 
 /* 画面随 stage 实际高度 contain 缩放：stage 被 flex 压扁(短视口/下方面板多)时,
