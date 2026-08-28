@@ -34,6 +34,7 @@ function json(res, payload) {
 
 async function handleApi(req, res, next) {
   const url = (req.url || '').split('?')[0]
+  console.log(`[mock] ${req.method} /api${url}`)
   if (url === '/health') return json(res, { status: 'ok' })
   if (url === '/auth/login') return json(res, {
     data: { user: { id: 'u1', username: 'layout-verify', display_name: '布局验证', is_admin: true } },

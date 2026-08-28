@@ -400,21 +400,33 @@ class CameraStream:
         self._discovery_service = svc
 
     # 离线宽限期（秒）：keep_cache 留住的最后一帧只显示这么久，超过后 MJPEG
-    # 改发 NO SIGNAL 占位图（见 mjpeg_generator）。瞬时掉帧在该窗口内不闪断。
+    # 改发 NO SIGNAL 占位图（见 mjpeg_generator）。可经 vision.offline_hold_seconds
+    # 配置调小（如 3~5 秒）；默认 10 秒是防"能救回来的网络抖动"闪占位图——
+    # 实测 RTSP 重连一次打开要 5~21 秒。
     _OFFLINE_FRAME_HOLD_SECONDS = 10.0
+
+    @classmethod
+    def _offline_hold_seconds(cls) -> float:
+        try:
+            from .core.config import get_config
+            v = float(get_config("vision.offline_hold_seconds", cls._OFFLINE_FRAME_HOLD_SECONDS))
+            return v if v >= 0 else cls._OFFLINE_FRAME_HOLD_SECONDS
+        except Exception:  # noqa: BLE001
+            return cls._OFFLINE_FRAME_HOLD_SECONDS
 
     def mjpeg_generator(self):
         boundary = b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"
         last_jpeg = None
         keepalive_counter = 0
         offline_since: float | None = None
+        hold = self._offline_hold_seconds()
         while self._running:
             # 离线但缓存帧还在（_mark_camera_closed keep_cache=True）：宽限期内
             # 继续显示，超过宽限推一次占位图，之后不再发缓存帧
             if not self._state.camera_opened and self.get_jpeg() is not None:
                 if offline_since is None:
                     offline_since = time.time()
-                if time.time() - offline_since >= self._OFFLINE_FRAME_HOLD_SECONDS:
+                if time.time() - offline_since >= hold:
                     if last_jpeg is not _OFFLINE_JPEG:
                         yield boundary + _OFFLINE_JPEG + b"\r\n"
                         last_jpeg = _OFFLINE_JPEG

@@ -25,7 +25,8 @@ def _make_stream(camera_opened: bool, hold: float) -> CameraStream:
     s._lock = threading.Lock()
     s._latest_jpeg = b"stale-cached-frame"
     s._state = SimpleNamespace(camera_opened=camera_opened)
-    s._OFFLINE_FRAME_HOLD_SECONDS = hold
+    # 覆盖宽限期读取（默认走 vision.offline_hold_seconds 配置）
+    s._offline_hold_seconds = lambda: hold
     return s
 
 

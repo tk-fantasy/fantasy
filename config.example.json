@@ -73,7 +73,8 @@
     "read_retry_interval_seconds": 0.1,
     "release_cooldown_seconds": 0.8,
     "max_backoff_seconds": 15.0,
-    "rtsp_transport": "tcp"
+    "rtsp_transport": "tcp",
+    "offline_hold_seconds": 10
   },
   "automation": {
     "eval_interval_seconds": 10,
