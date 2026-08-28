@@ -30,9 +30,12 @@ args = parser.parse_args()
 BROKER = args.host or ("mqtt" if args.docker else "localhost")
 PORT = args.port or 1884
 # MQTT 认证凭据（mosquitto 已关闭匿名连接）。
-# 支持环境变量覆盖；默认与 mosquitto/config/passwd 中的 aether 用户一致。
+# 必须经环境变量提供（compose 会注入宿主 .env 的值）；不再回退默认口令，
+# 未配置时启动即报错——与 mosquitto init.sh 的拒绝启动策略一致。
 MQTT_USERNAME = os.environ.get("MQTT_USERNAME", "aether")
-MQTT_PASSWORD = os.environ.get("MQTT_PASSWORD", "aether")
+MQTT_PASSWORD = os.environ.get("MQTT_PASSWORD", "")
+if not MQTT_PASSWORD:
+    raise SystemExit("未设置 MQTT_PASSWORD 环境变量（宿主 .env 中配置），拒绝以默认口令连接 broker")
 now = lambda: datetime.now().strftime("%H:%M:%S")
 log = lambda msg: print(f"[{now()}] {msg}", flush=True)
 

@@ -377,6 +377,7 @@ def _register_ha_call_service(deps: ToolDeps) -> None:
             result = await call_with_probe(ha_client, domain, service, entity_id, data)
             new_state = None
             new_state_eid = None
+            state_check_failed = False
             if eid_list:
                 try:
                     states = await ha_client.get_states()
@@ -389,8 +390,17 @@ def _register_ha_call_service(deps: ToolDeps) -> None:
                             new_state_eid = e
                             break
                 except Exception:
-                    pass
+                    # 指令已执行但状态未经核实：必须显式告知 AI，不能静默当作
+                    # 有状态反馈（此前 except-pass → AI 在状态未知时照常确认成功）
+                    logger.warning("call_service: 状态回查失败，标记状态未知", exc_info=True)
+                    state_check_failed = True
             ret: dict = {"success": True, "result": result, "new_state": new_state}
+            if state_check_failed:
+                ret["state_check"] = "failed"
+                ret["note"] = (
+                    "设备指令已发送，但回读最新状态失败，当前状态未经核实。"
+                    "请如实告知用户指令已下发但未能确认执行结果。"
+                )
             if service != original_service:
                 # 动作被映射 → 带描述，让 AI 理解实际发生了什么、如何汇报给用户
                 ret["semantic_mapping"] = {

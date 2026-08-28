@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import threading
 from queue import Queue as _Queue
@@ -80,6 +81,21 @@ async def _handle_direct(websocket, container, payload, rid: str, user_id: str) 
         set_request_id("-")
 
 
+async def _receive_payload(websocket) -> dict | None:
+    """收一条 JSON 帧。畸形帧（非法 JSON / 非 UTF-8 / 非对象）只警告并跳过：
+    此前未捕获解析异常会直接杀死 WS 连接且不留任何日志——用户表现为聊天
+    突然断线。ValueError 同时覆盖 JSONDecodeError 与 UnicodeDecodeError。"""
+    try:
+        payload = await websocket.receive_json()
+    except ValueError:
+        logger.warning("websocket: 收到畸形帧（非 JSON/非 UTF-8），已忽略")
+        return None
+    if not isinstance(payload, dict):
+        logger.warning("websocket: 收到非对象 JSON 帧，已忽略")
+        return None
+    return payload
+
+
 async def _chat_loop(websocket, container, user_id: str) -> None:
     """聊天 WS 主循环（task 式，支持打断 + mode 路由）。
 
@@ -88,7 +104,9 @@ async def _chat_loop(websocket, container, user_id: str) -> None:
     """
     current_task: asyncio.Task | None = None
     while True:
-        payload = await websocket.receive_json()
+        payload = await _receive_payload(websocket)
+        if payload is None:
+            continue
 
         if payload.get("type") == "pong":
             continue
@@ -168,7 +186,9 @@ async def doc_chat_ws(websocket: WebSocket):
     heartbeat_task = asyncio.create_task(_ws_heartbeat(websocket))
     try:
         while True:
-            payload = await websocket.receive_json()
+            payload = await _receive_payload(websocket)
+            if payload is None:
+                continue
             if payload.get("type") == "pong":
                 continue
 

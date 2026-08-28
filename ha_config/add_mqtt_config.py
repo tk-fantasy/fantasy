@@ -24,7 +24,9 @@ MQTT_PORT = 1884              # mosquitto 容器内监听端口（宿主映射 1
 import os
 
 MQTT_USERNAME = os.environ.get("MQTT_USER", "aether")
-MQTT_PASSWORD = os.environ.get("MQTT_PASSWORD", "aether")
+MQTT_PASSWORD = os.environ.get("MQTT_PASSWORD", "")
+if not MQTT_PASSWORD:
+    raise SystemExit("未设置 MQTT_PASSWORD 环境变量（宿主 .env 中配置），拒绝以默认口令写入 HA")
 
 
 def _iso_now() -> str:

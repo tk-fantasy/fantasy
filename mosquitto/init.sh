@@ -6,20 +6,31 @@
 # 检测 passwd 不存在时用 mosquitto_passwd 生成。
 #
 # 凭证经环境变量注入（compose 从宿主 .env 读取 MQTT_USER/MQTT_PASSWORD，
-# 未配置时默认 aether/aether），与 ha_simulator.py / add_mqtt_config.py 的
+# 未配置 MQTT_PASSWORD 时拒绝启动），与 ha_simulator.py / add_mqtt_config.py 的
 # 读取逻辑一致。已存在 passwd（如用户自己改过密码）则跳过，幂等——改密码
 # 请用 mosquitto_passwd 重新生成后重启容器，而不是删 passwd 回默认值。
 
 PASSWD_FILE="/mosquitto/config/passwd"
 MQTT_USER="${MQTT_USER:-aether}"
-MQTT_PASS="${MQTT_PASSWORD:-aether}"
 
-# 弱口令告警：不阻断启动（改密码需宿主 .env + compose 一起改，容器内无法
-# 单方面轮换——其他容器按同一环境变量取密码，单方面改会造成互相失联），
-# 但要在日志里喊出来，提醒去 .env 设置强 MQTT_PASSWORD。
+# 未配置 MQTT_PASSWORD → 拒绝启动（此前静默回退 aether/aether，等于把
+# 设备控制面放在众所周知的口令后面）。显性失败并给出修复指引。
+if [ -z "${MQTT_PASSWORD:-}" ]; then
+    echo "[init] ============================================================"
+    echo "[init] 错误: 未设置 MQTT_PASSWORD，拒绝以默认口令启动。"
+    echo "[init] 修复: 在宿主 .env 中设置 MQTT_PASSWORD=<8位以上强密码>，"
+    echo "[init]       然后 docker compose up -d 重建。"
+    echo "[init] ============================================================"
+    exit 1
+fi
+MQTT_PASS="$MQTT_PASSWORD"
+
+# 弱口令告警：已显式配置但强度不足时不阻断（改密码需宿主 .env + compose
+# 一起改，容器内无法单方面轮换——其他容器按同一环境变量取密码，单方面改
+# 会造成互相失联），但在日志里喊出来。
 if [ "$MQTT_PASS" = "aether" ] || [ ${#MQTT_PASS} -lt 8 ]; then
     echo "[init] ============================================================"
-    echo "[init] 警告: MQTT_PASSWORD 使用默认/弱口令（长度 ${#MQTT_PASS}）"
+    echo "[init] 警告: MQTT_PASSWORD 为弱口令（长度 ${#MQTT_PASS}）"
     echo "[init] 宿主端口已仅绑定 127.0.0.1，风险已收窄；仍建议在宿主 .env"
     echo "[init] 中设置 8 位以上强密码后 docker compose up -d 重建生效"
     echo "[init] ============================================================"

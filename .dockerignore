@@ -48,7 +48,8 @@ ha_config/
 mosquitto/
 # 文档、代办、迁移脚本不属于运行时
 # （docs/ 除外 —— RAG 服务需要读 docs/ 做知识库索引）
-# tests/ 与 integrations/ 保留：容器内开发跑 pytest + 插件子进程 spawn 需要
+# integrations/ 保留：插件子进程 spawn 需要。tests/ 也保留（ Stage 3 test target 用，
+# 生产 runtime stage 不再 COPY 进镜像）
 todo/
 scripts/
 # 示例文件保留 config.example.json（Dockerfile 需要），其余示例排除

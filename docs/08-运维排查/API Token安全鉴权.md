@@ -85,18 +85,21 @@ Aether 默认就需要登录——首次使用要先**注册一个账号**。这
 
 `/ws/chat` 和 `/ws/doc/chat` 不走 HTTP 中间件，单独在握手时验 token，优先级：
 
-1. `token` 查询参数（`/ws/chat?token=xxx`）
-2. `aether_token` cookie
-3. `Authorization: Bearer` 请求头
+1. `aether_token` cookie
+2. `Authorization: Bearer` 请求头
 
-前端 WebSocket 连接默认带 cookie，所以正常使用不用管。
+仅 access token 可以建立 WS 连接（refresh token 只能用于换发，不能用于连接）。
+
+前端 WebSocket 连接默认带 cookie，所以正常使用不用管。早期的 `?token=xxx`
+查询参数方式已移除——URL 中的 token 会进浏览器历史与访问日志；脚本直连
+请改用 `Authorization: Bearer` 请求头。
 
 ## 六、APP_TOKEN 兜底（旧方式）
 
 如果你在 `.env` 里设了 `APP_TOKEN`，它会作为 JWT 之外的**兜底认证**：
 
 - HTTP 请求带 `X-API-Token: <token>` 请求头 → 通过
-- WebSocket 带 `X-API-Token` 头或 `app_token` 查询参数 → 通过
+- WebSocket 带 `X-API-Token` 请求头 → 通过（`app_token` 查询参数已移除）
 
 兜底通过时 `user_id` 为空，走默认配置。这主要用于脚本/自动化调 API 时不想走完整登录的场景。
 

@@ -208,11 +208,11 @@ def sync_ha_runtime_refs(new_client, new_service) -> None:
 async def _ws_verify_token(websocket: WebSocket) -> str | None:
     """验证 WebSocket 连接的认证，失败则关闭并返回 None。
 
-    支持三种方式：query param > cookie > APP_TOKEN
+    支持两种方式：cookie > Authorization header。曾支持 ?token= 查询参数，
+    已移除：URL 中的 token 会进浏览器历史与访问日志（前端本就走 cookie）。
     """
-    # 尝试 JWT 验证（query param → cookie → Authorization header）
     from .core.auth import ACCESS_COOKIE, verify_token
-    token = websocket.query_params.get("token") or websocket.cookies.get(ACCESS_COOKIE)
+    token = websocket.cookies.get(ACCESS_COOKIE)
     if not token:
         auth_header = websocket.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
@@ -220,6 +220,11 @@ async def _ws_verify_token(websocket: WebSocket) -> str | None:
     if token:
         try:
             payload = verify_token(token)
+            # 仅 access token 可建立 WS 连接（与 HTTP 中间件同一约束；
+            # 此前 refresh token 也能过，生命周期长且本应只用于换发）
+            if payload.get("type") != "access":
+                await websocket.close(code=1008)
+                return None
             return payload.get("sub", "")  # 返回 user_id
         except Exception:
             pass  # JWT 验证失败，继续尝试 APP_TOKEN
@@ -228,7 +233,7 @@ async def _ws_verify_token(websocket: WebSocket) -> str | None:
     if APP_TOKEN:
         import secrets
 
-        provided = websocket.headers.get("X-API-Token") or websocket.query_params.get("app_token")
+        provided = websocket.headers.get("X-API-Token")
         if provided and secrets.compare_digest(provided, APP_TOKEN):
             return ""  # APP_TOKEN 验证成功，返回空 user_id
 
@@ -596,6 +601,13 @@ async def lifespan(_: FastAPI):
             logger.info("%s stopped", label)
         except Exception:
             logger.exception("%s stop failed (non-fatal)", label)
+
+    # 后台任务收口：cancel + 等待（emoji 加载、auto_update 监视器、健康检查
+    # 等 spawn 任务此前随事件循环关闭暴毙，auto_update 安装中途被杀可能留
+    # 半安装态）。放在最前：先让周期任务停转，再做逐项资源清理。
+    async def _stop_background_tasks():
+        await _background_task_mgr.shutdown(timeout=5.0)
+    await _safe_stop("background tasks", _stop_background_tasks)
 
     # 宿主侧集成停止（通用，不硬编码插件名）——内部自带逐项 try/except，
     # 包一层 async 以统一走 _safe_stop

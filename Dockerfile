@@ -47,12 +47,6 @@ COPY app/ ./app/
 # 运维页版本显示与在线更新比较都会失真）
 COPY version.json ./
 
-# 测试配置（容器内跑 pytest 用，提供 asyncio_mode=auto 等）
-COPY pytest.ini ./
-
-# 拷贝测试代码（容器内 pytest 用）
-COPY tests/ ./tests/
-
 # 拷贝集成插件目录（插件子进程 spawn 时读取 manifest 与入口脚本）
 COPY integrations/ ./integrations/
 
@@ -78,3 +72,11 @@ EXPOSE 8010 8011
 
 # 与 run_app.bat 一致的启动命令（纯 Docker 模式）
 CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8010"]
+
+# ===== Stage 3: 测试镜像（可选 target）=====
+# 生产运行时不带测试代码（缩小体积与暴露面）。需要容器内跑 pytest 时：
+#   docker build --target test -t aether-app:test .
+#   docker run --rm aether-app:test python -m pytest -m "not slow"
+FROM runtime AS test
+COPY pytest.ini ./
+COPY tests/ ./tests/

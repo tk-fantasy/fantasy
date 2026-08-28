@@ -55,10 +55,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Node.js 20
+      - name: Set up Node.js 22
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
@@ -67,3 +67,8 @@ jobs:
 
       - name: Run tests
         run: npm test
+
+      # 构建验证：此前只跑 vitest，构建损坏要等 Docker 构建才暴露。
+      # Node 版本与 Dockerfile 的 node:22-alpine 保持一致。
+      - name: Build (vite)
+        run: npm run build

@@ -25,10 +25,11 @@ services:
     # entrypoint：首次启动自动生成 passwd（passwd 被 .gitignore 排除，
     # 新用户 clone 后没有，mosquitto 会启动失败）
     entrypoint: ["/bin/sh", "/mosquitto/init.sh"]
-    # 凭证从宿主 .env 注入（未配置时默认 aether/aether，见 init.sh）
+    # 凭证从宿主 .env 注入。MQTT_PASSWORD 未配置时不给默认值——init.sh 会
+    # 显性失败并提示去 .env 设置（此前静默回退 aether/aether 弱口令）
     environment:
       MQTT_USER: ${MQTT_USER:-aether}
-      MQTT_PASSWORD: ${MQTT_PASSWORD:-aether}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:-}
     healthcheck:
       # QoS1 发布：收到 broker PUBACK 才算健康（真探活）。
       # 旧写法订阅无消息 topic 再 `|| exit 0` 兜底，恒返回 0，形同虚设。
@@ -63,7 +64,9 @@ services:
     image: aether-app:latest
     ports:
       - "8010:8010"   # 主服务（API + WebSocket + 前端 SPA）
-      - "8011:8011"   # 冷启动进度端口（加载页轮询）
+      # 只绑宿主回环：进度端口响应 CORS * 且无认证，仅泄露启动阶段文本，
+      # 无需暴露给局域网。加载页对它不可达有兜底（时间估算文案）。
+      - "127.0.0.1:8011:8011"
     env_file: .env
     environment:
       # 容器内通过 compose 服务名访问 HA，覆盖 config.json 里的 localhost
@@ -108,7 +111,7 @@ services:
   #   docker compose --profile local-llm up -d ollama        # 启动
   #   docker exec aether-ollama ollama pull qwen3:8b          # 拉模型（按需选）
   # 之后在「API Keys」把各角色 base_url 填 http://ollama:11434/v1（OpenAI 兼容），
-  # 高级设置 → 数据出网模式 切「纯内网」，即完成零出网配置。
+  # 各角色端点都指向内网即零出网（是否出网由端点归属决定，无独立模式开关）。
   ollama:
     container_name: aether-ollama
     image: ollama/ollama:latest

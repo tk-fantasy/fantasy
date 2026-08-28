@@ -201,17 +201,17 @@ def clear_auth_cookies(response: Response) -> None:
 
 
 def extract_token_from_request(request: Request) -> str | None:
-    """从请求中提取 token，优先级：Authorization header > cookie > query param。"""
+    """从请求中提取 token，优先级：Authorization header > cookie。
+
+    曾支持 query param（?token=）作为第三优先级，已移除：URL 中的 token
+    会进浏览器历史与反代/访问日志。脚本调用请改用 Authorization header。
+    """
     # 1. Authorization header
     auth = request.headers.get("Authorization", "")
     if auth.startswith("Bearer "):
         return auth[7:]
     # 2. Cookie
-    token = request.cookies.get(ACCESS_COOKIE)
-    if token:
-        return token
-    # 3. Query param（WebSocket 兼容）
-    return request.query_params.get("token")
+    return request.cookies.get(ACCESS_COOKIE)
 
 
 def extract_refresh_token_from_request(request: Request) -> str | None:
@@ -224,7 +224,7 @@ async def get_current_user(
 ) -> dict[str, str]:
     """FastAPI 依赖注入：从请求中提取当前用户信息。
 
-    支持三种方式：Authorization header > httpOnly cookie > query param
+    支持两种方式：Authorization header > httpOnly cookie
     """
     token = extract_token_from_request(request)
 

@@ -33,31 +33,60 @@ class TaskManager:
     
     def __init__(self):
         self._tasks: set[asyncio.Task] = set()
-    
+
+    def _on_done(self, task: asyncio.Task) -> None:
+        """done 回调：移出跟踪表 + 异常留痕。此前只 discard，后台任务崩溃
+        不留任何日志，只能靠 GC 时的 'exception was never retrieved' 显形。"""
+        self._tasks.discard(task)
+        if task.cancelled():
+            logger.info("Background task cancelled: %s", task.get_name())
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.error(
+                "Background task crashed: %s: %r",
+                task.get_name(), exc, exc_info=exc,
+            )
+
     def spawn(
-        self, 
-        coro, 
-        *, 
+        self,
+        coro,
+        *,
         name: str | None = None,
         on_done: Callable[[asyncio.Task], None] | None = None
     ) -> asyncio.Task:
         """创建后台任务并自动管理生命周期。
-        
+
         Args:
             coro: 协程对象
             name: 任务名称(用于调试和日志)
             on_done: 任务完成时的额外回调函数
-            
+
         Returns:
             创建的Task对象
         """
         task = asyncio.create_task(coro, name=name)
         self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
+        task.add_done_callback(self._on_done)
         if on_done:
             task.add_done_callback(on_done)
         return task
-    
+
+    async def shutdown(self, timeout: float = 5.0) -> None:
+        """停机收口：cancel 全部存活任务并等待其收尾。
+
+        此前经 spawn 的任务在应用关停时既不 cancel 也不 await，随事件循环
+        关闭暴毙（auto_update 安装中途被杀可能留半安装态）。"""
+        tasks = [t for t in self._tasks if not t.done()]
+        for t in tasks:
+            t.cancel()
+        if not tasks:
+            return
+        logger.info("Shutting down %d background task(s)", len(tasks))
+        done, pending = await asyncio.wait(tasks, timeout=timeout)
+        for t in pending:
+            logger.warning("Background task did not finish in time: %s", t.get_name())
+
     @property
     def pending_count(self) -> int:
         """当前待完成任务数。"""
