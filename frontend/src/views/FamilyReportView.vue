@@ -1,7 +1,9 @@
 <script setup>
 // 家庭报告页 — 事件时间线（告警/任务/自动化）+ 家庭周报。
 // 数据来自 family_events 表（告警服务与各 hook 点写入）。
+// 样式全部走全局设计 token + FlowSelect，与站内其他页面同一视觉语言。
 import { ref, onMounted } from 'vue'
+import FlowSelect from '../components/FlowSelect.vue'
 import { apiGet, apiPost } from '../utils/api'
 
 const events = ref([])
@@ -10,14 +12,22 @@ const report = ref(null)
 const reportLoading = ref(false)
 const generating = ref(false)
 const genMsg = ref('')
-const days = ref(7)
+// FlowSelect 的 value 是字符串；days 直接拼 URL，无需转数字
+const days = ref('7')
 const kindFilter = ref('')
 
-const KIND_LABELS = {
-  alert: '告警', alert_resolved: '恢复', task_success: '任务成功',
-  task_failed: '任务失败', automation: '自动化', weekly_report: '周报',
-  plugin: '插件',
-}
+const dayOptions = [
+  { value: '1', label: '今天' },
+  { value: '7', label: '近 7 天' },
+  { value: '30', label: '近 30 天' },
+]
+const kindOptions = [
+  { value: '', label: '全部类型' },
+  { value: 'alert', label: '告警' },
+  { value: 'task', label: '定时任务' },
+  { value: 'automation', label: '自动化' },
+  { value: 'weekly_report', label: '周报' },
+]
 
 async function loadEvents() {
   loading.value = true
@@ -60,11 +70,19 @@ function fmtTime(ms) {
   return new Date(ms).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 }
 
+// 语义色映射：告警红 / 失败黄 / 恢复绿 / 其余信息蓝（对应全局语义 token）
 function kindClass(kind) {
-  if (kind === 'alert') return 'k-alert'
-  if (kind === 'task_failed') return 'k-fail'
-  if (kind === 'alert_resolved') return 'k-ok'
+  if (kind === 'alert') return 'k-danger'
+  if (kind === 'task_failed') return 'k-warning'
+  if (kind === 'alert_resolved') return 'k-success'
   return 'k-info'
+}
+
+// 事件类型 → 中文标签（script setup 常量，模板可直接用）
+const KIND_LABELS = {
+  alert: '告警', alert_resolved: '恢复', task_success: '任务成功',
+  task_failed: '任务失败', automation: '自动化', weekly_report: '周报',
+  plugin: '插件',
 }
 
 onMounted(() => { loadEvents(); loadReport() })
@@ -77,15 +95,15 @@ onMounted(() => { loadEvents(); loadReport() })
       <p class="page-sub">这一周家里发生了什么 —— 告警、定时任务、自动化触发</p>
     </header>
 
-    <section class="report-card">
+    <section class="report-card setting-card">
       <div class="report-head">
         <h2>📋 家庭周报</h2>
-        <button class="gen-btn" :disabled="generating" @click="generateReport">
+        <button class="btn-primary gen-btn" :disabled="generating" @click="generateReport">
           {{ generating ? '生成中…' : '立即生成' }}
         </button>
       </div>
       <p v-if="genMsg" class="gen-msg">{{ genMsg }}</p>
-      <p v-if="reportLoading">加载中…</p>
+      <p v-if="reportLoading" class="loading-state">加载中…</p>
       <template v-else-if="report">
         <p class="report-time">{{ fmtTime(report.generated_at) }}</p>
         <p class="report-text">{{ report.text }}</p>
@@ -93,25 +111,15 @@ onMounted(() => { loadEvents(); loadReport() })
       <p v-else class="muted">还没有周报（每周日晚自动生成，可在 config 开启 weekly_report.enabled）</p>
     </section>
 
-    <section class="events-card">
+    <section class="events-card setting-card">
       <div class="events-head">
         <h2>🕘 事件时间线</h2>
         <span class="filters">
-          <select v-model="days" @change="loadEvents" class="sel">
-            <option :value="1">今天</option>
-            <option :value="7">近 7 天</option>
-            <option :value="30">近 30 天</option>
-          </select>
-          <select v-model="kindFilter" @change="loadEvents" class="sel">
-            <option value="">全部</option>
-            <option value="alert">告警</option>
-            <option value="task">定时任务</option>
-            <option value="automation">自动化</option>
-            <option value="weekly_report">周报</option>
-          </select>
+          <FlowSelect v-model="days" :options="dayOptions" width="108px" @change="loadEvents" />
+          <FlowSelect v-model="kindFilter" :options="kindOptions" width="118px" @change="loadEvents" />
         </span>
       </div>
-      <p v-if="loading">加载中…</p>
+      <p v-if="loading" class="loading-state">加载中…</p>
       <p v-else-if="!events.length" class="muted">这段时间家里很平静，没有记录 🍃</p>
       <ul v-else class="event-list">
         <li v-for="e in events" :key="e.id" class="event-item">
@@ -125,28 +133,117 @@ onMounted(() => { loadEvents(); loadReport() })
 </template>
 
 <style scoped>
-.page { max-width: 760px; margin: 0 auto; padding: 20px 16px; }
-.page-header { margin-bottom: 16px; }
-.page-header h1 { font-size: 22px; margin: 0 0 4px; color: var(--text, #222); }
-.page-sub { font-size: 13px; color: #888; margin: 0; }
-.report-card, .events-card { background: var(--bg-soft, #fff); border: 1px solid var(--border, #e5e5e5); border-radius: 14px; padding: 16px; margin-bottom: 16px; }
-.report-head, .events-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-.report-head h2, .events-head h2 { font-size: 15px; margin: 0; color: var(--text, #333); }
-.gen-btn { padding: 6px 14px; border: none; border-radius: 8px; background: var(--accent, #4a90d9); color: #fff; font-size: 12px; cursor: pointer; }
-.gen-btn:disabled { opacity: .5; }
-.gen-msg { font-size: 12px; color: #666; }
-.report-time { font-size: 11px; color: #999; margin: 4px 0; }
-.report-text { font-size: 14px; line-height: 1.7; white-space: pre-wrap; color: var(--text, #333); }
-.muted { font-size: 13px; color: #999; }
-.filters { display: flex; gap: 6px; }
-.sel { padding: 4px 8px; border-radius: 8px; border: 1px solid var(--border, #ddd); background: var(--bg, #fff); color: var(--text, #333); font-size: 12px; }
-.event-list { list-style: none; margin: 0; padding: 0; max-height: 480px; overflow-y: auto; }
-.event-item { display: flex; align-items: baseline; gap: 10px; padding: 7px 2px; border-bottom: 1px solid var(--border, #f0f0f0); font-size: 13px; }
-.event-kind { flex-shrink: 0; font-size: 11px; padding: 2px 8px; border-radius: 999px; }
-.k-alert { background: #fdecea; color: #c62828; }
-.k-fail { background: #fff3e0; color: #ef6c00; }
-.k-ok { background: #e8f5e9; color: #2e7d32; }
-.k-info { background: #e3f2fd; color: #1565c0; }
-.event-msg { flex: 1; color: var(--text, #333); }
-.event-time { flex-shrink: 0; font-size: 11px; color: #aaa; }
+.report-card,
+.events-card {
+  padding: var(--space-16);
+  margin-bottom: var(--space-16);
+}
+
+.report-head,
+.events-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--space-8);
+  gap: var(--space-10);
+}
+
+.report-head h2,
+.events-head h2 {
+  font-size: var(--text-base);
+  font-weight: var(--weight-semibold);
+  margin: 0;
+  color: var(--color-text);
+}
+
+.gen-btn {
+  font-size: var(--text-xs);
+  padding: var(--space-4) var(--space-14);
+}
+
+.gen-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.gen-msg {
+  font-size: var(--text-xs);
+  color: var(--color-text-tertiary);
+  margin: var(--space-2) 0;
+}
+
+.report-time {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  margin: var(--space-2) 0;
+}
+
+.report-text {
+  font-size: var(--text-base);
+  line-height: var(--leading-relaxed);
+  white-space: pre-wrap;
+  color: var(--color-text);
+}
+
+.muted {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.filters {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.event-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 480px;
+  overflow-y: auto;
+}
+
+.event-item {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-10);
+  padding: var(--space-3) var(--space-2);
+  border-bottom: 1px solid var(--color-border);
+  font-size: var(--text-sm);
+}
+
+.event-item:last-child {
+  border-bottom: none;
+}
+
+.event-kind {
+  flex-shrink: 0;
+  font-size: var(--text-xs);
+  padding: var(--space-1) var(--space-8);
+  border-radius: var(--radius-full);
+}
+
+.k-danger { background: var(--color-danger-bg); color: var(--color-danger); }
+.k-warning { background: var(--color-warning-bg); color: var(--color-warning); }
+.k-success { background: var(--color-success-bg); color: var(--color-success); }
+.k-info { background: var(--color-info-bg); color: var(--color-info); }
+
+.event-msg {
+  flex: 1;
+  color: var(--color-text-secondary);
+}
+
+.event-time {
+  flex-shrink: 0;
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
+@media (max-width: 768px) {
+  .events-head {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
 </style>
