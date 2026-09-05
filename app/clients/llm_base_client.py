@@ -156,7 +156,8 @@ class LlmBaseClient:
             except ValueError as exc:
                 logger.exception("LLM response was not valid JSON")
                 raise ModelServiceException("LLM 响应不是有效 JSON") from exc
-        raise ModelServiceException(f"LLM 请求失败（重试 {max_retries} 次后）: {last_exc}")
+        # 不可达：continue 均受 attempt < max_retries 守卫，末次迭代必 return/raise
+        raise ModelServiceException(f"LLM 请求失败（重试 {max_retries} 次后）: {last_exc}")  # pragma: no cover
 
     async def post_chat(self, payload: dict[str, Any], timeout: int = 20) -> dict[str, Any]:
         """统一聊天入口。"""

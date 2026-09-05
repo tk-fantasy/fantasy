@@ -323,5 +323,6 @@ class LlmVisionClient(LlmBaseClient):
                 return "0", False
             except ValueError:
                 return "0", False
-        logger.warning("evaluate_condition exhausted retries: %s", last_exc)
-        return "0", False
+        # unreachable: 最后一次尝试的各分支（429/连接错误/HTTPError/ValueError）均已 return，循环不可能自然走完
+        logger.warning("evaluate_condition exhausted retries: %s", last_exc)  # pragma: no cover
+        return "0", False  # pragma: no cover

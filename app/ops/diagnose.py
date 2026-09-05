@@ -139,10 +139,8 @@ def check_cameras(config: dict) -> list[dict]:
         return [_result("摄像头 RTSP", WARN, "没有启用的 RTSP 摄像头（跳过）",
                         advice="如需视觉功能，在摄像头设置里添加 RTSP 路路")]
     results = []
-    cv2 = None
     try:
-        import cv2  # noqa: F401
-        cv2 = True
+        import cv2
     except ImportError:
         cv2 = None
 

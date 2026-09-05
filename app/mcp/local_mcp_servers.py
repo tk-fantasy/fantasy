@@ -261,7 +261,8 @@ def create_verify_action_handler(ha_client):
                 if actual is None:
                     for s in states:
                         friendly_name = s.get("attributes", {}).get("friendly_name", "")
-                        if entity_id in friendly_name or friendly_name in entity_id:
+                        # 空 friendly_name 会 ""in任何输入 恒真 → 跳过，避免误匹配
+                        if friendly_name and (entity_id in friendly_name or friendly_name in entity_id):
                             actual = s
                             break
 
@@ -311,8 +312,9 @@ def create_verify_action_handler(ha_client):
 
             result = {
                 "verified": all_passed,
-                "entity_id": entity_id,
-                "entity_name": attrs.get("friendly_name", entity_id),
+                # 回显实际匹配到的实体（模糊匹配时可能与输入不同，如输入 "be" 匹配 light.bed）
+                "entity_id": actual["entity_id"],
+                "entity_name": attrs.get("friendly_name") or actual["entity_id"],
                 "current_state": current_state,
                 "is_on": is_on,
             }

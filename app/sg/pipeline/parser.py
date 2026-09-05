@@ -124,7 +124,8 @@ def parse_all(docs_root: str, index_path: str = "") -> list[Document]:
     root_md = [f for f in os.listdir(docs_root)
                if f.endswith(".md") and os.path.isfile(os.path.join(docs_root, f))]
     if root_md:
-        category_dir_map["."] = "根目录"
+        # 键=分类名（写入文档的 category），值=目录名（"." 即 docs_root 本身）
+        category_dir_map["根目录"] = "."
 
     # 从 index 构建文档级别的 subcategory 映射
     doc_sub_map: dict[str, str] = {}

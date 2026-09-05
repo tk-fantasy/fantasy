@@ -176,7 +176,10 @@ class HomeAssistantClient:
         import json
         import websockets
 
-        ws_url = self._base_url.replace("http", "ws") + "/api/websocket"
+        # 只替换协议头（http→ws / https→wss）：全量 replace 会把主机名里
+        # 含 "http" 的地址（如 http://http-proxy.lan）一并改坏
+        scheme, _, rest = self._base_url.partition("://")
+        ws_url = f"{'wss' if scheme == 'https' else 'ws'}://{rest}/api/websocket"
         headers = {}
         if self._token:
             headers["Authorization"] = f"Bearer {self._token}"

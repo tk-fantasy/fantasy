@@ -337,7 +337,7 @@ def _attr_key(attrs: dict, prefix: str, target: str, suffix: str = "") -> str | 
             continue
         after = key[len(prefix):len(key) - len(suffix)]
         base = after[1:] if after.startswith("_") else after
-        if base == target:
+        if base == target:  # pragma: no cover — base==target 时 key 必为 exact/no_sep 形式，已在上方提前 return，不可达
             continue
         if target.startswith(base) and len(base) >= 3:
             return key

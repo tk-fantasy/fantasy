@@ -509,7 +509,7 @@ async def upload_plugin(file: UploadFile = File(...), admin: dict = Depends(get_
             rel = n
             if manifest_subdir and n.startswith(manifest_subdir + "/"):
                 rel = n[len(manifest_subdir) + 1:]
-            if not rel:
+            if not rel:  # pragma: no cover — 不可达：以 / 结尾的目录条目已在上方过滤，剥前缀后 rel 必非空
                 continue
             # 防路径穿越：解析后必须落在 target_dir 内。用 relative_to 做真
             # 包含判断——startswith 前缀匹配会被兄弟目录绕过

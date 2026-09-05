@@ -191,9 +191,4 @@ class IntegrationPlugin:
                 return {"error": "no router registered"}
             router = self.routers[0]
             return await router.route(text=params.get("text", ""))
-        if method == METHOD_SHUTDOWN:
-            # 优雅停止通知（无需 capability）。插件可用 register_method 覆盖
-            # 自定义行为（custom 分支在上面已优先返回）。
-            await self.on_shutdown()
-            return {"ok": True}
         return {"error": f"unknown method: {method}"}

@@ -190,7 +190,9 @@ def restore_backup(name: str, operator: str = "unknown") -> dict:
     with tempfile.TemporaryDirectory(prefix="aether-restore-") as td:
         tdp = Path(td)
         with tarfile.open(path, "r:gz") as tf:
-            tf.extractall(tdp)  # 成员已白名单校验，无穿越
+            # 成员已白名单校验；filter=data 与 Python 3.14+ 默认行为对齐，
+            # 遇符号链接/特殊文件显式报错而非静默解包
+            tf.extractall(tdp, filter="data")
 
         from ..utils.file_utils import atomic_write
 

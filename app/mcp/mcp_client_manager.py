@@ -118,7 +118,8 @@ class MCPClientManager:
                 # 清理该 server 注册的所有工具
                 prefix = f"{name}___"
                 self._tools = {k: v for k, v in self._tools.items() if not k.startswith(prefix)}
-                logger.info("External MCP server disconnected", extra={"name": name})
+                # name 是 LogRecord 保留字段，extra 键也不能叫 name（见上）
+                logger.info("External MCP server disconnected %s", name)
                 return True
         return False
 

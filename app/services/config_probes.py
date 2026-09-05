@@ -119,7 +119,8 @@ async def probe_exa(api_key: str) -> ProbeResult:
                     json_strs.append(line[6:].strip())
                 elif line.strip().startswith("{"):
                     json_strs.append(line.strip())
-            if not json_strs and body.strip().startswith("{"):
+            # 不可达：body.strip() 以 { 开头时其首行 strip 后必以 { 开头，已被上面 elif 收集
+            if not json_strs and body.strip().startswith("{"):  # pragma: no cover
                 json_strs.append(body.strip())
 
             for js in json_strs:

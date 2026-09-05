@@ -197,7 +197,7 @@ class XiaoAiSink(OutputSink):
         while not self._queue.empty():
             try:
                 self._queue.get_nowait()
-            except asyncio.QueueEmpty:
+            except asyncio.QueueEmpty:  # pragma: no cover — empty() 检查后的竞态窗口
                 break
         try:
             resolved = await self._resolver.resolve()
@@ -259,7 +259,7 @@ class XiaoAiPlugin(IntegrationPlugin):
         self.routers = [XiaoAiRouter(self.ha_caller, self.resolver)]
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover — 真实 stdio 插件进程入口，由 slow e2e 覆盖
     from app.integration.sdk.stdio_runtime import run_stdio_plugin
     _manifest_path = sys.argv[1] if len(sys.argv) > 1 else "manifest.json"
     asyncio.run(run_stdio_plugin(XiaoAiPlugin, _manifest_path))

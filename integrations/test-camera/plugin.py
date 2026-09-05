@@ -278,7 +278,7 @@ class TestCameraPlugin(IntegrationPlugin):
         }
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover — 子进程 stdio 入口，仅由宿主拉起插件进程时执行
     _manifest_path = sys.argv[1] if len(sys.argv) > 1 else "manifest.json"
     if os.environ.get("AETHER_TEST_CAMERA_DEBUG"):
         logging.basicConfig(level=logging.DEBUG)

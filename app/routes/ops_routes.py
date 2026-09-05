@@ -95,7 +95,7 @@ async def version_info(
 ) -> ApiResponse[dict]:
     return ApiResponse(data={
         "version": get_version(),
-        "docker_socket": str(upgrade.DOCKER_SOCK.exists()),
+        "docker_socket": upgrade.DOCKER_SOCK.exists(),
         "history": upgrade.upgrade_history(),
     })
 
