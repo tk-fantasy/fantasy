@@ -24,6 +24,90 @@ from .utils.text_match import match_devices
 logger = logging.getLogger(__name__)
 
 
+def tool_error(reason: str, *, hint: str | None = None,
+               candidates: list[str] | None = None, **extra: Any) -> dict:
+    """构造结构化工具错误返回：{"error": reason, "hint": ..., "candidates": [...]}。
+
+    「错误信息即提示词」：小模型报错后最大的失败源是不知道怎么改，所以错误
+    返回必须携带下一步指引——hint 说明该怎么修正，candidates 给出可选实体/
+    场景等候选。langchain_tools 检测到 "error" 键会包成 Error: 前缀字符串
+    （触发 is_error 检测与失败重试回路），并把 hint/candidates 以「修正提示/
+    候选」行渲染给模型。extra 中的附加字段（如 blocked_entities）原样出现在
+    原始返回 JSON 里。
+    """
+    err: dict = {"error": reason}
+    if hint:
+        err["hint"] = hint
+    if candidates:
+        err["candidates"] = candidates
+    if extra:
+        err.update(extra)
+    return err
+
+
+# ---------------------------------------------------------------------------
+# call_service 回读校验（「每控必核」）
+# ---------------------------------------------------------------------------
+
+# 回读前等待：HA 状态经状态机异步传播，紧贴调用读会拿到旧值。
+_CALL_SERVICE_READBACK_DELAY = 0.4
+
+_ON_STATES = {"on", "open"}
+_OFF_STATES = {"off", "closed"}
+# 不可信状态：回读落到这些值上视为"未生效"而非"符合预期"
+_UNRELIABLE_STATES = {"unavailable", "unknown", "none"}
+
+
+def _verify_readback(service: str, data: dict, new_state: dict | None) -> tuple[bool | None, str]:
+    """把回读状态与本次指令的预期直接比对（代码级，不依赖模型记得调 verify_action）。
+
+    返回 (verified, detail)：
+    - True：所有可比对项均符合预期；
+    - False：存在不符项，detail 说明差异；
+    - None：无可断言项（toggle、无 data 且非开关类等），不下结论。
+
+    过渡态说明：cover 类下发后可能短暂处于 opening/closing（未到位但已生效），
+    既不在开态也不在关态，按通过处理，不产生误报。
+    """
+    if not new_state:
+        return None, ""
+    state = str(new_state.get("state", "")).lower()
+    attrs = new_state.get("attributes") or {}
+    failures: list[str] = []
+    asserted = False
+
+    # 开/关类服务：比对 state 本体
+    if service in ("turn_on", "open_cover", "open_valve"):
+        asserted = True
+        if state in _OFF_STATES | _UNRELIABLE_STATES:
+            failures.append(f"期望开启，实际 state={state}")
+    elif service in ("turn_off", "close_cover", "close_valve"):
+        asserted = True
+        if state in _ON_STATES | _UNRELIABLE_STATES:
+            failures.append(f"期望关闭，实际 state={state}")
+
+    # 带参数的服务（set_temperature/set_percentage 等）：把 data 的每个键在
+    # 回读 attributes 中找对应值比对；键与 current_ 前缀变体都不存在时跳过
+    # （如 brightness_pct → brightness 的映射差异），避免误报。
+    for key, expected in (data or {}).items():
+        actual = attrs.get(key)
+        if actual is None:
+            actual = attrs.get(f"current_{key}")
+        if actual is None:
+            continue
+        asserted = True
+        try:
+            matched = float(expected) == float(actual)
+        except (ValueError, TypeError):
+            matched = str(expected) == str(actual)
+        if not matched:
+            failures.append(f"{key} 期望 {expected}，实际 {actual}")
+
+    if not asserted:
+        return None, ""
+    return (not failures), "；".join(failures)
+
+
 @dataclass
 class ToolDeps:
     """工具注册所需的服务依赖。
@@ -139,7 +223,12 @@ def _register_ha_get_entities(deps: ToolDeps) -> None:
             }
         except Exception as e:
             logger.exception("HA get_entities failed")
-            return {"entities": [], "devices": [], "count": 0, "error": str(e)}
+            err = tool_error(
+                str(e),
+                hint="Home Assistant 可能离线或不可用。请如实告知用户设备服务暂不可用、稍后重试，禁止编造设备列表。",
+            )
+            err.update({"entities": [], "devices": [], "count": 0})
+            return err
 
     deps.mcp_client_manager.register_tool(MCPTool(
         client_id="ha_devices",
@@ -168,7 +257,9 @@ def _register_ha_get_device_manual(deps: ToolDeps) -> None:
         try:
             raw = str(parameters.get("entity_ids", "") or "").strip()
             if not raw:
-                return {"manuals": "", "found": [], "missing": [], "error": "entity_ids 不能为空"}
+                return {"manuals": "", "found": [], "missing": [],
+                        **tool_error("entity_ids 不能为空",
+                                     hint="传入一个或多个 entity_id（逗号分隔）；不确定 ID 时先调 get_entities。")}
             eid_list = [e.strip() for e in raw.split(",") if e.strip()]
             devices = await deps.ha_service.get_all_devices()
             raw_svc_defs = await deps.ha_service.get_service_defs(
@@ -202,14 +293,23 @@ def _register_ha_get_device_manual(deps: ToolDeps) -> None:
                 blocks.append(
                     controls_to_text(dev, controls, note=notes_map.get(eid))
                 )
-            return {
+            ret = {
                 "manuals": "\n\n".join(blocks) if blocks else "(无匹配设备)",
                 "found": found,
                 "missing": missing,
             }
+            if missing:
+                # 缺失实体也带修正提示：模型常拿着编造/过期的 ID 反复重试
+                ret["hint"] = (
+                    f"missing 中的 entity_id 不存在（{', '.join(missing)}），"
+                    "请用 get_entities 核对真实 ID，不要用相同 ID 重试。"
+                )
+            return ret
         except Exception as e:
             logger.exception("get_device_manual failed")
-            return {"manuals": "", "found": [], "missing": [], "error": str(e)}
+            err = tool_error(str(e), hint="Home Assistant 可能不可用，请稍后重试并如实告知用户。")
+            err.update({"manuals": "", "found": [], "missing": []})
+            return err
 
     deps.mcp_client_manager.register_tool(MCPTool(
         client_id="ha_devices",
@@ -265,14 +365,13 @@ def _register_ha_call_service(deps: ToolDeps) -> None:
                     missing = [e for e in eid_list if e not in real_ids]
                     if missing:
                         logger.info("call_service 拒绝编造 entity_id: %s", missing)
-                        error = (
-                            f"entity_id '{', '.join(missing)}' 不存在于 Home Assistant，"
-                            "无法控制。"
+                        # 自愈回路：用注册表快照反查用户指令命中的真实实体，作为
+                        # candidates 附进报错让 LLM 用候选重试一次（entries 已排除
+                        # 禁止项，与模型视野同源——视图里看得见的才可能成为候选）。
+                        err = tool_error(
+                            f"entity_id '{', '.join(missing)}' 不存在于 Home Assistant，无法控制。",
+                            hint="请用 get_entities 查看真实设备列表，不要编造 entity_id。",
                         )
-                        # 自愈回路：用注册表快照反查用户指令命中的真实实体，附进
-                        # 报错让 LLM 用候选重试一次（entries 已排除禁止项，与
-                        # 模型视野同源——视图里看得见的才可能成为候选）。
-                        fallback_hint = "请用 get_entities 查看真实设备列表，不要编造 entity_id。"
                         query = getattr(session, "current_query", "") or ""
                         if query:
                             try:
@@ -282,21 +381,18 @@ def _register_ha_call_service(deps: ToolDeps) -> None:
                                 snapshot = await build_device_snapshot(deps.ha_service, ha_client)
                                 matched = match_devices(query, snapshot["entries"])[:5]
                                 if matched:
-                                    cand_text = "、".join(
+                                    err["candidates"] = [
                                         f"{d['entity_id']}（{entry_label(d)}）" for d in matched
-                                    )
-                                    error += (
-                                        f"用户说的是「{query}」，可能匹配：{cand_text}。"
-                                        "请从候选中选最合适的一个重试一次；都不合适则如实告知设备不存在。"
+                                    ]
+                                    err["hint"] = (
+                                        f"用户说的是「{query}」，请从候选中选最合适的一个重试一次；"
+                                        "都不合适则如实告知设备不存在。"
                                     )
                                 else:
-                                    error += "用户指令没有匹配到任何真实设备，请如实告知设备不存在，不要编造。"
+                                    err["hint"] = "用户指令没有匹配到任何真实设备，请如实告知设备不存在，不要编造。"
                             except Exception:  # noqa: BLE001
                                 logger.warning("call_service: 候选反查失败", exc_info=True)
-                                error += fallback_hint
-                        else:
-                            error += fallback_hint
-                        return {"success": False, "error": error}
+                        return {"success": False, **err}
                 except Exception:
                     logger.warning("call_service: entity_id 校验失败，放行", exc_info=True)
             # 授权校验：用户可在设备页把危险设备（童锁/门锁）标为禁止 AI 操作。
@@ -312,9 +408,10 @@ def _register_ha_call_service(deps: ToolDeps) -> None:
                         logger.info("call_service 拒绝未授权 entity_id: %s", blocked)
                         return {
                             "success": False,
-                            "error": (
-                                f"设备「{names}」被用户设为禁止 AI 操作。请勿尝试调用，"
-                                "如实告知用户需手动操作或在设备页解除限制。"
+                            **tool_error(
+                                f"设备「{names}」被用户设为禁止 AI 操作，调用被拒绝。",
+                                hint="请勿再次尝试调用该设备；如实告知用户需手动操作，或在设备页解除限制。",
+                                blocked_entities=blocked,
                             ),
                         }
                 except Exception:
@@ -340,10 +437,10 @@ def _register_ha_call_service(deps: ToolDeps) -> None:
                             )
                             return {
                                 "success": False,
-                                "error": (
-                                    f"用户说的是「{query}」，匹配到的设备是「{names}」，"
-                                    f"与目标 {entity_id} 不符。不要用语义相近的实体顶替，"
-                                    "若用户提到的设备不存在请如实告知。"
+                                **tool_error(
+                                    f"用户说的是「{query}」，匹配到的设备是「{names}」，与目标 {entity_id} 不符。",
+                                    hint="不要用语义相近的实体顶替；若用户提到的设备确实不存在，请如实告知。",
+                                    candidates=[d.get("name", d.get("entity_id", "")) for d in matched],
                                 ),
                             }
                 except Exception:
@@ -379,6 +476,8 @@ def _register_ha_call_service(deps: ToolDeps) -> None:
             new_state_eid = None
             state_check_failed = False
             if eid_list:
+                # 等状态传播后再回读，紧贴调用读会拿到旧值
+                await asyncio.sleep(_CALL_SERVICE_READBACK_DELAY)
                 try:
                     states = await ha_client.get_states()
                     states_by_id = {s.get("entity_id"): s for s in states}
@@ -395,6 +494,33 @@ def _register_ha_call_service(deps: ToolDeps) -> None:
                     logger.warning("call_service: 状态回查失败，标记状态未知", exc_info=True)
                     state_check_failed = True
             ret: dict = {"success": True, "result": result, "new_state": new_state}
+            # 「每控必核」：代码级回读校验，不依赖模型记得提示词里的三步走。
+            # 比对不符不标 error（不触发失败重试回路对设备重复下发指令），
+            # 只附 verified=False + note，让模型如实汇报当前实际状态。
+            if new_state and not state_check_failed:
+                verified, detail = _verify_readback(service, data, new_state)
+                if verified is True:
+                    ret["verified"] = True
+                elif verified is False:
+                    ret["verified"] = False
+                    ret["note"] = (
+                        f"指令已发送，但回读状态与预期不符（{detail}）。"
+                        "设备可能未生效或仍在响应中：不要谎报成功，如实告知用户当前实际状态，"
+                        "必要时可调 verify_action 复核。"
+                    )
+                    logger.info("call_service 回读校验不符: %s.%s → %s（%s）",
+                                domain, service, new_state.get("state"), detail)
+            # 主控操作落 device_op 事件（周报「AI 操作设备」统计的数据源）
+            try:
+                from .services.device_event_service import record_device_op
+                name_of = {}
+                if new_state_eid and new_state:
+                    friendly = (new_state.get("attributes") or {}).get("friendly_name")
+                    if friendly:
+                        name_of[new_state_eid] = str(friendly)
+                await record_device_op(eid_list, service, "AI", name_of)
+            except Exception:  # noqa: BLE001
+                logger.debug("record device_op failed", exc_info=True)
             if state_check_failed:
                 ret["state_check"] = "failed"
                 ret["note"] = (
@@ -419,7 +545,13 @@ def _register_ha_call_service(deps: ToolDeps) -> None:
             return ret
         except Exception as e:
             logger.exception("HA call_service failed")
-            return {"success": False, "error": str(e)}
+            return {
+                "success": False,
+                **tool_error(
+                    str(e),
+                    hint="Home Assistant 可能不可用或参数不合法；核对参数后可重试一次，仍失败则如实告知用户。",
+                ),
+            }
 
     deps.mcp_client_manager.register_tool(MCPTool(
         client_id="ha_devices",
@@ -528,14 +660,19 @@ def _register_scheduled_task_tools(deps: ToolDeps) -> None:
     async def create_handler(parameters: dict, session) -> dict:
         svc = _svc()
         if svc is None:
-            return {"error": "调度器未就绪"}
+            return tool_error("调度器未就绪", hint="调度服务尚未初始化完成，请如实告知用户稍后再试。")
         name = str(parameters.get("name", "")).strip()
         if not name:
-            return {"error": "name 不能为空"}
+            return tool_error("name 不能为空",
+                              hint="用一句简短的话概括这个任务，如「起床开灯」「下班提醒」。")
         schedule = parameters.get("schedule") or {}
         payload = parameters.get("payload") or {}
         if not schedule or not payload:
-            return {"error": "schedule 和 payload 都是必填"}
+            return tool_error(
+                "schedule 和 payload 都是必填",
+                hint="schedule 指定触发方式（kind=at/every/cron），payload 指定到点执行内容"
+                     "（kind=tool/message/reminder），字段结构见工具描述。",
+            )
         # 创建者 user_id：与 REST 路由（scheduler_routes）一致。缺失时 message 类
         # 任务到点执行会被拒（无归属会话）、reminder 会回退全局 agent 投递到
         # 全系统最近活跃会话（多用户下投错人）。session 由 tool_executor 传入，
@@ -611,7 +748,7 @@ def _register_scheduled_task_tools(deps: ToolDeps) -> None:
     async def list_handler(_: dict, session) -> dict:
         svc = _svc()
         if svc is None:
-            return {"error": "调度器未就绪"}
+            return tool_error("调度器未就绪", hint="调度服务尚未初始化完成，请如实告知用户稍后再试。")
         tasks = await svc.list_tasks()
         return {"tasks": tasks, "count": len(tasks)}
 
@@ -626,10 +763,10 @@ def _register_scheduled_task_tools(deps: ToolDeps) -> None:
     async def delete_handler(parameters: dict, session) -> dict:
         svc = _svc()
         if svc is None:
-            return {"error": "调度器未就绪"}
+            return tool_error("调度器未就绪", hint="调度服务尚未初始化完成，请如实告知用户稍后再试。")
         task_id = str(parameters.get("task_id", "")).strip()
         if not task_id:
-            return {"error": "task_id 不能为空"}
+            return tool_error("task_id 不能为空", hint="先调 scheduled_task_list 获取任务 ID。")
         await svc.delete_task(task_id)
         return {"success": True, "task_id": task_id}
 
@@ -698,7 +835,7 @@ def _register_scene_tools(deps: ToolDeps) -> None:
     async def list_handler(parameters: dict, session) -> dict:
         svc = _svc()
         if svc is None:
-            return {"error": "场景服务未就绪"}
+            return tool_error("场景服务未就绪", hint="场景服务尚未初始化，请如实告知用户稍后再试。")
         scenes = await svc.list_scenes()
         return {"scenes": [
             {"id": s["id"], "name": s["name"],
@@ -709,21 +846,25 @@ def _register_scene_tools(deps: ToolDeps) -> None:
     async def apply_handler(parameters: dict, session) -> dict:
         svc = _svc()
         if svc is None:
-            return {"error": "场景服务未就绪"}
+            return tool_error("场景服务未就绪", hint="场景服务尚未初始化，请如实告知用户稍后再试。")
         name = str(parameters.get("name", "")).strip()
         scene_id = str(parameters.get("scene_id", "")).strip()
         if not scene_id and name:
             scenes = await svc.list_scenes()
             match = next((s for s in scenes if s["name"] == name), None)
             if match is None:
-                return {"error": f"没有叫「{name}」的场景，先调 scene_list 看已有场景"}
+                return tool_error(
+                    f"没有叫「{name}」的场景",
+                    hint="从候选里选一个最接近的场景应用，或如实告知用户该场景不存在。",
+                    candidates=[s["name"] for s in scenes],
+                )
             scene_id = match["id"]
         if not scene_id:
-            return {"error": "name 或 scene_id 必填一个"}
+            return tool_error("name 或 scene_id 必填一个", hint="不确定有哪些场景时先调 scene_list。")
         try:
             result = await svc.apply_scene(scene_id)
         except ValueError as e:
-            return {"error": str(e)}
+            return tool_error(str(e), hint="先调 scene_list 确认场景是否存在。")
         ok, total = result.get("ok", 0), result.get("total", 0)
         if ok == total:
             return {"success": True, "summary": f"场景「{result.get('scene')}」已应用（{ok}/{total} 个设备成功）"}
@@ -734,10 +875,11 @@ def _register_scene_tools(deps: ToolDeps) -> None:
     async def create_handler(parameters: dict, session) -> dict:
         svc = _svc()
         if svc is None:
-            return {"error": "场景服务未就绪"}
+            return tool_error("场景服务未就绪", hint="场景服务尚未初始化，请如实告知用户稍后再试。")
         name = str(parameters.get("name", "")).strip()
         if not name:
-            return {"error": "name 不能为空"}
+            return tool_error("name 不能为空",
+                              hint="给场景起个名字，如「观影模式」「睡眠模式」。")
         user_id = getattr(session, "user_id", "") or ""
         try:
             if parameters.get("capture"):
@@ -746,7 +888,8 @@ def _register_scene_tools(deps: ToolDeps) -> None:
                 actions = parameters.get("actions") or []
                 scene = await svc.create_scene(name, actions, user_id=user_id)
         except (ValueError, RuntimeError) as e:
-            return {"error": str(e)}
+            return tool_error(str(e), hint="capture 与 actions 二选一：capture=true 拍当前状态，"
+                                           "或传 [{domain,service,entity_id,data}] 动作列表。")
         return {"success": True, "scene_id": scene["id"], "name": name,
                 "actions_count": len(scene.get("actions", []))}
 

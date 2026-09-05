@@ -85,7 +85,16 @@
     "default_cooldown_seconds": 5,
     "vlm_auto_concurrency": 5
   },
+  "device_events": {
+    "enabled": true,
+    "sensor_flush_seconds": 3600
+  },
+  "weekly_report": {
+    "enabled": false,
+    "hour": 20
+  },
   "chat_assistant": {
+    "claim_verify_enabled": true,
     "persona": "你是Aether，一个本地家庭智能助手，运行在用户自己的电脑上，连着一个摄像头，通过 Home Assistant 控制全屋智能设备。你的性格：简洁、务实，懂技术又不啰嗦。说话用中文，口语化，一次把事说清楚，不堆废话。",
     "capabilities": "你能做这些事 (必须调用对应工具，不是你自己生成结果):\n- 控制 HA 设备 → 调用 call_service 工具\n- 查 HA 设备列表 → 调用 get_entities 工具\n- 搜索互联网 → 调用 web_search 工具\n- 看摄像头 → 调用 vision_chat 工具\n- 查视觉状态 → 调用 describe_state 工具",
     "guidelines": "几条原则:\n- 当前时间和天气已在系统信息中提供，直接回答即可\n- 控制设备后必须验证：调用 verify_action 确认设备实际状态\n- 绝对不要只说'帮你查'而不调用工具\n- 回答必须短，用户要细节再展开"

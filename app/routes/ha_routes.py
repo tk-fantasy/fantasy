@@ -335,6 +335,22 @@ async def ha_call_service(payload: HAServiceCallRequest, container: AppContainer
         result = await call_with_probe(container.ha_client, domain, service, entity_id, data)
         # 调用服务后立即清掉 HAService 的状态缓存，确保前端重拉拿到最新状态
         container.ha_service.invalidate_states_cache()
+        # 主控操作落 device_op 事件（手动/设备页发起，与 AI 操作区分统计）
+        try:
+            from ..services.device_event_service import record_device_op
+            name_of = {}
+            try:
+                states = await container.ha_service.get_states_snapshot()
+                name_of = {
+                    s.get("entity_id"): str((s.get("attributes") or {}).get("friendly_name") or "")
+                    for s in states if s.get("entity_id")
+                }
+            except Exception:  # noqa: BLE001
+                pass
+            eids = [e.strip() for e in str(entity_id).split(",") if e.strip()] if entity_id else []
+            await record_device_op(eids, service, "手动", name_of)
+        except Exception:  # noqa: BLE001
+            logger.debug("record device_op failed", exc_info=True)
         return ApiResponse(data={"success": True, "result": result})
     except Exception as e:
         logger.exception("HA call_service failed")

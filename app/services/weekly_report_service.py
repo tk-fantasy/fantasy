@@ -26,10 +26,12 @@ logger = logging.getLogger(__name__)
 _KV_REPORT_KEY = "weekly_report:last"
 
 _PROMPT = (
-    "你是家庭智能管家的周报撰写者。根据过去一周的事件记录，用中文写一份简短的"
-    "家庭周报（200 字以内），口吻亲切务实。结构：先一句总评，然后按'自动化与定时任务'"
-    "'设备与连接'分组提炼重点（执行了多少次自动化、定时任务成功率、有无异常告警），"
-    "最后一句提醒。只输出周报正文，不要寒暄。\n\n事件记录：\n{events}"
+    "你是家庭智能管家的周报撰写者。根据统计摘要与事件记录，用中文写一份简短的"
+    "家庭周报（250 字以内），口吻亲切务实。结构：先一句总评，然后按'自动化与定时任务'"
+    "'设备与使用'分组提炼重点（执行了多少次自动化、定时任务成功率、有无异常告警；"
+    "AI 与家庭成员操作了哪些设备、有无设备掉线；对话活跃度），"
+    "最后一句提醒。只输出周报正文，不要寒暄。\n\n"
+    "统计摘要：{stats}\n\n事件记录：\n{events}"
 )
 
 
@@ -106,20 +108,24 @@ class WeeklyReportService:
             logger.info("Weekly report: no events in the last 7 days, skip")
             return {"generated": False, "reason": "no_events"}
 
+        # LLM 逐条输入排除 device_state（传感器逐条高频，统计已并入 stats；
+        # 不排除会把告警/任务失败挤出 500 条窗口）。device_op 低频保留。
+        llm_events = [e for e in events if e["kind"] != "device_state"]
         # 事件转紧凑文本（LLM 输入限长：最多取最近 500 条）
         lines = [
             f"{datetime.fromtimestamp(e['created_at']/1000).strftime('%m-%d %H:%M')} "
             f"[{e['kind']}] {e['source']} {e['message']}"
-            for e in events[-500:]
+            for e in llm_events[-500:]
         ]
-        stats = self._summarize_stats(events)
+        stats = await self._summarize_stats(events)
 
         text = ""
         if self._llm is not None and getattr(self._llm, "enabled", False):
             try:
                 timeout = int(get_config("llm.summary_timeout_seconds", 30) or 30)
                 text = await self._llm.chat(
-                    [{"role": "user", "content": _PROMPT.format(events="\n".join(lines))}],
+                    [{"role": "user", "content": _PROMPT.format(
+                        stats=stats, events="\n".join(lines))}],
                     timeout,
                 )
                 text = str(text).strip()
@@ -145,8 +151,7 @@ class WeeklyReportService:
         logger.info("Weekly report generated (%d events)", len(events))
         return report
 
-    @staticmethod
-    def _summarize_stats(events: list[dict]) -> str:
+    async def _summarize_stats(self, events: list[dict]) -> str:
         counts: dict[str, int] = {}
         for e in events:
             counts[e["kind"]] = counts.get(e["kind"], 0) + 1
@@ -154,13 +159,58 @@ class WeeklyReportService:
         task_ok = counts.get("task_success", 0)
         task_fail = counts.get("task_failed", 0)
         alerts = counts.get("alert", 0)
+        # 设备操作按 message 前缀区分发起方（record_device_op 的 actor 写在句首）
+        op_ai = op_manual = 0
+        device_sources: set[str] = set()
+        for e in events:
+            if e["kind"] == "device_op":
+                if str(e["message"]).startswith("手动"):
+                    op_manual += 1
+                else:
+                    op_ai += 1
+                device_sources.add(e["source"])
+            elif e["kind"] == "device_state":
+                device_sources.add(e["source"])
+        chat_turns = await self._count_chat_turns()
         parts = [
             f"本周自动化触发 {automation} 次",
             f"定时任务执行 {task_ok + task_fail} 次"
             + (f"（失败 {task_fail} 次）" if task_fail else "，全部成功"),
             f"告警 {alerts} 次" + (f"，已恢复 {counts.get('alert_resolved', 0)} 次" if alerts else ""),
         ]
+        if device_sources:
+            op_bits = []
+            if op_ai:
+                op_bits.append(f"AI 操作 {op_ai} 次")
+            if op_manual:
+                op_bits.append(f"手动操作 {op_manual} 次")
+            op_text = f"（{'、'.join(op_bits)}）" if op_bits else ""
+            parts.append(f"{len(device_sources)} 台设备有动态{op_text}")
+        if chat_turns:
+            parts.append(f"对话 {chat_turns} 轮")
         return "；".join(parts) + "。"
+
+    @staticmethod
+    async def _count_chat_turns() -> int:
+        """近 7 天用户消息条数（≈对话轮数）。
+
+        sessions.data 的 model_messages 有 100 条截断上限，超长会话会少算，
+        周报量级下偏差可接受；任何失败静默回 0（统计缺失不阻塞周报）。
+        """
+        try:
+            since = time.time() * 1000 - 7 * 24 * 3600 * 1000
+            rows = await Database.get().sessions_all()
+            total = 0
+            for data in rows:
+                if data.get("updated_at", 0) < since:
+                    continue
+                for m in data.get("model_messages", []) or []:
+                    if m.get("role") == "user":
+                        total += 1
+            return total
+        except Exception:  # noqa: BLE001
+            logger.debug("count chat turns failed", exc_info=True)
+            return 0
 
     def _is_enabled(self) -> bool:
         try:

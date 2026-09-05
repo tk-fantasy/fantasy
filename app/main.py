@@ -57,8 +57,8 @@ _stream_executor = _ThreadPoolExecutor(max_workers=8, thread_name_prefix="stream
 
 # Windows 控制台 UTF-8 输出（测试环境跳过：替换 sys.stdout 会破坏 pytest capture）
 if sys.platform == "win32" and not os.getenv("PYTEST_CURRENT_TEST", "") and "pytest" not in sys.modules:
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")  # pragma: no cover — 守卫明确排除 pytest
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")  # pragma: no cover — 同上
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO").upper(),
@@ -487,6 +487,11 @@ async def lifespan(_: FastAPI):
                        health_checker=health_checker)
     await alert_service.start()
 
+    # ── 设备状态事件流（HA WS 订阅 state_changed，节流聚合落库，周报数据源）──
+    from .services.device_event_service import DeviceEventService
+    _container.device_event_service = DeviceEventService(ha_service=_container.ha_service)
+    await _container.device_event_service.start()
+
     # ── 家庭周报（默认关闭，weekly_report.enabled 开启）──
     from .services.weekly_report_service import WeeklyReportService
     _container.weekly_report_service = WeeklyReportService(llm_chat_client=llm_chat_client)
@@ -619,11 +624,14 @@ async def lifespan(_: FastAPI):
         await _safe_stop("automation agent", _automation_agent_ref[0].stop)
     if _container.scheduler_service is not None:
         await _safe_stop("scheduler", _container.scheduler_service.stop)
-    # 告警监控 / 周报循环
+    # 告警监控 / 周报循环 / 设备事件流
     from .services.alert_service import alert_service as _alert_svc
     await _safe_stop("alert service", _alert_svc.stop)
     if _container.weekly_report_service is not None:
         await _safe_stop("weekly report", _container.weekly_report_service.stop)
+    if _container.device_event_service is not None:
+        # stop 内会把传感器聚合缓冲尽力落库，须在 DB 关闭前
+        await _safe_stop("device event service", _container.device_event_service.stop)
     # 集成插件平台停止（停止所有插件子进程）
     if _container.integration_layer is not None:
         await _safe_stop("integration layer", _container.integration_layer.stop)

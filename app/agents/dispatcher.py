@@ -50,6 +50,9 @@ class _StreamRunState:
     succeeded_tool_calls: set[str] = field(default_factory=set)  # 供失败重试轮 post_model_hook 剔除
     # 跨重试轮保留：记录最终仍未成功的工具名，用于收尾兜底
     unresolved_failed: list[str] = field(default_factory=list)
+    # ReAct 步数预算耗尽（recursion_limit）：注入"总结已完成部分"收尾轮的信号。
+    # 与 has_error 互斥使用——预算耗尽走收尾轮而不是直接报错给用户。
+    recursion_exhausted: bool = False
 
     def reset_for_retry(self) -> None:
         """重试轮开始前清空本轮临时状态，保留 succeeded_tool_calls 与 unresolved_failed。
@@ -174,6 +177,11 @@ def _make_event_handler(
             )
 
         elif event_type == "error":
+            # 步数预算耗尽：只记标记，不发 Dialog.Exception——后续收尾总结轮
+            # 会基于已成功的结果生成最终回复；收尾轮再失败才走异常展示。
+            if se.get("reason") == "recursion_limit":
+                state.recursion_exhausted = True
+                return
             error_msg = se.get("message", "Unknown error")
             await emit(
                 Instruction.build_instruction(
@@ -222,6 +230,11 @@ class Dispatcher:
         self._vision_service = vision_service
         self._ha_service = ha_service
         self._validator = validator or ValidatorAgent()
+        # 断言核查需要读 HA 真实状态：把与 Dispatcher 同源的 ha_service 注入
+        # validator（测试桩可能没有该方法，duck-type 跳过）。
+        _validator_ha_setter = getattr(self._validator, "set_ha_service", None)
+        if ha_service is not None and callable(_validator_ha_setter):
+            _validator_ha_setter(ha_service)
         self._summarization_service = summarization_service
         # 集成广播钩子：assistant final_content 产出后广播到 output_sink（如小爱）
         self._sink_manager = sink_manager
@@ -262,6 +275,10 @@ class Dispatcher:
     def set_ha_service(self, svc) -> None:
         """HA 配置热替换后重绑（main.sync_ha_runtime_refs 调用）。"""
         self._ha_service = svc
+        # validator 的断言核查同源读状态，一并重绑
+        setter = getattr(self._validator, "set_ha_service", None)
+        if callable(setter):
+            setter(svc)
 
     def _get_camera_state(self) -> dict:
         """取主摄像头状态。camera_manager 为空或无路时返回完整空状态字典。"""
@@ -271,6 +288,15 @@ class Dispatcher:
         if cid:
             return self._camera_manager.get_state(cid)
         return dict(self.EMPTY_CAMERA_STATE)
+
+    @staticmethod
+    def _build_wrapup_message() -> HumanMessage:
+        """构建步数预算耗尽后的收尾提示：停止调工具，基于已完成部分总结。"""
+        return HumanMessage(
+            content="本轮操作步骤已达系统上限，不能再调用工具了。"
+                    "请基于上面已经成功执行的操作结果，直接给用户一个简短的最终总结："
+                    "完成了什么、哪部分没能完成（如有）。不要再调用任何工具。"
+        )
 
     @staticmethod
     def _build_failure_retry_message(failed_tools: list[dict]) -> HumanMessage:
@@ -789,12 +815,44 @@ class Dispatcher:
                 # 避免异常逃出 _run_turn 导致客户端收不到 Finish。
                 await self._emit_turn_error(e, state, emit, request_id, session_id, path)
 
+        # 步数预算耗尽的收尾轮：run_agent_streaming 捕获 GraphRecursionError 后
+        # 只标记不报错，这里注入"总结已完成部分"消息再跑一轮（新一轮有独立预算），
+        # 让模型停止调工具、基于已成功的结果给出最终总结，而不是把中途截断的
+        # 半截回复丢给用户。只跑一次；若收尾轮内再次耗尽，按空回复走下方兜底。
+        if state.recursion_exhausted and not state.has_error:
+            logger.info("Recursion-limit wrap-up round [%s]", path)
+            if stream_tokens:
+                await emit(
+                    Instruction.build_instruction(
+                        UI.Status(phase="finalizing", detail="正在整理已完成操作"),
+                        request_id, session_id,
+                    )
+                )
+            lc_messages.append(self._build_wrapup_message())
+            self._inject_family_switch(lc_messages, ctx.get("chat_model", ""),
+                                       include_system=False)
+            try:
+                async for stream_event in run_agent_streaming(agent, lc_messages, session):
+                    await handler(stream_event)
+            except asyncio.CancelledError:
+                await self._handle_cancelled(emit, request_id, session_id)
+                return
+            except Exception as e:
+                # 收尾轮异常兜底：与重试轮同策略，避免客户端收不到 Finish。
+                await self._emit_turn_error(e, state, emit, request_id, session_id, path)
+
         # Validator 校验：仅当模型完全没调工具时才触发重试（兜底安全网）
-        # has_error 对 REST 恒为 False，tool_call_count==0 短路与原 REST 的 if 守卫等价。
+        # has_error 对 REST 恒为 False。条件顺序：便宜的重试上限/次数检查放
+        # 最前——await should_retry 是可能花 LLM 调用/HA 读的操作，必须在
+        # retry_count 检查之后求值，否则重试耗尽后的最后一次条件求值会
+        # 白付一次调用。
         retry_count = 0
-        while (state.tool_call_count == 0 and not state.has_error
-               and await self._validator.should_retry(state.final_content, state.tool_call_count, user_id=user_id)
-               and retry_count < self._validator.max_retries):
+        while (retry_count < self._validator.max_retries
+               and state.tool_call_count == 0 and not state.has_error
+               and await self._validator.should_retry(
+                   state.final_content, state.tool_call_count,
+                   user_id=user_id, query=query,
+                   entity_name_map=entity_name_map)):
             retry_count += 1
             logger.info("Validator: auto-retry (%d/%d) [%s]", retry_count, self._validator.max_retries, path)
             # retrying 状态：与失败重试轮一致，REST 也发（统一策略）

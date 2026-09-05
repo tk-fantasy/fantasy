@@ -98,10 +98,10 @@ class AlertService:
         except Exception:  # noqa: BLE001
             logger.exception("alert_service.resolve failed (source=%s)", source)
 
-    async def record(self, kind: str, source: str, message: str) -> None:
-        """只落库不广播（任务成败/自动化触发等周报数据用）。"""
+    async def record(self, kind: str, source: str, message: str, actor: str = "") -> None:
+        """只落库不广播（任务成败/自动化触发等周报数据用）。actor 见 family_event_add。"""
         try:
-            await self._record(kind, source, message)
+            await self._record(kind, source, message, actor)
         except Exception:  # noqa: BLE001
             logger.exception("alert_service.record failed (kind=%s)", kind)
 
@@ -114,6 +114,7 @@ class AlertService:
         if not self._enabled:
             logger.info("Alert service disabled (alerts.enabled=false)")
             return
+        await self._restore_active_from_events()
         if self._monitor_task is None or self._monitor_task.done():
             self._monitor_task = asyncio.create_task(self._monitor_loop(), name="alert-monitor")
             logger.info("Alert service started (notifiers=%s)", list(self._notifiers))
@@ -140,6 +141,40 @@ class AlertService:
             except Exception:  # noqa: BLE001
                 logger.exception("alert monitor tick failed")
 
+    async def _restore_active_from_events(self) -> None:
+        """重启后从 family_events 回放重建未恢复告警。
+
+        _active 是纯内存，重启清空——若重启前有未恢复的告警（如摄像头离线），
+        resolve 会因查不到 active 态而静默 no-op，"已恢复"通知永久丢失，用户
+        印象停留在离线。按时间序回放最近 7 天告警/恢复事件重建未恢复集合；
+        只重建有恢复语义的 source（camera:* 与 ha:connection），任务失败/
+        插件熔断类本就没有 resolve 路径。alerted_at 取原告警时间，重启前的
+        冷却窗口照常生效，不会重启即重发。
+        """
+        try:
+            from ..core.database import Database
+            db = Database.get()
+            if db is None:
+                return
+            since = int((time.time() - 7 * 24 * 3600) * 1000)
+            events = await db.family_events_since(since, kinds=["alert", "alert_resolved"])
+            for e in events:
+                source = str(e.get("source", ""))
+                if source != "ha:connection" and not source.startswith("camera:"):
+                    continue
+                if e["kind"] == "alert":
+                    self._active[source] = {
+                        "alerted_at": e["created_at"] / 1000, "active": True}
+                else:
+                    self._active.pop(source, None)
+            if self._active:
+                logger.info(
+                    "Alert state restored: %d unresolved alert(s) %s",
+                    len(self._active), sorted(self._active),
+                )
+        except Exception:  # noqa: BLE001
+            logger.exception("restore alert state from family_events failed")
+
     async def _check_cameras(self) -> None:
         cm = self._camera_manager
         list_cameras = getattr(cm, "list_cameras", None)
@@ -151,6 +186,10 @@ class AlertService:
             return
         if not cameras:
             return
+        # 已删除摄像头的离线计数顺手回收（列表里不再出现即视为已删）
+        valid_ids = {str(c.get("id", "")) for c in cameras}
+        for stale_id in [cid for cid in self._camera_offline_ticks if cid not in valid_ids]:
+            self._camera_offline_ticks.pop(stale_id, None)
         online_ids = set()
         for cam in cameras:
             cid = str(cam.get("id", ""))
@@ -189,11 +228,11 @@ class AlertService:
         except Exception:  # noqa: BLE001
             return True
 
-    async def _record(self, kind: str, source: str, message: str) -> None:
+    async def _record(self, kind: str, source: str, message: str, actor: str = "") -> None:
         from ..core.database import Database
         db = Database.get()
         if db is not None:
-            await db.family_event_add(kind, source, message)
+            await db.family_event_add(kind, source, message, actor)
 
     async def _broadcast(self, message: str, level: str) -> None:
         """推给全部注册渠道 + 在线 WS 用户。单渠道失败不影响其他。"""

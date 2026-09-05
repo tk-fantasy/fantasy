@@ -119,9 +119,11 @@ AI replies stream token-by-token, like a person typing. Markdown rendering with 
 
 - **🧠 Conversational device control** — Talks to Home Assistant. Say "turn off the living-room lights and set the AC to 26°C" and it does it. A read-only `verify_action` step runs before any state change so the model can't fire invalid service calls.
 - **👁️ Camera vision** — Multiple RTSP / USB cameras, motion-triggered visual reasoning, per-camera focus items, single active AI preview.
-- **⏰ Schedules & automation rules** — Natural-language cron generation, auto task naming, a rule engine that chains devices on conditions.
+- **🏠 Scene mode** — One-tap apply/save of home scenes ("movie night", "sleep") on the device page; just say the scene name in chat.
+- **⏰ Schedules & automation rules** — Natural-language cron generation, task replies pushed as voice + text simultaneously, a rule engine that chains devices on conditions.
+- **📊 Family report & offline alerts** — Proactive alerts for camera/HA offline and failed tasks (with auto recovery notices); device activity (switch flips / aggregated sensors / AI & manual operations) feeds the event stream; a weekly family report with chat & device stats generated every Sunday (`/report`).
 - **📊 Semantic knowledge graph (RAG)** — Docs vectorized + faiss retrieval + entity co-occurrence graphing, 3D visualization, auto-detect on embed-model change + one-click rebuild.
-- **🔌 MCP tool ecosystem** — Built-in weather / web search / device-control tools, plus support for external MCP servers.
+- **🔌 MCP tool ecosystem** — Built-in weather / web search / device-control tools, plus external MCP servers and integration plugins (including model-family adapter plugins).
 - **🔐 JWT auth + independent config** — Sessions use JWT, LLM keys are managed independently with isolated sessions, one-click clear of conversation history.
 - **🛠️ Operations center** — Diagnostic package export, deployment health check, backup/restore, one-click upgrade-pack export & side-load install — all operations in one place without SSH access.
 - **👑 Admin tiering** — First registered user becomes admin automatically; dangerous endpoints (plugin upload/ops/etc.) require admin privileges.
@@ -308,12 +310,12 @@ Full docs live under `docs/`, organized by feature (Chinese):
 
 - `docs/01-安装部署/` — environment prep, Docker deploy, HA connection, LLM keys, weather API, Tailscale remote, local Ollama
 - `docs/02-AI聊天/` — chat basics, persona customization, model roles, session management, slash commands
-- `docs/03-设备控制/` — natural-language control, device widgets, device panel, **device semantic mapping**, **AI operation permissions**
+- `docs/03-设备控制/` — natural-language control, device widgets, device panel, **scene mode**, device semantic mapping, AI operation permissions
 - `docs/04-自动化规则/` — scheduled tasks, automation rules, rule maintenance, vision triggers
-- `docs/05-摄像头视觉/` — camera input, focus-item config, motion detection
-- `docs/06-集成扩展/` — Exa search, MQTT integration, external MCP
+- `docs/05-摄像头视觉/` — camera input (incl. offline behavior), focus-item config, motion detection
+- `docs/06-集成扩展/` — Exa search, MQTT integration, external MCP, **model-family adapter plugins**
 - `docs/07-个性化/` — emoji customization, household info & theme
-- `docs/08-运维排查/` — API auth, log inspection, health checks, **operations center**
+- `docs/08-运维排查/` — API auth, log inspection, health checks, **offline alerts & weekly family report**, operations center
 - `docs/09-商业化工程化清单.md` — delivery capability checklist and implementation notes
 - `docs/10-交付物料/` — SLA template, disclaimer template
 - `docs/tech/` — architecture overview, API/MCP reference, scheduler/automation engine, vision subsystem, data flow, config reference
@@ -329,13 +331,14 @@ Four sidebar entries; other features are reachable via slash commands:
 | **Settings** | Household info, region, dark mode. |
 | **Advanced** | System-level config page: weather API, Exa search, vision params, HA connection, assistant persona, API Keys, virtual-device toggle (click a card to edit in a modal), plus emoji-index rebuild and doc-vector rebuild. |
 
-**Common slash commands** (16 in total — type `/` in chat to see all):
+**Common slash commands** (17 in total — type `/` in chat to see all):
 
 | Command | Description |
 |---------|-------------|
 | `/halist` | Device panel |
 | `/scheduled` | Scheduled tasks |
 | `/task` | Automation rules |
+| `/report` | Family report (alerts / weekly report) |
 | `/models` | Model management |
 | `/semantics` | Device semantic mapping |
 | `/operations` | Operations center (admin only) |

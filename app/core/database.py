@@ -158,8 +158,12 @@ class Database:
                 # 副本完整性由 _open_connection 的探针验证；失败则试下一个
                 import sqlite3
                 conn = sqlite3.connect(str(DB_PATH))
-                conn.execute("SELECT count(*) FROM sqlite_master")
-                conn.close()
+                try:
+                    conn.execute("SELECT count(*) FROM sqlite_master")
+                finally:
+                    # 探针失败也必须关：Windows 下泄漏的句柄会让后续
+                    # unlink/move 报 WinError 32，自我恢复路径直接崩
+                    conn.close()
                 return cand
             except Exception:  # noqa: BLE001
                 logger.warning("Backup candidate %s unusable, trying older", cand.name)
@@ -277,7 +281,8 @@ class Database:
                 created_at INTEGER NOT NULL,
                 kind TEXT NOT NULL,
                 source TEXT DEFAULT '',
-                message TEXT DEFAULT ''
+                message TEXT DEFAULT '',
+                actor TEXT DEFAULT ''
             );
             CREATE INDEX IF NOT EXISTS idx_family_events_time
                 ON family_events(created_at);
@@ -308,6 +313,9 @@ class Database:
         await _ensure_column("emoji_preferences", "user_id", "user_id TEXT DEFAULT ''")
         # 多摄像头:rules 表加 camera_id 列(空串=全局规则,归所有摄像头)
         await _ensure_column("rules", "camera_id", "camera_id TEXT DEFAULT ''")
+        # family_events 加 actor 列（统计图数据基础：device_op 由 AI 还是手动触发，
+        # 结构化字段替代解析中文 message 前缀）
+        await _ensure_column("family_events", "actor", "actor TEXT DEFAULT ''")
         # 管理员分级（安全审计 2B）：旧库补 is_admin 列；无人是管理员时把
         # 最早注册的用户提升为管理员（存量部署的户主即首用户）
         await _ensure_column("users", "is_admin", "is_admin INTEGER NOT NULL DEFAULT 0")
@@ -614,13 +622,17 @@ class Database:
 
     # ============ Family Events（告警/任务/自动化事件流，周报数据源） ============
 
-    async def family_event_add(self, kind: str, source: str = "", message: str = "") -> None:
-        """追加一条家庭事件（轻量，各 hook 点 try/except 调用，失败不影响主流程）。"""
+    async def family_event_add(self, kind: str, source: str = "", message: str = "", actor: str = "") -> None:
+        """追加一条家庭事件（轻量，各 hook 点 try/except 调用，失败不影响主流程）。
+
+        actor：可选结构化发起方（如 "AI"/"手动"），供统计分组；为空时统计侧
+        回退按 message 前缀推断（兼容存量数据）。
+        """
         now = int(time.time() * 1000)
         async with self._write_lock:
             await self._db.execute(
-                "INSERT INTO family_events (created_at, kind, source, message) VALUES (?, ?, ?, ?)",
-                (now, kind, source, message),
+                "INSERT INTO family_events (created_at, kind, source, message, actor) VALUES (?, ?, ?, ?, ?)",
+                (now, kind, source, message, actor),
             )
             # 顺手修剪 90 天前的事件（每次写都执行，DELETE 无匹配行代价可忽略）
             cutoff = now - 90 * 24 * 3600 * 1000
@@ -631,16 +643,77 @@ class Database:
         """取 since_ms 之后的事件（升序）。kinds 为空取全部。"""
         if kinds:
             placeholders = ",".join("?" * len(kinds))
-            sql = (f"SELECT id, created_at, kind, source, message FROM family_events "
+            sql = (f"SELECT id, created_at, kind, source, message, actor FROM family_events "
                    f"WHERE created_at >= ? AND kind IN ({placeholders}) ORDER BY created_at")
             params: tuple = (since_ms, *kinds)
         else:
-            sql = ("SELECT id, created_at, kind, source, message FROM family_events "
-                   "WHERE created_at >= ? ORDER BY created_at")
+            sql = ("SELECT id, created_at, kind, source, message, actor FROM family_events "
+                   f"WHERE created_at >= ? ORDER BY created_at")
             params = (since_ms,)
         async with self._db.execute(sql, params) as cursor:
             return [{"id": r[0], "created_at": r[1], "kind": r[2],
-                     "source": r[3], "message": r[4]} async for r in cursor]
+                     "source": r[3], "message": r[4], "actor": r[5]} async for r in cursor]
+
+    async def family_events_stats(self, since_ms: int) -> dict:
+        """近 N 天事件统计聚合（家庭报告页图表数据源，单次扫描内存聚合）。
+
+        90 天上限 + 单机家庭量级（每日几十到几百条），直接拉全量在 Python
+        分组比多条 GROUP BY SQL 更简单清晰。
+        """
+        events = await self.family_events_since(since_ms)
+
+        totals: dict[str, int] = {}
+        daily: dict[str, dict[str, int]] = {}
+        # device_op 分组：source → {count, ai, manual, name}
+        device_ops: dict[str, dict] = {}
+
+        for e in events:
+            kind = e["kind"]
+            totals[kind] = totals.get(kind, 0) + 1
+
+            # 按天分桶（本地时区）。device_state 量大且对趋势图是噪声，单列不入堆叠
+            day = time.strftime("%m-%d", time.localtime(e["created_at"] / 1000))
+            bucket = daily.setdefault(day, {"device_op": 0, "automation": 0, "task": 0, "alert": 0})
+            if kind in ("device_op", "automation", "alert", "alert_resolved"):
+                bucket[{"device_op": "device_op", "automation": "automation",
+                        "alert": "alert", "alert_resolved": "alert"}[kind]] += 1
+            elif kind in ("task_success", "task_failed"):
+                bucket["task"] += 1
+
+            if kind == "device_op":
+                src = e["source"] or "device:unknown"
+                info = device_ops.setdefault(src, {"count": 0, "ai": 0, "manual": 0, "name": ""})
+                info["count"] += 1
+                actor = e.get("actor") or str(e.get("message") or "")
+                if actor == "手动" or (actor != "AI" and actor.startswith("手动")):
+                    info["manual"] += 1
+                else:
+                    # 存量数据无 actor 列，message 形如 "AI将「卧室灯」执行 打开"；
+                    # 非「手动」前缀一律归 AI（与周报 _summarize_stats 口径一致）
+                    info["ai"] += 1
+                if not info["name"]:
+                    m = str(e.get("message") or "")
+                    if "「" in m and "」" in m:
+                        info["name"] = m.split("「", 1)[1].split("」", 1)[0]
+                    else:
+                        info["name"] = src.split(":", 1)[-1]
+
+        top_devices = [
+            {"entity": src.split(":", 1)[-1], "name": info["name"] or src,
+             "count": info["count"], "ai": info["ai"], "manual": info["manual"]}
+            for src, info in device_ops.items()
+        ]
+        top_devices.sort(key=lambda d: -d["count"])
+
+        actor_ai = sum(d["ai"] for d in top_devices)
+        actor_manual = sum(d["manual"] for d in top_devices)
+
+        return {
+            "totals": totals,
+            "daily": [{"day": d, **daily[d]} for d in sorted(daily)],
+            "top_devices": top_devices,
+            "actor": {"ai": actor_ai, "manual": actor_manual},
+        }
 
     # ============ Scenes（场景模式） ============
 

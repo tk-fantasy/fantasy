@@ -19,19 +19,17 @@
 
 ---
 
-## 二、三层防线：AI 怎么被挡住的
+## 二、AI 怎么被挡住的
 
-**第 1 层：AI 一开始就知道**
+**第 1 层：禁止 = 对 AI 隐身**
 
-设备目录里被禁止的实体带 `⛔AI禁操作` 标记，系统提示词明确约束：
+被禁止的实体在**渲染层直接排除**——设备目录、控件、`get_entities` 工具返回里都不会出现它。AI 根本不知道这个设备存在，自然不会去操作，也不会在对话里提到它。
 
-> "标 ⛔AI禁操作 的实体被用户禁止 AI 操作，即使可见也绝不能 call_service，应告知用户需手动处理；当用户指令能匹配多个实体时，优先选未标 ⛔ 的去操作。"
-
-所以多数时候 AI 会直接告诉你"这个设备被设为禁止 AI 操作，需要你手动处理"，根本不会尝试。
+所以多数时候 AI 面对「帮我锁门」会说"我没找到门锁设备"，而不是尝试去调。
 
 **第 2 层：硬拦截兜底**
 
-万一模型不听话还是调了 `call_service`，执行层（`app/tools.py`）读黑名单，命中直接返回错误：
+万一实体是在会话中途才被禁用的（AI 的设备快照里还有它），执行层（`app/tools.py`）读黑名单，命中直接返回错误：
 
 > "设备「lock.front_door」被用户设为禁止 AI 操作。请勿尝试调用，如实告知用户需手动操作或在设备页解除限制。"
 
@@ -62,7 +60,7 @@
 | 查黑名单 | `GET /api/ha/entity-operable` → `{disabled: {entity_id: "0", ...}}` |
 | 设置/解除 | `PUT /api/ha/entity-operable`，body `{ "entity_id": "...", "operable": false }`（false=禁止，true=恢复） |
 
-存储在数据库 `emoji_preferences` 表（scope=`entity_operable`）。`get_entities` 工具返回的实体带 `ai_operable` 字段，前端徽章和 AI 都以此为准。
+存储在数据库 `emoji_preferences` 表（scope=`entity_operable`）。被禁止的实体不会出现在 `get_entities` 工具返回和设备目录里（对 AI 隐身），前端徽章以此为准。
 
 ---
 

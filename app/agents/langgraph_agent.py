@@ -14,6 +14,7 @@ from langchain_core.messages import (
 )
 from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
+from langgraph.errors import GraphRecursionError
 from langgraph.prebuilt import create_react_agent
 
 from ..core.config import get_config
@@ -161,7 +162,9 @@ def build_chat_agent(tools: list, model_config: dict | None = None) -> tuple[Any
         base_url=model_config.get("base_url", "http://127.0.0.1:11434/v1"),
         api_key=model_config.get("api_key", "not-needed"),
         streaming=True,
-        temperature=0.7,
+        # 控制型 agent 要的是确定性不是创造性：低温减少工具参数抖动
+        # （entity_id/数值漂移），闲聊语气由提示词控制，不靠温度。
+        temperature=0.3,
         http_client=http_client,
         http_async_client=http_async_client,
     )
@@ -251,7 +254,15 @@ async def run_agent_streaming(
             post_model_hook 据此剔除已成功的 tool_call，强制只调失败的。
             正常轮传 None（不过滤）。
     """
-    config = {"configurable": {"session": session}}
+    # ReAct 步数预算：langgraph 的 recursion_limit 按 super-step 计，本图带
+    # post_model_hook，每个工具轮消耗 3 步（model → hook → tools），最终总结
+    # 再耗 2 步。16 ≈ 4 个工具轮 + 总结，恰好覆盖 GUIDELINES 的三步走
+    # （verify_condition → call_service → verify_action）外加一次 get_entities；
+    # 默认 25 太宽——模型卡死循环时会一直烧 token 直到 120s 超时。
+    config = {
+        "recursion_limit": int(get_config("agent.recursion_limit", 16)),
+        "configurable": {"session": session},
+    }
     # 注入已成功工具调用签名，供 post_model_hook 在重试轮剔除已成功的 tool_call
     if succeeded_tool_calls:
         config["configurable"]["succeeded_tool_calls"] = succeeded_tool_calls
@@ -319,6 +330,16 @@ async def run_agent_streaming(
 
     except asyncio.TimeoutError:
         yield {"type": "error", "message": f"Agent 执行超时（{timeout}秒）"}
+    except GraphRecursionError:
+        # 步数预算耗尽（recursion_limit）：不是故障，是模型陷入工具循环被
+        # 预算截断。带 reason 标记，Dispatcher 据此注入"总结已完成部分"
+        # 的收尾轮，而不是直接把错误抛给用户。
+        logger.warning("LangGraph agent recursion limit reached (agent.recursion_limit)")
+        yield {
+            "type": "error",
+            "reason": "recursion_limit",
+            "message": "操作步骤较多，已达单轮执行上限。",
+        }
     except Exception as e:
         logger.exception("LangGraph agent error")
         # 区分 API 错误，给出友好提示

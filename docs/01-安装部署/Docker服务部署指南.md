@@ -45,16 +45,18 @@ docker compose up -d --build
 docker compose ps
 ```
 
-四个容器状态都是 `Up` 就搞定了：
+常用容器状态都是 `Up` 就搞定了（`ollama`/`aether-simulator` 走 profile，默认不启动）：
 
 | 容器名 | 镜像 | 端口 |
 |--------|------|------|
 | `aether` | 本地构建 | 8010→8010, 8011→8011 |
 | `aether-ha` | `homeassistant/home-assistant:stable` | 8123→8123 |
-| `mosquitto` | `eclipse-mosquitto:2` | 1884→1884 |
-| `aether-simulator` | `python:3.11-slim` | — |
+| `mosquitto` | `eclipse-mosquitto:2` | 127.0.0.1:1884→1884（仅回环） |
+| `aether-simulator` | `python:3.11-slim` | —（`--profile simulator` 启用） |
 
-> 小提示：日常启动只需 `docker compose up -d`，会自动起全部四个服务。
+> 小提示：日常启动只需 `docker compose up -d`，会自动起全部常驻服务（mqtt / homeassistant / aether）。
+>
+> `aether` 容器自带两道自愈保险：**存活探针**（`/healthz` 免认证，事件循环卡死时探活失败，Docker 自动重启）和 **2GB 内存上限**（防失控拖垮同宿主容器）。MQTT 的 1884 端口只绑定宿主回环，局域网其他机器访问不到——HA 和模拟器走 docker 内部网络，不受影响。
 
 ## 停止服务
 

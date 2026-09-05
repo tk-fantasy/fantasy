@@ -434,7 +434,10 @@ class CameraManager:
     def get_state(self, camera_id: str) -> dict:
         s = self._streams.get(camera_id)
         if s is None:
-            return {"camera_id": camera_id, "online": False}
+            # stream 不存在（删除中/重建窗口）也补 camera_opened 键：调用方
+            # （告警监控）用 st.get("camera_opened") 判在线，缺键同样按离线
+            # 记拍，显式补上语义一致且不依赖 get() 的 None 隐式回退。
+            return {"camera_id": camera_id, "online": False, "camera_opened": False}
         return s.get_state()
 
     def list_cameras(self) -> list[dict]:

@@ -89,3 +89,6 @@ app/sg/output/
 
 # 运维页备份/升级历史（运行时产物）
 backups/
+
+# 覆盖率本地产物
+.coverage

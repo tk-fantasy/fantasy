@@ -23,9 +23,11 @@
 | 凭证 | 说明 | 示例 |
 |------|------|------|
 | Host | API 主机地址 | `xxx.re.qweatherapi.com` |
-| Key ID (kid) | 公开 ID | `KCWHAKR6HC` |
-| 订阅 ID (sub) | 订阅标识 | `2G2D55DC98` |
+| Key ID (kid) | 公开 ID | `YOUR_QWEATHER_KID` |
+| 订阅 ID (sub) | 订阅标识 | `YOUR_QWEATHER_SUB` |
 | 私钥 (private_key) | Ed25519 私钥（base64） | `MC4CAQAwBQYDK2VwBCIE...` |
+
+> 文档示例统一用占位符——`kid`/`sub` 虽是标识符，也请勿把真实值写进公开材料；私钥则绝对不能外泄（泄漏后去和风天气控制台重置）。
 
 > 和风天气用 **JWT (Ed25519 签名)** 认证，不是普通 API Key。Aether 会用私钥自动签发 15 分钟有效的 JWT，你只要把四个凭证填对就行。
 

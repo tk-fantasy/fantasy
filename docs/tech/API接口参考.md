@@ -11,8 +11,8 @@
 `app/main.py` 的 `api_token_guard` 中间件对**所有 `/api/*` 路径**强制认证，**例外**三类：
 
 1. 路径以 `/api/auth` 开头（注册/登录/刷新/登出公开）
-2. 路径恰好等于 `/api/output/latest/graph.json`（语义图公开读取）
-3. 路径不以 `/api` 开头（静态资源、SPA、`/search`、`/doc/content` 等）
+2. HTTP `OPTIONS` 预检请求
+3. 路径不以 `/api` 开头（静态资源、SPA、`/healthz` 存活探针等）
 
 非例外的 `/api/*` 请求必须携带以下任一凭证，否则返回 401：
 
@@ -98,6 +98,7 @@ JWT 细节：access 24h / refresh 7d，HS256，`JWT_SECRET` 环境变量（自�
 | POST | `/api/chat` | JWT | `ChatRequest` | 同步聊天（非流式） |
 | POST | `/api/sessions` | JWT+用户 | 无 | 创建会话 |
 | GET | `/api/sessions` | JWT+用户 | 无 | 列出会话（按 updated_at 倒序） |
+| DELETE | `/api/sessions` | JWT+用户 | 无 | 清空当前用户**全部**会话 |
 | GET | `/api/sessions/{session_id}` | JWT+用户 | 无 | 获取单个会话 |
 | DELETE | `/api/sessions/{session_id}` | JWT+用户 | 无 | 删除会话 |
 | POST | `/api/sessions/{session_id}/fork` | JWT+用户 | 无 | 分叉会话 |
@@ -124,6 +125,7 @@ JWT 细节：access 24h / refresh 7d，HS256，`JWT_SECRET` 环境变量（自�
 | GET | `/api/ha/entity-notes` | JWT | 无 | 全部实体备注映射 `{entity_id: note}`（用户自定义，注入 LLM 认知） |
 | PUT | `/api/ha/entity-notes` | JWT | `EntityNoteRequest` | 设置/删除实体备注（空串=删除；只存 Aether DB，不同步 HA） |
 | GET | `/api/ha/services` | JWT | 无 | HA 服务定义 `{domain:{service:{fields,required}}}` |
+| GET | `/api/ha/history` | JWT | 无（query: filter_entity_id 必填, hours 默认 24, minimal 默认 true） | 实体历史状态记录（透传 HA `/api/history/period`，传感器趋势图用） |
 | POST | `/api/ha/call_service` | JWT | `HAServiceCallRequest` | 调用 HA 服务（经控件范围探测保底） |
 | GET | `/api/ha/config` | JWT | 无 | HA 配置（token 脱敏） |
 | POST | `/api/ha/config` | JWT | `HAConfigRequest` | 保存 HA 配置 |
@@ -166,6 +168,7 @@ JWT 细节：access 24h / refresh 7d，HS256，`JWT_SECRET` 环境变量（自�
 | DELETE | `/api/llm_keys/{key_id}` | JWT+用户 | 无 | 删除 key |
 | GET | `/api/llm/settings` | JWT | 无 | 当前 LLM 设置 |
 | POST | `/api/llm/settings` | JWT+用户 | `LLMSettingsRequest` | 应用 LLM 设置 |
+| GET | `/api/llm/status` | JWT+用户 | 无 | 各 LLM 角色实际生效的模型配置 + 连通性测试（per-user 优先，标 `source: user/global`） |
 | POST | `/api/models/test` | JWT | `ModelTestRequest` | 测试模型连接 |
 
 ```jsonc
@@ -224,6 +227,9 @@ JWT 细节：access 24h / refresh 7d，HS256，`JWT_SECRET` 环境变量（自�
 | GET | `/api/rules` | JWT | 无 | 列出全部规则 |
 | POST | `/api/rules` | JWT | `RulePayloadRequest` | 直接创建规则（含 condition） |
 | POST | `/api/rules/{rule_id}/enabled` | JWT | `RuleEnabledRequest` | 启停规则 |
+| PUT | `/api/rules/{rule_id}` | JWT | `RulePayloadRequest` | 直接更新规则 |
+| POST | `/api/rules/{rule_id}/revise` | JWT | `RuleReviseRequest` | 对话式修订规则（LLM 输出新 JSON **预览，不落库**；`{instruction, current}`，`current` 为前端维护的当前规则 JSON，多轮修订基于上一轮输出） |
+| POST | `/api/rules/{rule_id}/explain` | JWT | `ExplainRequest` | plan 模式解释规则（只读；`{current, question}`，LLM 回答关于该规则的自然语言提问） |
 | DELETE | `/api/rules/{rule_id}` | JWT | 无 | 删除规则 |
 
 ```jsonc
@@ -333,7 +339,7 @@ JWT 细节：access 24h / refresh 7d，HS256，`JWT_SECRET` 环境变量（自�
   "ptz_speed": 0.5, "ptz_step_ms": 300, "display_enabled": 1,
   "motion_hash_size": 16, "motion_threshold": 15, "motion_check_interval": 1.0,
   "vision_min_infer_interval": 8.0, "vision_max_idle_interval": 120.0,
-  "vision_use_img_count": 3, "frame_interval_ms": 2000 }
+  "vision_use_img_count": 3, "frame_interval_ms": 1000 }
 ```
 
 ### 9.1 旧单摄接口 /state, /video_feed（已删除）
@@ -375,7 +381,6 @@ JWT 细节：access 24h / refresh 7d，HS256，`JWT_SECRET` 环境变量（自�
 | POST | `/api/advanced/config` | JWT | `AdvancedConfigRequest` | 保存高级配置 |
 | GET | `/api/advanced/embed-status` | JWT | 无 | Embed 模型状态 + 各搜索功能可用性 |
 | POST | `/api/advanced/test/exa` | JWT | `{api_key}` | 测试 Exa 搜索连通性 |
-| POST | `/api/advanced/test/rtsp` | JWT | `{url, username, password}` | 测试 RTSP 流连通性 |
 
 ```jsonc
 // AdvancedConfigRequest（三段均可空，只更新提供的段）
@@ -418,6 +423,7 @@ Exa 搜索 Key 在此页配置（**不是** `/models` 页），无环境变量�
 | GET | `/api/weather/indices` | JWT | 无（query: location） | 生活指数 |
 | GET | `/api/weather/config` | JWT | 无 | 天气 API 配置（private_key 脱敏） |
 | POST | `/api/weather/config` | JWT | `WeatherConfigRequest` | 保存配置 |
+| POST | `/api/weather/test` | JWT | 无 | 测试和风天气连接（用当前已保存的 host/kid/sub/private_key） |
 
 ### Emoji /emoji
 
@@ -468,13 +474,51 @@ Exa 搜索 Key 在此页配置（**不是** `/models` 页），无环境变量�
 
 > 停止后模拟器设备状态变 `unavailable`，设备列表按「全部实体离线才隐藏」规则过滤（演示设备整体消失，真实设备不受影响）。入口在「高级」页「虚拟设备」段。
 
+### 场景模式 /scenes
+
+家庭共享（全家成员可建/用/删），详见《03-设备控制/场景模式》。
+
+| 方法 | 路径 | 认证 | Body | 说明 |
+| --- | --- | --- | --- | --- |
+| GET | `/api/scenes` | JWT | 无 | 列出所有场景 |
+| POST | `/api/scenes` | JWT+用户 | `SceneCreateRequest` | 创建/更新场景（`capture=true` 从当前设备状态捕获；否则传 `actions`；带 `id` 覆盖更新） |
+| POST | `/api/scenes/{scene_id}/apply` | JWT | 无 | 逐条应用场景（单条失败不中断），返回 `{total, ok, results}` |
+| DELETE | `/api/scenes/{scene_id}` | JWT | 无 | 删除场景 |
+
+```jsonc
+// SceneCreateRequest
+{ "name": "观影模式", "capture": true }            // 捕获当前状态
+{ "name": "观影模式", "actions": [ { "domain": "light", "service": "turn_on",
+  "entity_id": "light.ke_ting", "data": {"brightness": 200} } ], "id": "" }
+```
+
+### 家庭报告 /events, /report
+
+数据源为 `family_events` 事件流（告警/恢复/任务成败/自动化触发/周报，90 天自动修剪），详见《08-运维排查/离线告警与家庭周报》。
+
+| 方法 | 路径 | 认证 | Body | 说明 |
+| --- | --- | --- | --- | --- |
+| GET | `/api/events` | JWT | 无（query: days 默认 7（1-90）, kind 前缀过滤） | 近 N 天家庭事件流（最新在前，最多 500 条） |
+| GET | `/api/report/weekly` | JWT | 无 | 最近一份周报 `{generated_at, text}`，没有则 `data: null` |
+| POST | `/api/report/weekly/generate` | JWT | 无 | 手动生成一份周报（聚合近 7 天事件 → summary 角色 LLM 总结，LLM 不可用退化纯统计） |
+
+### 视觉识别日志 /vision-logs（管理员）
+
+| 方法 | 路径 | 认证 | Body | 说明 |
+| --- | --- | --- | --- | --- |
+| GET | `/api/vision-logs` | JWT + 管理员 | 无（query: camera_id, kind, limit 默认 100） | 最近识别日志（新在前；kind: preview 预览分类 / rule_eval 规则判定 / action 动作执行） |
+| DELETE | `/api/vision-logs` | JWT + 管理员 | 无（query: camera_id 可选） | 清空识别日志（可按路过滤） |
+| GET | `/api/files/browse` | JWT + 管理员 | 无（query: path 目录绝对路径, exts 逗号分隔扩展名） | 只读列目录（虚拟摄像头视频选择器用；path 空=列盘符/根） |
+
 ### 系统健康 /health, /metrics, /setup
 
 | 方法 | 路径 | 认证 | Body | 说明 |
 | --- | --- | --- | --- | --- |
+| GET | `/healthz` | **公开**（无 /api 前缀，刻意免认证） | 无 | 存活探针：事件循环卡死时返回不了 200，供 docker healthcheck 自动重启 |
 | GET | `/api/health` | JWT | 无 | 健康检查 |
 | GET | `/api/metrics` | JWT | 无 | 内存指标快照 |
 | GET | `/api/setup/status` | JWT | 无 | 初始配置状态（引导） |
+| POST | `/api/setup/ha` | JWT | `HAConfigRequest` | 引导流程中保存 HA 连接（等价 `/api/ha/config`，供首次设置页） |
 
 `/api/health` 返回 `HealthData`：
 
@@ -568,16 +612,14 @@ Exa 搜索 Key 在此页配置（**不是** `/models` 页），无环境变量�
 
 ---
 
-## 16. 文档/RAG /doc, /search
+## 16. 文档/RAG /doc
 
 | 方法 | 路径 | 认证 | Body | 说明 |
 | --- | --- | --- | --- | --- |
-| GET | `/api/output/latest/graph.json` | 公开 | 无 | 最新语义图 |
-| GET | `/search` | 公开 | 无（query: q, top_k） | 语义图节点搜索（FAISS 向量检索，回退关键词） |
 | POST | `/api/doc/chat` | JWT | `{message}` | RAG 文档助手流式聊天（SSE） |
 | POST | `/api/doc/rebuild` | JWT | 无 | 重建文档向量索引（异步，后端线程池执行） |
 | GET | `/api/doc/rebuild/status` | JWT | 无 | 重建进度轮询 |
-| GET | `/doc/content` | 公开 | 无（query: doc_id） | 读 docs 下 markdown 内容 |
+| GET | `/api/doc/content` | JWT | 无（query: doc_id） | 读 docs 下 markdown 内容 |
 
 ```jsonc
 // /api/doc/rebuild/status 返回
@@ -591,7 +633,7 @@ Exa 搜索 Key 在此页配置（**不是** `/models` 页），无环境变量�
 }
 ```
 
-> **没有 `/docs`**——文档内容接口是 `/doc/content`（无 /api 前缀，公开）。`/api/doc/chat` 是 SSE 流式 RAG 聊天。重建进度 UI 在「模型」页（`/models`，改 embed 模型后提示重建）和「高级」页（`/advanced` 文档向量重建段）两处展示。
+> **没有 `/docs`**——文档内容接口是 `/api/doc/content`（在 `/api` 下、走 JWT 认证；注释明确「挂在外面会变成免认证的文档读取口」）。语义图节点搜索是 `GET /api/sg/search`（JWT，query: q, top_k），语义图文件走 `GET /api/sg/latest`，没有公开的 `/search` 或 graph.json 豁免。`/api/doc/chat` 是 SSE 流式 RAG 聊天。重建进度 UI 在「模型」页（`/models`，改 embed 模型后提示重建）和「高级」页（`/advanced` 文档向量重建段）两处展示。
 
 ### 语义图 /sg
 
@@ -651,6 +693,7 @@ Exa 搜索 Key 在此页配置（**不是** `/models` 页），无环境变量�
 | --- | --- |
 | `UI.Status` | 状态提示（如"正在思考..."） |
 | `Template.TokenStream` | 流式 token |
+| `Template.ToastStream` | 任务式回复实时推送（定时任务到点回复推给该用户在线聊天页用） |
 | `Template.CallTool` | 工具调用开始（工具卡片，始终展示） |
 | `Template.CallToolResult` | 工具调用结果 |
 | `Dialog.Finish` | 对话完成 |

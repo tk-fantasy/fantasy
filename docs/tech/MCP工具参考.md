@@ -39,7 +39,7 @@ class MCPTool:
 
 | client_id | 用途 |
 |-----------|------|
-| `local` | 内置本地工具（describe_state / fetch_webpage / http_request / web_search / vision_chat / verify_condition / verify_action / scheduled_task_*） |
+| `local` | 内置本地工具（describe_state / fetch_webpage / http_request / web_search / vision_chat / verify_condition / verify_action / scheduled_task_* / scene_*） |
 | `ha_devices` | Home Assistant 设备工具（get_entities / get_device_manual / call_service） |
 | 自定义 | 外部 MCP server 的 `name` |
 
@@ -50,7 +50,7 @@ class MCPTool:
 
 ---
 
-## 2. 内置工具清单（13 个）
+## 2. 内置工具清单（16 个）
 
 ### 基础本地工具（4 个，`register_local_tools` 注册）
 
@@ -63,11 +63,11 @@ class MCPTool:
 
 > `web_search` 不再走 SearXNG。Exa Key 在 `config.json` 的 `web_search.exa.api_key`，留空匿名调用（限速）。详见配置参考。
 
-### 依赖注入工具（9 个，`register_all_tools(deps)` 在 `app/tools.py` 注册）
+### 依赖注入工具（12 个，`register_all_tools(deps)` 在 `app/tools.py` 注册）
 
 | # | 工具 | client_id | 参数 | 作用 |
 |---|------|-----------|------|------|
-| 5 | `vision_chat` | `local` | `question`, `camera_id`(可选) | 拍指定摄像头当前帧，用 VL 模型回答问题。返回 `{answer, question, has_frame, model}`。camera_id 不传取当前 AI 预览路 |
+| 5 | `vision_chat` | `local` | `question`, `camera_id`(可选) | 取指定摄像头最近的**多帧序列**（约 1 秒 ×3 帧），用 VL 模型回答问题。返回 `{answer, question, has_frame, model}`。摄像头离线时**不调模型**，直接返回 `camera_offline=true`（AI 如实告知离线与最后画面时间，不拿旧帧编答案）。camera_id 不传取当前 AI 预览路 |
 | 6 | `get_entities` | `ha_devices` | 无 | 拉所有 HA 设备。返回 `{devices, entities, count, services}`：`devices` 按物理设备聚合（name/area/entity_ids，供介绍设备）；`entities` 为扁平实体列表（含 `_controls` 动态控件、`note` 用户备注，供 call_service） |
 | 7 | `get_device_manual` | `ha_devices` | `entity_ids`(必填，逗号分隔) | 按需拉单台/多台设备的详细操作手册（domain/service/param 明细 + 用户自定义备注）。控制不熟悉或有怪癖的设备前主动调用 |
 | 8 | `call_service` | `ha_devices` | `domain`(必填), `service`(必填), `entity_id`(必填), `data` | 调 HA 服务控制设备。校验 `entity_id` 真实存在（防 LLM 编造）+ query 语义匹配校验，返回 `{success, result, new_state}` |
@@ -76,6 +76,9 @@ class MCPTool:
 | 11 | `scheduled_task_create` | `local` | `name`(必填), `schedule{kind,at/every_seconds/expr}`, `payload{kind,tool_name+tool_input / message / reminder}` | 创建定时任务，返回 `{success, task_id, summary}` |
 | 12 | `scheduled_task_list` | `local` | 无 | 列出所有定时任务 |
 | 13 | `scheduled_task_delete` | `local` | `task_id`(必填) | 删除定时任务 |
+| 14 | `scene_list` | `local` | 无 | 列出所有已保存场景（id/name/actions_count） |
+| 15 | `scene_apply` | `local` | `name` / `scene_id`（二选一） | 应用场景，把一组设备切到预设状态。不确定有哪些场景先调 `scene_list`。返回成功 N/M 概要 |
+| 16 | `scene_create` | `local` | `name`(必填), `capture`, `actions` | 创建场景：`capture=true` 把当前所有可控设备状态拍下来存成场景；或传 `actions` 列表（格式同 `call_service` 参数）。用户只想控设备时不要用本工具 |
 
 ### verify_condition 路由（`condition_type=auto`）
 
@@ -170,10 +173,13 @@ register_all_tools(deps)  (app/tools.py, lifespan 里调)
   ├─ register_local_tools(manager)          ← 4 个基础工具
   │    describe_state / fetch_webpage / http_request / web_search
   │
-  └─ 9 个依赖注入工具（工厂创建 handler）：
-       vision_chat / get_entities / get_device_manual / call_service
-       verify_condition / verify_action
-       scheduled_task_create / scheduled_task_list / scheduled_task_delete
+  ├─ 9 个依赖注入工具（工厂创建 handler）：
+  │    vision_chat / get_entities / get_device_manual / call_service
+  │    verify_condition / verify_action
+  │    scheduled_task_create / scheduled_task_list / scheduled_task_delete
+  │
+  └─ _register_scene_tools(deps)            ← 3 个场景工具
+       scene_list / scene_apply / scene_create
 
 convert_all_tools(manager, full_name=False)  ← 全转 LangChain StructuredTool（短名）
 build_chat_agent(tools)                       ← LangGraph ReAct Agent，bind_tools

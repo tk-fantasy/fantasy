@@ -315,8 +315,15 @@ state = {
                            "fan":"auto", "swing":"off"},
     "living_room/curtain":{"position": 100},
     "living_room/fan":    {"state": "OFF", "speed": "low", "oscillation": False},
+    "living_room/sensor": {"temperature": 26.5, "humidity": 58},
+    "bedroom/plug":       {"state": "OFF"},
+    "kitchen/plug":       {"state": "OFF"},
+    "bedroom/humidifier": {"state": "OFF", "target_humidity": 50,
+                           "current_humidity": 45, "mode": "normal"},
 }
 ```
+
+共 10 个演示设备：3 灯 + 中央空调 + 窗帘 + 风扇 + 温湿度传感器（`living_room/sensor`，只读上报温度/湿度）+ 智能插座 ×2 + 加湿器。
 
 ### 6.3 工作流程
 

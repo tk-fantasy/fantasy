@@ -136,9 +136,13 @@ class CameraStream:
         # 冷启动退避：worker 起来后从未成功开过流(设备断电/IP 漂移/凭证被拒)，
         # 连续失败达到阈值后降到分钟级重试。部分 IPC(如实测 TP-Link TL-IPC43CL)
         # 的 RTSP 有防爆破锁定，秒级重试风暴会把瞬态 401 恶化成"正确密码也 401"，
-        # 直到设备断电重启才解锁。
+        # 直到设备断电重启才解锁。分档拉长（见 _worker 失败分支）给锁定过期机会。
         self._cold_open_backoff = max(
             self._max_backoff, float(get_config("vision.cold_open_backoff_seconds", 60.0))
+        )
+        self._cold_open_max_backoff = max(
+            self._cold_open_backoff,
+            float(get_config("vision.cold_open_max_backoff_seconds", 900.0)),
         )
         self._ever_opened = False
 
@@ -231,12 +235,12 @@ class CameraStream:
         while not self._buffer_queue.empty():
             try:
                 self._buffer_queue.get_nowait()
-            except queue.Empty:
+            except queue.Empty:  # pragma: no cover — empty() 检查后的竞态窗口，单线程不可复现
                 break
         while not self._infer_queue.empty():
             try:
                 self._infer_queue.get_nowait()
-            except queue.Empty:
+            except queue.Empty:  # pragma: no cover — 同上竞态窗口
                 break
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=2)
@@ -607,6 +611,10 @@ class CameraStream:
         #   - max_delay    : 解复用层最多等 100μs 重排，超时就交出当前帧
         #   - fflags+nobuffer : 启动时不预填缓冲（默认预填 1-3 秒用于分析流格式）
         #   -fflags+discardcorrupt : 偶发损坏帧直接丢弃，避免花屏污染推理
+        #   - stimeout/timeout : socket I/O 超时（微秒）。设备不可达/被防爆破锁定时
+        #     open 快速失败（否则默认阻塞 ~20s），也避免重试循环被慢失败拖住。
+        #     FFmpeg ≥5 把 stimeout 改名 timeout，双写让各版本至少命中一个
+        #     （不认识的选项仅警告忽略）。
         # CAP_PROP_BUFFERSIZE 对 RTSP/HTTP 无效（只管本地摄像头），所以必须走
         # OPENCV_FFMPEG_CAPTURE_OPTIONS 这条路。规则引擎的 get_recent_frames(3)
         # 取的是 _frame_buffer 里按 frame_interval_ms 存的帧，不受此影响反而更准。
@@ -616,6 +624,8 @@ class CameraStream:
             f"|max_delay;100000"
             f"|fflags;nobuffer+discardcorrupt"
             f"|flags;low_delay"
+            f"|stimeout;5000000"
+            f"|timeout;5000000"
         )
         cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
         if not cap.isOpened():
@@ -665,9 +675,19 @@ class CameraStream:
                             self._max_backoff,
                         )
                         # 从未成功开过流还连续失败:大概率是设备不在线或凭证被拒，
-                        # 快重试无意义且有防爆破风险，直接降到冷启动节奏
+                        # 快重试无意义且有防爆破风险（连绵的鉴权失败正是触发
+                        # RTSP 防爆破锁定的行为，密码正确也会被拒），分档拉长
+                        # 60s → 300s → 900s 封顶，给设备端锁定静默过期的机会。
                         if not self._ever_opened and self._consecutive_open_failures >= 5:
-                            backoff = self._cold_open_backoff
+                            if self._consecutive_open_failures >= 30:
+                                backoff = self._cold_open_max_backoff
+                            elif self._consecutive_open_failures >= 15:
+                                backoff = min(
+                                    max(self._cold_open_backoff, 300.0),
+                                    self._cold_open_max_backoff,
+                                )
+                            else:
+                                backoff = self._cold_open_backoff
                         # 保留最后一帧给前端宽限期，不立即清空画面
                         self._mark_camera_closed("无法打开电脑摄像头", keep_cache=True)
                         logger.error(

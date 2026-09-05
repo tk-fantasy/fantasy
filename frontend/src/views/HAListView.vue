@@ -410,6 +410,22 @@ function deviceControllableCount(dev) {
 }
 
 // ========================
+//  历史趋势平铺：设备下每个可绘历史的实体各一张图，不再共用选中实体的单一图位
+//  折叠上限防止几十个 MIoT 属性实体把弹窗撑成无限长
+// ========================
+
+const HISTORY_COLLAPSED_COUNT = 4
+const historyExpanded = ref(false)
+const historyEntities = computed(() =>
+  (selectedDevice.value?.entities || []).filter(hasHistory))
+const visibleHistoryEntities = computed(() =>
+  historyExpanded.value
+    ? historyEntities.value
+    : historyEntities.value.slice(0, HISTORY_COLLAPSED_COUNT))
+const hiddenHistoryCount = computed(() =>
+  historyEntities.value.length - visibleHistoryEntities.value.length)
+
+// ========================
 //  Data loading
 // ========================
 
@@ -523,6 +539,7 @@ function openDeviceModal(dev) {
   // 重置编辑态（与 selectEntity 同因：避免 textarea 内容漂移到新设备）
   editingName.value = false
   editingNote.value = false
+  historyExpanded.value = false
   showModal.value = true
 }
 
@@ -863,9 +880,20 @@ onUnmounted(() => {
                   </div>
                 </div>
 
-                <div class="history-section" v-if="hasHistory(selectedEntity)">
-                  <h3>历史趋势</h3>
-                  <SensorChart :entityId="selectedEntity.entity_id" :unit="selectedEntity.attributes?.unit_of_measurement || ''" />
+                <div class="history-section" v-if="historyEntities.length">
+                  <h3>历史趋势 <span class="section-count">({{ historyEntities.length }})</span></h3>
+                  <div class="history-grid">
+                    <div v-for="ent in visibleHistoryEntities" :key="ent.entity_id" class="history-card">
+                      <div class="history-card-head">
+                        <span class="entity-icon" :style="{ color: getDomainIcon(ent.entity_id).color }">{{ getDomainIcon(ent.entity_id).icon }}</span>
+                        <span class="history-card-name" :title="ent.name || ent.entity_id">{{ ent.name || ent.entity_id }}</span>
+                      </div>
+                      <SensorChart :entityId="ent.entity_id" :unit="ent.attributes?.unit_of_measurement || ''" />
+                    </div>
+                  </div>
+                  <button v-if="hiddenHistoryCount > 0" class="history-more" @click="historyExpanded = true">
+                    展开其余 {{ hiddenHistoryCount }} 个趋势图
+                  </button>
                 </div>
 
                 <div class="control-section" v-if="isControllable(selectedEntity)">
@@ -1391,6 +1419,61 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 .entity-row.on .entity-state { color: var(--color-text-secondary); }
+
+/* 历史趋势平铺网格：每传感器一张卡，宽屏两列、窄屏自动收成单列 */
+.history-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: var(--space-8);
+}
+
+.history-card {
+  background: rgba(255,255,255,0.02);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-8) var(--space-10) var(--space-4);
+  min-width: 0;
+}
+
+.history-card-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  margin-bottom: var(--space-4);
+  min-width: 0;
+}
+
+.history-card-head .entity-icon { font-size: 16px; }
+
+.history-card-name {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--color-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-more {
+  margin-top: var(--space-8);
+  padding: var(--space-3) var(--space-12);
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+  background: rgba(255,255,255,0.04);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-out);
+}
+
+.history-more:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text);
+  border-color: var(--color-border-hover);
+}
+
+/* 有趋势图时弹窗加宽，两列平铺不局促（不支持 :has 的浏览器回退 560px 单列） */
+.modal-content:has(.history-grid) { max-width: 880px; }
 
 /* AI 可操作权限徽章（绿=允许 / 红=禁止） */
 .ai-operable-badge {

@@ -65,11 +65,22 @@ def mcp_to_langchain_tool(mcp_tool: MCPTool, full_name: bool = False) -> Structu
         # 调用原始 handler（签名：handler(parameters, session)）
         result = await original_handler(kwargs, session)
         # handler 返回 {"error": ...} 视为失败（与 ToolExecutor 约定一致）：
-        # 加 "Error:" 前缀，让 LLM 与 on_tool_end 的 is_error 检测都能识别
+        # 加 "Error:" 前缀，让 LLM 与 on_tool_end 的 is_error 检测都能识别。
+        # 结构化修正提示（tools.tool_error 约定）以独立行渲染：hint 告诉模型
+        # 下一步怎么改、candidates 给出可选候选——报错即指引，降低小模型
+        # 报错后空转或编造参数的概率。
         if isinstance(result, dict) and "error" in result:
             import json
             body = json.dumps(result, ensure_ascii=False, default=str)
-            return f"Error: {result['error']}\n原始返回：{body}"
+            err = result["error"]
+            reason = err.get("reason") if isinstance(err, dict) else str(err)
+            lines = [f"Error: {reason}"]
+            if result.get("hint"):
+                lines.append(f"修正提示：{result['hint']}")
+            if result.get("candidates"):
+                lines.append("候选：" + "、".join(str(c) for c in result["candidates"]))
+            lines.append(f"原始返回：{body}")
+            return "\n".join(lines)
         # 将结果转为字符串（LangChain ToolMessage 需要字符串内容）
         if isinstance(result, dict):
             import json

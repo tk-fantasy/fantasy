@@ -6,6 +6,11 @@
  * HA history 返回 [[{state, last_updated}, ...]]（外层每项一个实体）。
  *
  * 功能：tooltip 悬停详情、dataZoom 时间缩放、时间窗切换（1h/6h/24h/7d）。
+ *
+ * 平铺场景：设备详情弹窗会为每个传感器各挂一个实例，因此本组件
+ * 进入视口后才初始化/拉取数据（IntersectionObserver 懒加载），
+ * 避免一次挂载几十个实例时齐发请求；canvas 容器常驻布局，
+ * 避免 v-show 隐藏期间 echarts 拿到 0×0 尺寸。
  */
 import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import * as echarts from 'echarts/core'
@@ -34,11 +39,15 @@ const TIME_WINDOWS = [
 ]
 const selectedHours = ref(24)
 
+const rootEl = ref(null)
 const chartContainer = ref(null)
 const points = ref([])       // [[timestamp_ms, value], ...]
-const loading = ref(true)
+const awaitingView = ref(true)  // 尚未进入可视区，等待懒加载
+const loading = ref(false)
 const error = ref('')
 let chart = null
+let observer = null
+let started = false
 
 // 从 CSS 变量读取主题色，保持与页面风格一致
 function themeColor(varName, fallback) {
@@ -120,8 +129,11 @@ function buildOption(data, isBinary = false) {
 async function loadHistory() {
   loading.value = true
   error.value = ''
+  const requestedId = props.entityId
   try {
     const data = await apiGet(`/api/ha/history?filter_entity_id=${encodeURIComponent(props.entityId)}&hours=${selectedHours.value}`)
+    // 实体已切换时丢弃过期响应，防止旧数据画进新图表
+    if (requestedId !== props.entityId) return
     const history = data?.history || []
     const entityHistory = Array.isArray(history[0]) ? history[0] : []
     const pts = entityHistory
@@ -141,9 +153,10 @@ async function loadHistory() {
     points.value = pts
     renderChart()
   } catch (e) {
+    if (requestedId !== props.entityId) return
     error.value = e.message || '加载失败'
   } finally {
-    loading.value = false
+    if (requestedId === props.entityId) loading.value = false
   }
 }
 
@@ -153,13 +166,22 @@ function renderChart() {
 }
 
 function initChart() {
-  if (!chartContainer.value) return
+  if (!chartContainer.value || chart) return
   chart = echarts.init(chartContainer.value)
   chart.setOption(buildOption([]))
 }
 
 function handleResize() {
   chart?.resize()
+}
+
+// 懒加载入口：进入视口才初始化图表并拉取历史
+function start() {
+  if (started) return
+  started = true
+  awaitingView.value = false
+  initChart()
+  loadHistory()
 }
 
 const hasData = computed(() => points.value.length >= 2)
@@ -175,24 +197,36 @@ const currentValue = computed(() => {
 
 onMounted(async () => {
   await nextTick()
-  initChart()
   window.addEventListener('resize', handleResize)
-  await loadHistory()
+  if (typeof IntersectionObserver === 'undefined') {
+    start()
+    return
+  }
+  observer = new IntersectionObserver((entries) => {
+    if (entries.some(e => e.isIntersecting)) {
+      start()
+      observer?.disconnect()
+      observer = null
+    }
+  }, { rootMargin: '120px' })
+  observer.observe(rootEl.value)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', handleResize)
+  observer?.disconnect()
+  observer = null
   chart?.dispose()
   chart = null
 })
 
-// entityId 变化时重新加载（切换 sensor 实体）
-watch(() => props.entityId, () => { loadHistory() })
+// entityId 变化时重新加载（切换 sensor 实体）；尚未懒启动的实例等可见时再取
+watch(() => props.entityId, () => { if (started) loadHistory() })
 </script>
 
 <template>
-  <div class="sensor-chart">
-    <div class="chart-toolbar">
+  <div ref="rootEl" class="sensor-chart">
+    <div class="chart-toolbar" v-if="!awaitingView">
       <div class="chart-stats" v-if="hasData">
         <span class="chart-current">{{ currentValue }}{{ unit }}</span>
       </div>
@@ -206,16 +240,20 @@ watch(() => props.entityId, () => { loadHistory() })
         >{{ w.label }}</button>
       </div>
     </div>
-    <div v-if="loading" class="chart-status">加载历史数据…</div>
-    <div v-else-if="error" class="chart-status chart-error">{{ error }}</div>
-    <div v-else-if="!hasData" class="chart-status">暂无历史数据</div>
-    <div ref="chartContainer" class="chart-canvas" v-show="!loading && !error && hasData"></div>
+    <div class="chart-wrap">
+      <div ref="chartContainer" class="chart-canvas"></div>
+      <div v-if="awaitingView" class="chart-status">滚动到此处加载趋势</div>
+      <div v-else-if="loading" class="chart-status">加载历史数据…</div>
+      <div v-else-if="error" class="chart-status chart-error">{{ error }}</div>
+      <div v-else-if="!hasData" class="chart-status">暂无历史数据</div>
+    </div>
   </div>
 </template>
 
 <style scoped>
 .sensor-chart {
   width: 100%;
+  min-width: 0;
 }
 
 .chart-toolbar {
@@ -258,14 +296,24 @@ watch(() => props.entityId, () => { loadHistory() })
   color: var(--color-primary);
 }
 
-.chart-canvas {
-  width: 100%;
+/* 画布常驻布局：即使处于加载/错误态也占住 220px 高度，
+   保证 echarts 初始化时能拿到真实尺寸 */
+.chart-wrap {
+  position: relative;
   height: 220px;
 }
 
+.chart-canvas {
+  width: 100%;
+  height: 100%;
+}
+
 .chart-status {
-  padding: var(--space-16);
-  text-align: center;
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   color: var(--color-text-muted);
   font-size: var(--text-sm);
 }

@@ -13,7 +13,7 @@ Aether 的 MCP 分两类：
 
 ## 二、管家自带的能力（不用配）
 
-Aether 内置 13 个工具，开箱即用：
+Aether 内置 16 个工具，开箱即用：
 
 | 工具 | 作用 |
 |------|------|
@@ -21,7 +21,7 @@ Aether 内置 13 个工具，开箱即用：
 | `fetch_webpage` | 抓取网页正文（markdown），SSRF 防护 |
 | `http_request` | 发送 HTTP 请求调用外部 API |
 | `web_search` | 上网搜索（走 Exa） |
-| `vision_chat` | 看摄像头画面回答问题 |
+| `vision_chat` | 看摄像头画面回答问题（离线时如实告知，不调模型猜） |
 | `get_entities` | 读取家里所有智能设备 |
 | `get_device_manual` | 查设备的自定义备注（使用方法/别名），辅助控制设备 |
 | `call_service` | 控制设备（开关灯、调空调等） |
@@ -30,8 +30,11 @@ Aether 内置 13 个工具，开箱即用：
 | `scheduled_task_create` | 创建定时任务 |
 | `scheduled_task_list` | 列出定时任务 |
 | `scheduled_task_delete` | 删除定时任务 |
+| `scene_list` | 列出所有已保存场景 |
+| `scene_apply` | 应用场景（一组设备切到预设状态） |
+| `scene_create` | 创建场景（捕获当前状态或传动作列表） |
 
-> 这些是 AI 管家在对话里能调的。前端聊天界面会为常用的 8 个显示工具卡片（见《AI管家聊天入门》）。
+> 这些是 AI 管家在对话里能调的。前端聊天界面会为常用的几个显示工具卡片（见《AI管家聊天入门》）。
 
 ## 三、怎么接入外部工具
 

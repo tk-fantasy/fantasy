@@ -165,6 +165,13 @@ async def build_system_prompt(
         # 用户省略了设备名）会因 query 剥离后匹配不到设备而不注入列表，模型眼前空白，
         # 只能从训练数据幻觉出英文 entity_id（如 climate.bedroom_humidifier）。
         # 始终注入后，模型可从历史上下文的设备名反查到真实 entity_id。
+        #
+        # 【未来优化提示】设备数量超过 ~50 台后，全量注入会让系统提示词线性膨胀
+        # （每轮 token 成本随之上升）。届时可在此做按 query 相关性检索裁剪：
+        # 用嵌入模型把设备条目向量化（faiss 基建已有，参考 rag_service / sg/pipeline/
+        # vectorizer.py），每轮按用户 query 检索 top-k 设备注入完整可控项，
+        # 其余设备只保留一行名称。注意保留本条教训：完全不注入会幻觉 entity_id，
+        # 裁剪方案必须保证设备名 → entity_id 始终可反查（如保留全量名称索引行）。
         parts.append(
             f"\n设备可控项（直接用于 call_service，禁止自行拼写 entity_id；"
             f"多子功能设备括号里的子功能名——如「会客厅灯 左键」——供匹配用户指称定位实体）：\n{device_controls}"
