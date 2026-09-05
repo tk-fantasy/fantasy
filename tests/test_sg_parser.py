@@ -78,6 +78,21 @@ class TestParseAll:
         docs = parse_all("/nonexistent/path", "")
         assert docs == []
 
+    def test_parse_root_level_md(self, tmp_path):
+        """docs_root 根级散落的 .md 也能解析，category 归为「根目录」。"""
+        (tmp_path / "README.md").write_text(
+            "# 根文档\n## 概述\n根级说明内容", encoding="utf-8")
+        (tmp_path / "01-安装").mkdir()
+        (tmp_path / "01-安装" / "Docker.md").write_text(
+            "# Docker\n## 安装\n步骤", encoding="utf-8")
+
+        docs = parse_all(str(tmp_path), "")
+        by_cat = {d.category: d for d in docs}
+        assert set(by_cat) == {"根目录", "01-安装"}
+        assert by_cat["根目录"].title == "根文档"
+        # H1 到首个 H2 之间是「前言」段，首个 H2 在 sections[1]
+        assert by_cat["根目录"].sections[1].heading == "概述"
+
     def test_parse_single_doc(self, tmp_path):
         cat_dir = tmp_path / "01-安装"
         cat_dir.mkdir()

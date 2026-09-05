@@ -212,3 +212,72 @@ def test_interrupt_degrades_without_media_player():
 
     assert result["interrupted"] is True
     plugin.ha_caller.call_service.assert_not_awaited()
+
+
+# ==================== 补充分支：并发缓存/清队/resolve失败/media_stop异常 ====================
+
+def test_resolve_concurrent_hits_inner_cache_check():
+    """两个 resolve 并发：后者在外层检查后才拿到缓存 → 走锁内二次检查分支。"""
+    plugin = _make_plugin()
+    resolver = plugin.resolver
+    gate = asyncio.Event()
+    calls = {"n": 0}
+    orig_states = _states()
+
+    async def slow_states():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            await gate.wait()  # 第一次扫描挂住，等第二个 resolve 进来
+        return orig_states
+
+    plugin.host.ha.get_states = slow_states
+
+    async def two():
+        t1 = asyncio.create_task(resolver.resolve())
+        await asyncio.sleep(0.05)  # t1 持锁进入 get_states
+        t2 = asyncio.create_task(resolver.resolve())  # 外层检查仍 None → 等锁
+        await asyncio.sleep(0.05)
+        gate.set()
+        r1, r2 = await asyncio.gather(t1, t2)
+        return r1, r2
+
+    r1, r2 = _run(two())
+    assert calls["n"] == 1  # t2 没有再扫描，走锁内缓存命中
+    assert r2.media_player == r1.media_player
+
+
+def test_interrupt_drains_queued_messages():
+    """interrupt 清空排队中的播报消息后再 media_stop。"""
+    plugin = _make_plugin()
+    sink = plugin.sinks[0]
+    sink._queue.put_nowait({"text": "一"})
+    sink._queue.put_nowait({"text": "二"})
+
+    result = _run(plugin.handle("sink.interrupt", {}))
+
+    assert result["interrupted"] is True
+    assert sink._queue.empty()
+
+
+def test_interrupt_resolver_error_returns_error():
+    """interrupt 时实体解析失败 → 返回 error，不再调 media_stop。"""
+    plugin = _make_plugin()
+    from types import SimpleNamespace as _SNSE
+    xiaoai_resolve_error = _module.XiaoAiResolveError
+    plugin.resolver.resolve = AsyncMock(
+        side_effect=xiaoai_resolve_error("HA 不可达"))
+
+    result = _run(plugin.handle("sink.interrupt", {}))
+
+    assert result == {"error": "HA 不可达"}
+    plugin.ha_caller.call_service.assert_not_awaited()
+
+
+def test_interrupt_media_stop_failure_still_interrupted():
+    """media_stop 抛异常：记日志吞掉，interrupt 仍算成功。"""
+    plugin = _make_plugin()
+    plugin.host.ha.call_service.side_effect = RuntimeError("ha down")
+
+    result = _run(plugin.handle("sink.interrupt", {}))
+
+    assert result == {"interrupted": True}

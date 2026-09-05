@@ -245,9 +245,11 @@ class TestWeeklyReport:
         assert "自动化触发 2 次" in result["text"]
         assert "全部成功" in result["text"]
 
-    def test_stats_summary(self):
+    @pytest.mark.asyncio
+    async def test_stats_summary(self):
         from app.services.weekly_report_service import WeeklyReportService
-        text = WeeklyReportService._summarize_stats([
+        svc = WeeklyReportService(llm_chat_client=None)
+        text = await svc._summarize_stats([
             {"kind": "alert"}, {"kind": "alert"}, {"kind": "alert_resolved"},
             {"kind": "task_failed"},
         ])

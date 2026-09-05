@@ -204,8 +204,9 @@ class TestCandidateLookup:
             {"domain": "light", "service": "turn_on", "entity_id": "light.hall"}, session
         )
         assert result["success"] is False
-        assert "switch.a_on_p2（A灯 会客厅灯 左键）" in result["error"]
-        assert "重试一次" in result["error"]
+        # 候选与修正提示已结构化：candidates 列表 + hint 字段（tools.tool_error 约定）
+        assert any("switch.a_on_p2（A灯 会客厅灯 左键）" in c for c in result["candidates"])
+        assert "重试一次" in result["hint"]
 
     @pytest.mark.asyncio
     async def test_call_service_rejection_no_match_hint(self, tmp_path):
@@ -234,7 +235,9 @@ class TestCandidateLookup:
             {"domain": "light", "service": "turn_on", "entity_id": "light.hall"}, session
         )
         assert result["success"] is False
-        assert "没有匹配到任何真实设备" in result["error"]
+        # 无候选时修正提示放在 hint（结构化约定），且不应有 candidates 字段
+        assert "没有匹配到任何真实设备" in result["hint"]
+        assert "candidates" not in result
 
     @pytest.mark.asyncio
     async def test_call_service_prohibited_not_in_candidates(self, tmp_path):
@@ -264,6 +267,6 @@ class TestCandidateLookup:
             {"domain": "light", "service": "turn_on", "entity_id": "light.hall"}, session
         )
         assert result["success"] is False
-        assert "switch.a_on_p2" not in result["error"]
+        assert all("switch.a_on_p2" not in c for c in result.get("candidates", []))
         # 右键未被禁止，仍是候选
-        assert "switch.a_on_p3（A灯 会客厅灯 右键）" in result["error"]
+        assert any("switch.a_on_p3（A灯 会客厅灯 右键）" in c for c in result.get("candidates", []))
