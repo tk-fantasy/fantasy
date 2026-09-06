@@ -143,7 +143,7 @@ const keys = ref([])
 const showKeyForm = ref(false)
 const deletingKey = ref(null)
 const newKey = ref({ base_url: '', model: '', type: 'chat', api_key: '' })
-const typeOptions = ['chat', 'summary', 'vision', 'embed', 'stt']
+const typeOptions = ['chat', 'vision', 'embed', 'stt']
 const typeSelectOptions = typeOptions.map(t => ({ value: t, label: t }))
 
 // ===== 加载所有配置 =====

@@ -144,9 +144,9 @@ async def upsert_global_llm_key_route(
     api_key = payload.api_key.strip()
     key_id = payload.id.strip()
 
-    if model_type not in ("chat", "summary", "vision", "embed", "stt"):
+    if model_type not in ("chat", "vision", "embed", "stt"):
         raise AppException(
-            "type 必须是 chat/summary/vision/embed/stt 之一",
+            "type 必须是 chat/vision/embed/stt 之一",
             code="llm_key_invalid", http_status=400,
         )
 

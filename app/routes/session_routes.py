@@ -145,8 +145,20 @@ async def compress_session(
     current_user: dict = Depends(get_current_user),
     container: AppContainer = Depends(get_container),
 ) -> ApiResponse[dict]:
-    """手动触发会话压缩（生成摘要）。"""
+    """手动触发会话压缩（生成摘要）。
+
+    与自动压缩共用同一套阈值判断：未达阈值时如实返回 compressed=False，
+    不做任何压缩（自动压缩每轮对话前也会做同样检查，无需手动提前）。
+    """
     session = await _check_session_owner(container, session_id, current_user)
+    should, _ = container.summarization_service.should_compress(session)
+    if not should:
+        return ApiResponse(data={
+            "compressed": False,
+            "reason": "below_threshold",
+            "summaries": session.summaries,
+            "message_count": len(session.model_messages),
+        })
     await container.summarization_service.refresh_summaries(session, user_id=current_user["user_id"])
     await container.session_store.store_session(session)
     return ApiResponse(data={

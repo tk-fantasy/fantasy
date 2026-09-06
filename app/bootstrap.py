@@ -49,12 +49,10 @@ def initialize_services() -> dict[str, Any]:
     )
     services["camera_manager"] = camera_manager
 
-    # 聊天客户端（用于摘要等后台任务）
+    # 聊天客户端（对话主模型，同时供会话摘要复用）
     llm_chat_client = LlmChatClient()
-    summary_client = LlmChatClient(role="summary")
 
     services["llm_chat_client"] = llm_chat_client
-    services["summary_client"] = summary_client
 
     # 会话存储（持久化走 SQLite sessions 表）
     session_store = SessionStore()
@@ -73,8 +71,8 @@ def initialize_services() -> dict[str, Any]:
     # 持有方是 main.langgraph_agent 模块全局 + dispatcher（set_agent 唯一通道），
     # 不再进 services dict（此前只写不读，属三份冗余引用）。
 
-    # RAG 相关服务
-    summarization_service = SummarizationService(chat_client=summary_client)
+    # RAG 相关服务（摘要复用对话模型，无独立 summary 角色）
+    summarization_service = SummarizationService(chat_client=llm_chat_client)
 
     services["summarization_service"] = summarization_service
 
@@ -105,7 +103,6 @@ def initialize_services() -> dict[str, Any]:
 
     # 注册热重载钩子
     llm_settings_service.register_reload_hook(llm_chat_client.reload)
-    llm_settings_service.register_reload_hook(summary_client.reload)
     llm_settings_service.register_reload_hook(vision_client.reload)
 
     services["llm_settings_service"] = llm_settings_service

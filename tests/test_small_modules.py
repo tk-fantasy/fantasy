@@ -310,7 +310,7 @@ class TestLlmRoles:
     def test_per_user_roles_content(self):
         from app.core.roles import PER_USER_ROLES
 
-        assert PER_USER_ROLES == {"chat", "summary", "stt"}
+        assert PER_USER_ROLES == {"chat", "stt"}  # summary 角色已删除：摘要复用对话模型
 
     def test_global_roles_not_isolated(self):
         """vision/embed 历史上全局共享，不进 per-user DB。"""

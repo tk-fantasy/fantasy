@@ -9,11 +9,11 @@ from ..core.key_resolver import find_key_by_id, resolve_api_key
 
 logger = logging.getLogger(__name__)
 
-ROLE_KEYS = ["chat", "summary", "vision", "embed", "stt"]
+ROLE_KEYS = ["chat", "vision", "embed", "stt"]
 
 
 class LlmSettingsService:
-    """管理各角色（chat/summary/vision/embed）的运行时配置：
+    """管理各角色（chat/vision/embed）的运行时配置：
     key_id、max_concurrency、thinking、multimodal。
     保存到 config.json 的 providers.<role>，并热重载客户端。
     """
@@ -62,8 +62,8 @@ class LlmSettingsService:
             "enabled": True,
         }
 
-        # thinking 仅对 chat/summary/vision 有效
-        if role in ("chat", "summary", "vision"):
+        # thinking 仅对 chat/vision 有效
+        if role in ("chat", "vision"):
             values["thinking"] = bool(thinking) if thinking is not None else False
 
         # multimodal 仅对 vision 有效

@@ -27,8 +27,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# /chat 状态条展示的 4 个角色（stt 语音专用，不在此列）
-_LLM_STATUS_ROLES: list[str] = ["chat", "summary", "vision", "embed"]
+# /chat 状态条展示的 3 个角色（stt 语音专用，不在此列）
+_LLM_STATUS_ROLES: list[str] = ["chat", "vision", "embed"]
 
 
 @router.get("/llm_keys")
@@ -69,8 +69,8 @@ async def upsert_llm_key_route(
     api_key = payload.api_key.strip()
     key_id = payload.id.strip()
 
-    if model_type not in ("chat", "summary", "vision", "embed", "stt"):
-        raise AppException("type 必须是 chat/summary/vision/embed/stt 之一", code="llm_key_invalid", http_status=400)
+    if model_type not in ("chat", "vision", "embed", "stt"):
+        raise AppException("type 必须是 chat/vision/embed/stt 之一", code="llm_key_invalid", http_status=400)
 
     parsed = urlparse(base_url)
     is_local = parsed.hostname in ("127.0.0.1", "localhost", "::1")
@@ -127,7 +127,7 @@ async def get_llm_settings(
     current_user: dict = Depends(get_current_user),
     container: AppContainer = Depends(get_container),
 ) -> ApiResponse[dict]:
-    """获取当前 LLM 设置。chat/summary/stt 返回 per-user 绑定；vision/embed 返回全局。"""
+    """获取当前 LLM 设置。chat/stt 返回 per-user 绑定；vision/embed 返回全局。"""
     settings = container.llm_settings_service.current_settings()
     user_providers = await llm_key_service.get_user_providers(current_user["user_id"])
     for role in PER_USER_ROLES:
@@ -159,7 +159,7 @@ async def set_llm_settings(
     current_user: dict = Depends(get_current_user),
     container: AppContainer = Depends(get_container),
 ) -> ApiResponse[dict]:
-    """应用 LLM 设置。vision/embed 写全局 config.json；chat/summary/stt 写用户 DB。"""
+    """应用 LLM 设置。vision/embed 写全局 config.json；chat/stt 写用户 DB。"""
     role = payload.role
 
     if role in PER_USER_ROLES:
@@ -168,7 +168,7 @@ async def set_llm_settings(
             "max_concurrency": max(1, payload.max_concurrency or 8),
             "enabled": True,
         }
-        if role in ("chat", "summary") and payload.thinking is not None:
+        if role == "chat" and payload.thinking is not None:
             values["thinking"] = bool(payload.thinking)
         if payload.use_global is not None:
             values["use_global"] = bool(payload.use_global)

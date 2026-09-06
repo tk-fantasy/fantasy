@@ -37,7 +37,7 @@ def auto_select_key(role: str) -> dict[str, Any] | None:
     当 providers.<role>.key_id 未设置或找不到时调用。
 
     Args:
-        role: 角色类型（chat/vision/embed/summary）
+        role: 角色类型（chat/vision/embed）
 
     Returns:
         key 配置字典，无可用 key 返回 None
@@ -58,7 +58,7 @@ def get_keys_for_role(role: str) -> list[dict[str, Any]]:
     用于 ApiKeyManager 构建 key 池。
 
     Args:
-        role: 角色类型（chat/vision/embed/summary）
+        role: 角色类型（chat/vision/embed）
 
     Returns:
         key 配置列表，每项包含解析后的 api_key
@@ -106,7 +106,7 @@ def resolve_key_for_role(role: str) -> dict[str, Any] | None:
     找不到则自动选择第一个可用的 key。
 
     Args:
-        role: 角色类型（chat/vision/embed/summary）
+        role: 角色类型（chat/vision/embed）
 
     Returns:
         key 配置字典（含解析后的 api_key），无可用 key 返回 None
@@ -137,7 +137,7 @@ async def resolve_key_for_role_user(role: str, user_id: str) -> dict[str, Any] |
     解析出 base_url/model/api_key。用户无配置时返回 None（调用方回退全局）。
 
     Args:
-        role: 角色类型（chat/vision/embed/summary/stt）
+        role: 角色类型（chat/vision/embed/stt）
         user_id: 用户 ID
 
     Returns:
@@ -167,7 +167,7 @@ async def resolve_key_for_role_user(role: str, user_id: str) -> dict[str, Any] |
     except (json.JSONDecodeError, TypeError):
         providers = {}
 
-    # 0. use_global flag：chat/summary/stt 角色可显式声明"用全局 key"，
+    # 0. use_global flag：chat/stt 角色可显式声明"用全局 key"，
     # 此处返回 None 让调用方回退到 resolve_key_for_role(全局)。
     # 必须在 key_id 查找与 auto-select 之前判断——否则 auto-select 会拦下
     # 用户已有的同类型 per-user key，导致"切到全局"无效。

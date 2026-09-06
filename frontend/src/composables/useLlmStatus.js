@@ -9,7 +9,7 @@ import { ref } from 'vue'
 import { apiGet } from '../utils/api'
 
 // 状态条展示的 4 个角色标签（stt 语音专用，不在此列）
-export const ROLE_LABELS = { chat: '对话', summary: '摘要', vision: '视觉', embed: '向量' }
+export const ROLE_LABELS = { chat: '对话', vision: '视觉', embed: '向量' }
 
 export function useLlmStatus() {
   const chatModelName = ref('')

@@ -1493,7 +1493,7 @@ class TestLlmSettingsService:
     def test_current_settings_defaults(self, svc):
         cfg_mod.CONFIG["providers"] = {}
         s = svc.current_settings()
-        assert set(s) == {"chat", "summary", "vision", "embed", "stt"}
+        assert set(s) == {"chat", "vision", "embed", "stt"}
         assert s["chat"] == {
             "key_id": None, "max_concurrency": 8, "thinking": False, "multimodal": False,
         }
@@ -1543,15 +1543,13 @@ class TestLlmSettingsService:
     def test_warnings_all_branches(self, svc, monkeypatch):
         cfg_mod.CONFIG["providers"] = {
             "chat": {},  # 未选 key
-            "summary": {"key_id": "ghost"},  # key 不存在
-            "vision": {"key_id": "v1"},  # key 存在但 env 未设置
-            "embed": {"key_id": "e1"},  # key 存在但无 env 无明文
-            "stt": {"key_id": "s1"},  # 完全健康
+            "vision": {"key_id": "ghost"},  # key 不存在
+            "embed": {"key_id": "e1", "api_key_env": "TEST_WARN_MISSING"},  # env 未设置
+            "stt": {"key_id": "s1"},  # 无 env 无明文
         }
         cfg_mod.CONFIG["llm_keys"] = [
-            {"id": "v1", "type": "vision", "api_key_env": "TEST_WARN_MISSING"},
-            {"id": "e1", "type": "embed"},
-            {"id": "s1", "type": "stt", "api_key": "sk-ok"},
+            {"id": "e1", "type": "embed", "api_key_env": "TEST_WARN_MISSING"},
+            {"id": "s1", "type": "stt"},
         ]
         monkeypatch.delenv("TEST_WARN_MISSING", raising=False)
         notes = svc.warnings()
@@ -1559,7 +1557,7 @@ class TestLlmSettingsService:
         assert "不存在" in notes[1]
         assert "TEST_WARN_MISSING" in notes[2]
         assert "未设置 API key" in notes[3]
-        assert len(notes) == 4  # stt 健康，无告警
+        assert len(notes) == 4
 
 
 # ================================================================ model_test_service
@@ -1765,7 +1763,6 @@ def _services_dict():
         "ha_service": MagicMock(name="ha_service"),
         "llm_chat_client": MagicMock(name="llm_chat_client"),
         "vision_client": MagicMock(name="vision_client"),
-        "summary_client": MagicMock(name="summary_client"),
         "embed_client": MagicMock(name="embed_client"),
         "session_store": MagicMock(),
         "vision_service": MagicMock(),
@@ -1821,7 +1818,6 @@ class TestContainer:
         c.reload_all_clients()
         c.llm_chat_client.reload.assert_called_once()
         c.vision_client.reload.assert_called_once()
-        c.summary_client.reload.assert_called_once()
         c.embed_client.reload.assert_called_once()
         c.rag_service.maybe_rebuild_if_model_changed.assert_called_once()
 

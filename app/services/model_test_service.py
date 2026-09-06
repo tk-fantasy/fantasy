@@ -75,7 +75,7 @@ async def test_model_connection(
                 payload = {"model": model, "input": "test"}
                 resp = await client.post(url, json=payload, headers=headers)
             else:
-                # chat, summary, vision all use chat completions
+                # chat, vision all use chat completions
                 url = base_url.rstrip("/") + chat_path
                 payload = {
                     "model": model,

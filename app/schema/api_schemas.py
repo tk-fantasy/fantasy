@@ -91,7 +91,7 @@ class LLMSettingsRequest(BaseModel):
     max_concurrency: int = 8
     thinking: Any | None = None
     multimodal: Any | None = None
-    # chat/summary/stt 角色可切到"用全局 key"。True=该角色走全局兜底，
+    # chat/stt 角色可切到"用全局 key"。True=该角色走全局兜底，
     # False/未设=走 per-user（用户自己的 key）。详见 key_resolver.use_global。
     use_global: bool | None = None
 

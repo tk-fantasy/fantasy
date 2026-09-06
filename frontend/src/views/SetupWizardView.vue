@@ -22,19 +22,17 @@ const homeForm = ref({
   district: '',
 })
 
-// Step 2: LLM 模型配置（4 个角色）
+// Step 2: LLM 模型配置（3 个角色；会话摘要复用对话模型，无需单独配置）
 const llmRoles = [
-  { key: 'chat', label: '对话模型', desc: '用于聊天和自动化规则评估', icon: '💬' },
+  { key: 'chat', label: '对话模型', desc: '用于聊天、自动化规则评估与对话历史压缩', icon: '💬' },
   { key: 'vision', label: '视觉模型', desc: '用于摄像头画面分析', icon: '👁️' },
   { key: 'embed', label: '嵌入模型', desc: '用于文本向量化和语义搜索', icon: '🔢' },
-  { key: 'summary', label: '摘要模型', desc: '用于对话历史压缩', icon: '📝' },
 ]
 
 const llmForms = ref({
   chat: { base_url: '', api_key: '', model: '' },
   vision: { base_url: '', api_key: '', model: '' },
   embed: { base_url: '', api_key: '', model: '' },
-  summary: { base_url: '', api_key: '', model: '' },
 })
 
 const activeRole = ref('chat')

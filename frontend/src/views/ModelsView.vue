@@ -6,17 +6,16 @@ import { apiGet, apiPost } from '../utils/api'
 
 const router = useRouter()
 
-const roles = ['chat', 'vision', 'summary', 'embed', 'stt']
+const roles = ['chat', 'vision', 'embed', 'stt']
 const roleLabels = {
   chat: '对话',
   vision: '视觉',
-  summary: '摘要',
   embed: '嵌入',
   stt: '语音',
 }
 // 全局共享的角色（仅提示，不拦截）— 修改需确认
 const SYSTEM_ROLES = ['vision', 'embed']
-const PERSONAL_ROLES = ['chat', 'summary', 'stt']
+const PERSONAL_ROLES = ['chat', 'stt']
 
 // 顶层 tab：我的模型 / 全局配置
 const activeTab = ref('mine')
@@ -25,14 +24,12 @@ const keys = ref([])
 const selectedKeys = ref({
   chat: '',
   vision: '',
-  summary: '',
   embed: '',
   stt: '',
 })
-// use_global 标志：chat/summary/stt 是否走全局兜底（true=全局，false=私有）
+// use_global 标志：chat/stt 是否走全局兜底（true=全局，false=私有）
 const useGlobal = ref({
   chat: false,
-  summary: false,
   stt: false,
 })
 const loading = ref(true)
@@ -196,14 +193,13 @@ const keyFormError = ref('')
 const keySaving = ref(false)
 const keyTypeOptions = [
   { value: 'chat', label: 'chat' },
-  { value: 'summary', label: 'summary' },
   { value: 'vision', label: 'vision' },
   { value: 'embed', label: 'embed' },
   { value: 'stt', label: 'stt' },
 ]
 
 // 全局 providers 编辑（每个角色选 key_id）
-const globalSelectedKeys = ref({ chat: '', vision: '', summary: '', embed: '', stt: '' })
+const globalSelectedKeys = ref({ chat: '', vision: '', embed: '', stt: '' })
 const globalSaving = ref(false)
 const restartNotice = ref('') // 热重载失败时提示需重启
 

@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 class SummarizationService:
     def __init__(self, chat_client=None) -> None:
-        # 注入 LLM 聊天客户端用于真正的 LLM 摘要;为空时退回截断
+        # 注入对话模型客户端用于 LLM 摘要（摘要复用对话模型，无独立 summary 角色）;为空时退回截断
         self._chat_client = chat_client
         # 从配置文件加载，保留硬编码默认值作为 fallback
         self._soft_max_turns = int(get_config("rag.soft_max_turns", 12))
@@ -78,7 +78,8 @@ class SummarizationService:
             if len(chunks) >= self._summary_blocks:
                 break
 
-        # 按 user_id 解析 per-user summary 客户端，无配置则回退全局
+        # 按 user_id 解析 per-user chat 客户端，无配置则回退全局对话客户端。
+        # 摘要无独立模型角色，一律复用对话（chat）模型。
         summary_client = await self._resolve_summary_client(user_id)
 
         # 并发处理所有 chunk
@@ -107,12 +108,13 @@ class SummarizationService:
         return summaries
 
     async def _resolve_summary_client(self, user_id: str):
-        """按 user_id 解析 per-user summary 客户端。用户无配置时回退全局 self._chat_client。
+        """按 user_id 解析摘要客户端。
 
-        注意：与 automation/rule/scheduler 不同，这里不强制 _enabled=True —— summary
-        客户端保留其角色的 enabled 开关语义（走 build_per_user_chat_client 的 force_enabled=False）。
+        摘要复用对话（chat）模型：用户配置了 per-user chat key 则用之，
+        否则回退全局对话客户端（bootstrap 注入的 llm_chat_client）。
+        不强制 _enabled=True —— 保留角色的 enabled 开关语义。
         """
-        per_user = await build_per_user_chat_client("summary", user_id, force_enabled=False)
+        per_user = await build_per_user_chat_client("chat", user_id, force_enabled=False)
         if per_user is not None:
             return per_user
         return self._chat_client
@@ -128,9 +130,16 @@ class SummarizationService:
                 messages = [
                     {
                         "role": "system",
-                        "content": "你是对话摘要器。把多轮对话压缩成一段简洁中文摘要,保留关键事实、用户意图和已执行的操作,不要寒暄,不超过150字。",
+                        "content": (
+                            "你是对话摘要器。把多轮对话压缩成简洁的中文分条摘要,必须保留:\n"
+                            "1. 提到的具体设备名/房间及其状态变化;\n"
+                            "2. 用户下达的指令及执行结果(成功/失败/被拒绝);\n"
+                            "3. 未完成的意图、待办与用户偏好;\n"
+                            "4. 关键时间点与数量。\n"
+                            "忽略寒暄与重复内容。总长不超过300字。"
+                        ),
                     },
-                    {"role": "user", "content": f"请摘要以下对话片段:\n{joined[:4000]}"},
+                    {"role": "user", "content": f"请摘要以下对话片段:\n{joined[:12000]}"},
                 ]
                 summary = await client.chat(messages, timeout)
                 summary = str(summary).strip()

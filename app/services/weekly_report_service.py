@@ -1,7 +1,7 @@
 """家庭周报 — 聚合一周 family_events，LLM 生成人话总结，推送 + 留存。
 
 数据源：family_events 表（告警/恢复/任务成败/自动化触发/插件熔断，由
-alert_service 与各 hook 点写入）。生成走 summary 角色的 LLM 客户端
+alert_service 与各 hook 点写入）。生成复用对话（chat）模型的 LLM 客户端
 （有全局 key 即可，无 per-user 依赖）。
 
 调度：自带轻量每日检查循环（不进 scheduler 任务列表，避免系统行为出现在

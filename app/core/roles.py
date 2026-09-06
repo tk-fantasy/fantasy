@@ -5,8 +5,9 @@
 """
 from __future__ import annotations
 
-# per-user 隔离的角色：chat/summary/stt 按用户存 DB。
+# per-user 隔离的角色：chat/stt 按用户存 DB。
 # vision/embed 历史上就是全局共享（所有用户用同一个 embed 索引/视觉模型），
 # 不进 per-user DB —— wizard 同步 llm_keys 时必须按此过滤，否则全局 key
 # 丢失后运行时无法从 per-user 回退（embed_client 走全局解析路径）。
-PER_USER_ROLES: set[str] = {"chat", "summary", "stt"}
+# summary 角色已删除：会话摘要复用对话（chat）模型，无需单独配置。
+PER_USER_ROLES: set[str] = {"chat", "stt"}

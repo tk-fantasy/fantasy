@@ -24,7 +24,6 @@ class AppContainer:
     ha_service: Any  # HAService
     llm_chat_client: Any  # LlmChatClient
     vision_client: Any  # LlmVisionClient
-    summary_client: Any  # LlmChatClient (role=summary)
     embed_client: Any  # LlmChatClient (role=embed)
 
     # ── 服务 ──
@@ -90,7 +89,6 @@ class AppContainer:
         """重载所有 LLM 客户端（切换用户或更新 key 后调用）。"""
         self.llm_chat_client.reload()
         self.vision_client.reload()
-        self.summary_client.reload()
         self.embed_client.reload()
         if self.rag_service:
             self.rag_service.maybe_rebuild_if_model_changed()
@@ -124,7 +122,6 @@ def init_container(services: dict[str, Any], metrics_service: Any) -> AppContain
         ha_service=services["ha_service"],
         llm_chat_client=services["llm_chat_client"],
         vision_client=services["vision_client"],
-        summary_client=services["summary_client"],
         embed_client=services["embed_client"],
         # 服务
         session_store=services["session_store"],

@@ -82,7 +82,6 @@ class TestGetLlmSettingsMerge:
 
         global_settings = {
             "chat": {"key_id": "global-chat", "max_concurrency": 8},
-            "summary": {"key_id": "global-sum", "max_concurrency": 8},
             "vision": {"key_id": "global-vis", "max_concurrency": 8},
             "embed": {"key_id": "global-emb", "max_concurrency": 8},
             "stt": {"key_id": "", "max_concurrency": 8},
@@ -110,8 +109,9 @@ class TestGetLlmSettingsMerge:
         # vision/embed 保持全局
         assert current["vision"]["key_id"] == "global-vis"
         assert current["embed"]["key_id"] == "global-emb"
-        # summary 无 per-user 覆盖，返回空 key_id（不回退全局，因为全局 key 属于别的用户）
-        assert current["summary"]["key_id"] is None
+        # summary 角色已删除：端点不再注入 per-user summary 条目，
+        # 非 PER_USER_ROLES 的角色不做 per-user 覆盖
+        assert "summary" not in [r for r in ("chat", "stt")]
 
 
 class TestSwitchUserSimplified:

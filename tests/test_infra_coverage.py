@@ -65,7 +65,7 @@ class TestContainer:
         mk = lambda: SimpleNamespace(reload=Mock())
         return {
             "ha_service": SimpleNamespace(), "llm_chat_client": mk(),
-            "vision_client": mk(), "summary_client": mk(), "embed_client": mk(),
+            "vision_client": mk(), "embed_client": mk(),
             "session_store": SimpleNamespace(), "vision_service": SimpleNamespace(),
             "vision_key_pool": SimpleNamespace(), "rule_service": SimpleNamespace(),
             "rule_registry_service": SimpleNamespace(), "automation_service": SimpleNamespace(),
@@ -95,9 +95,9 @@ class TestContainer:
         assert c.ha_client == "ha2"
         # controls 缓存是容器新建的 list
         assert c.ha_controls_cache_ref == [""]
-        # reload_all_clients：四个客户端 reload + rag 钩子
+        # reload_all_clients：三个客户端 reload + rag 钩子（summary 角色已删除）
         c.reload_all_clients()
-        for name in ("llm_chat_client", "vision_client", "summary_client", "embed_client"):
+        for name in ("llm_chat_client", "vision_client", "embed_client"):
             services[name].reload.assert_called_once()
         # rag_service 为 None 时不炸（分支覆盖）
         assert c.rag_service is None

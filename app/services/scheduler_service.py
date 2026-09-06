@@ -451,7 +451,7 @@ class SchedulerService:
     async def _resolve_reminder_client(self, user_id: str = "") -> Any | None:
         """按 user_id 解析 reminder 用的 per-user chat 客户端，无配置回退全局。
 
-        与 message 同 role（chat），避免 reminder 走 summary 模型导致语气/能力与主对话不一致。
+        与 message 同 role（chat），保证 reminder 语气/能力与主对话一致。
         per-user 客户端构造走 build_per_user_chat_client（强制 _enabled=True：
         全局 chat 关着时，per-user 有 key 也得能跑，否则 LlmBaseClient.post_json 会拦"LLM 未启用"）。
         """

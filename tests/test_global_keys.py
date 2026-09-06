@@ -154,15 +154,15 @@ class TestResolveUseGlobal:
         assert result["api_key"] == "secret-a"
 
     @pytest.mark.asyncio
-    async def test_use_global_on_summary_role(self):
-        """summary 角色也支持 use_global。"""
+    async def test_use_global_on_stt_role(self):
+        """stt 角色支持 use_global（summary 角色已删除，摘要复用对话模型）。"""
         from app.core.key_resolver import resolve_key_for_role_user
 
         llm_keys = [
-            {"id": "key-s", "base_url": "https://api.s.com/v1", "model": "sum-1",
-             "type": "summary", "api_key": "secret-s"},
+            {"id": "key-s", "base_url": "https://api.s.com/v1", "model": "stt-1",
+             "type": "stt", "api_key": "secret-s"},
         ]
-        providers = {"summary": {"use_global": True}}
+        providers = {"stt": {"use_global": True}}
 
         mock_db = MagicMock()
         mock_db.user_setting_get = AsyncMock(side_effect=[
@@ -170,7 +170,7 @@ class TestResolveUseGlobal:
             json.dumps(providers),
         ])
         with patch("app.core.database.Database.get", return_value=mock_db):
-            result = await resolve_key_for_role_user("summary", "user-1")
+            result = await resolve_key_for_role_user("stt", "user-1")
 
         assert result is None
 
@@ -598,7 +598,7 @@ class TestGetLlmSettingsReturnsUseGlobal:
                 container=mock_container,
             )
 
-        for role in ("chat", "summary", "stt"):
+        for role in ("chat", "stt"):
             assert result.data["current"][role]["use_global"] is False
 
     @pytest.mark.asyncio

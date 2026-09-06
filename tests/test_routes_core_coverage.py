@@ -793,6 +793,7 @@ class TestSessionRouteGuards:
         store.get_session = AsyncMock(return_value=session)
         store.store_session = AsyncMock()
         summarizer = MagicMock()
+        summarizer.should_compress = MagicMock(return_value=(True, "hard"))
         summarizer.refresh_summaries = AsyncMock()
 
         result = await compress_session(
@@ -805,6 +806,32 @@ class TestSessionRouteGuards:
         assert result.data["message_count"] == 2
         summarizer.refresh_summaries.assert_awaited_once_with(session, user_id="u1")
         store.store_session.assert_awaited_once_with(session)
+
+    async def test_compress_session_below_threshold_is_noop(self):
+        """未达压缩阈值时如实返回 compressed=False，不做压缩也不写存储。"""
+        from app.routes.session_routes import compress_session
+
+        store = MagicMock()
+        session = MagicMock()
+        session.user_id = "u1"
+        session.summaries = []
+        session.model_messages = ["m1", "m2"]
+        store.get_session = AsyncMock(return_value=session)
+        store.store_session = AsyncMock()
+        summarizer = MagicMock()
+        summarizer.should_compress = MagicMock(return_value=(False, None))
+        summarizer.refresh_summaries = AsyncMock()
+
+        result = await compress_session(
+            "s1", {"user_id": "u1"},
+            container=_mock_container(session_store=store,
+                                      summarization_service=summarizer),
+        )
+        assert result.data["compressed"] is False
+        assert result.data["reason"] == "below_threshold"
+        assert result.data["message_count"] == 2
+        summarizer.refresh_summaries.assert_not_awaited()
+        store.store_session.assert_not_awaited()
 
 
 # ===================== user_routes =====================
@@ -1091,11 +1118,7 @@ class TestLlmSettingsRoutes:
         assert current["chat"]["key_id"] == "k9"
         assert current["chat"]["thinking"] is True
         assert current["chat"]["custom"] == 1
-        # summary/stt 无用户配置 → 默认值
-        assert current["summary"] == {
-            "key_id": None, "max_concurrency": 8, "thinking": False,
-            "use_global": False,
-        }
+        # stt 无用户配置 → 注入默认值；summary 角色已删除，端点不再注入
         assert "stt" in current
         assert result.data["warnings"] == ["w1"]
 
@@ -1136,7 +1159,8 @@ class TestLlmSettingsRoutes:
             )
         assert result.data["applied"]["max_concurrency"] == 8
 
-    async def test_set_settings_per_user_summary_minimal(self):
+    async def test_set_settings_per_user_stt_minimal(self):
+        """stt 为 per-user 角色（summary 已删除，摘要复用对话模型）。"""
         from app.routes.llm_key_routes import set_llm_settings
         from app.schema.api_schemas import LLMSettingsRequest
 
@@ -1145,7 +1169,7 @@ class TestLlmSettingsRoutes:
         with patch("app.services.llm_key_service.save_user_provider",
                    new=AsyncMock()) as save:
             result = await set_llm_settings(
-                LLMSettingsRequest(role="summary", key_id="k2", use_global=False),
+                LLMSettingsRequest(role="stt", key_id="k2", use_global=False),
                 {"user_id": "u1"}, container=container,
             )
         applied = result.data["applied"]
@@ -1153,6 +1177,25 @@ class TestLlmSettingsRoutes:
         assert applied["use_global"] is False
         assert "thinking" not in applied  # thinking 未传 → 不写
         assert save.await_args.args[2] == "k2"
+
+    async def test_set_settings_removed_summary_role_rejected(self):
+        """summary 角色已删除：设置请求落到全局 apply 路径并被拒绝，不写 per-user DB。"""
+        from app.routes.llm_key_routes import set_llm_settings
+        from app.schema.api_schemas import LLMSettingsRequest
+
+        container = MagicMock()
+        container.dispatcher.invalidate_user_agent = AsyncMock()
+        container.llm_settings_service.apply.side_effect = AppException(
+            "未知角色: summary", code="llm_settings_error", http_status=400,
+        )
+        with patch("app.services.llm_key_service.save_user_provider",
+                   new=AsyncMock()) as save:
+            with pytest.raises(AppException):
+                await set_llm_settings(
+                    LLMSettingsRequest(role="summary", key_id="k2"),
+                    {"user_id": "u1"}, container=container,
+                )
+        save.assert_not_awaited()
 
     async def test_set_settings_global_role_syncs_to_db(self):
         from app.routes.llm_key_routes import set_llm_settings
@@ -1207,7 +1250,7 @@ class TestLlmStatusRoute:
             return user_key if role == "chat" else None
 
         def resolve_global(role):
-            return {"summary": empty_global, "vision": None, "embed": global_key}.get(role)
+            return {"vision": None, "embed": global_key}.get(role)
 
         test_conn = AsyncMock(return_value={"ok": False, "error": "timeout"})
 
@@ -1217,13 +1260,11 @@ class TestLlmStatusRoute:
             result = await get_llm_status({"user_id": "u1"})
 
         roles = result.data["roles"]
-        assert set(roles.keys()) == {"chat", "summary", "vision", "embed"}
+        # summary 角色已删除，状态矩阵只含三个角色
+        assert set(roles.keys()) == {"chat", "vision", "embed"}
         # chat：用户 key 优先
         assert roles["chat"]["source"] == "user"
         assert roles["chat"]["model"] == "user-model"
-        # summary：用户无 → 全局 key 无 api_key → 未配置
-        assert roles["summary"]["source"] == "global"
-        assert roles["summary"]["error"] == "未配置可用的 API Key"
         # vision：全局也无 → 未配置
         assert roles["vision"]["error"] == "未配置可用的 API Key"
         # embed：全局有 key 但测连失败

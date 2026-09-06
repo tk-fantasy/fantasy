@@ -537,6 +537,8 @@ async function doCompress() {
         const summaryTexts = summaries.map((s, i) => `第${i + 1}段摘要：${s.text}`).join('\n\n')
         messages.value.push({ role: 'system', content: `之前聊了这些：\n${summaryTexts}` })
       }
+    } else {
+      messages.value.push({ role: 'system', content: `当前上下文未达压缩阈值（${json.data?.message_count ?? 0} 条消息），无需压缩` })
     }
   } catch (e) {
     messages.value.push({ role: 'system', content: `压缩失败: ${e.message}` })
@@ -776,7 +778,7 @@ onUnmounted(() => {
             </div>
             <div v-if="llmStatus?.roles" class="llm-popover-rows">
               <div
-                v-for="role in ['chat', 'summary', 'vision', 'embed']"
+                v-for="role in ['chat', 'vision', 'embed']"
                 :key="role"
                 class="llm-popover-row"
               >

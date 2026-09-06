@@ -22,13 +22,6 @@
       "api_key_env": "LLM_KEY_API_C12091"
     },
     {
-      "id": "open-fcc2a5",
-      "base_url": "https://open.bigmodel.cn/api/paas/v4",
-      "model": "glm-4-flash",
-      "type": "summary",
-      "api_key_env": "LLM_KEY_OPEN_FCC2A5"
-    },
-    {
       "id": "siliconflow-stt",
       "base_url": "https://api.siliconflow.cn/v1",
       "model": "FunAudioLLM/SenseVoiceSmall",
@@ -42,12 +35,6 @@
     "chat": {
       "key_id": "zhipu-chat-2",
       "max_concurrency": 4,
-      "enabled": true,
-      "thinking": false
-    },
-    "summary": {
-      "key_id": "open-fcc2a5",
-      "max_concurrency": 8,
       "enabled": true,
       "thinking": false
     },
