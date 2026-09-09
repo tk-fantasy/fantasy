@@ -35,4 +35,4 @@ fi
 log "重启 aether"
 docker compose up -d --no-build aether
 
-log "完成。建议：1) 打开 http://<IP>:8010 确认登录与设备状态；2) 跑 python scripts/diagnose.py 体检"
+log "完成。建议：1) 打开 https://<IP>:8010 确认登录与设备状态；2) 跑 python scripts/diagnose.py 体检"

@@ -9,7 +9,7 @@
 #       运维页「升级历史」能看到 git 更新。
 set -euo pipefail
 
-HEALTH_URL="http://127.0.0.1:8010/api/health"
+HEALTH_URL="https://127.0.0.1:8010/api/health"  # 8010 已启用自签 TLS，-k 跳过校验
 HEALTH_TIMEOUT=240   # 现场构建后首次启动含 RAG 索引等，放宽
 
 log()  { echo "[git-update] $*"; }
@@ -44,7 +44,7 @@ log "等待服务就绪（最长 ${HEALTH_TIMEOUT}s）"
 elapsed=0
 ok=0
 while [ "$elapsed" -lt "$HEALTH_TIMEOUT" ]; do
-  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "$HEALTH_URL" || echo 000)
+  code=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 3 "$HEALTH_URL" || echo 000)
   if [ "$code" != "000" ] && [ "$code" != "" ]; then
     ok=1; break
   fi

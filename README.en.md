@@ -163,6 +163,11 @@ cp .env.example .env
 # 2. Copy the config template
 cp config.example.json config.json
 #   leave ha.token empty for now — you'll paste it in the setup wizard
+
+# 3. (Optional but recommended) Generate a proper self-signed cert: without it the
+#    container still starts (a temporary cert is auto-generated; browsers warn but
+#    can proceed). With it, SANs cover your LAN IPs — no warnings.
+bash scripts/gen_https_cert.sh
 ```
 
 Start:
@@ -172,7 +177,7 @@ docker compose up -d --build      # add --build on first run or after code chang
 docker compose ps                 # all four containers Up (aether, aether-ha, mosquitto, aether-simulator)
 ```
 
-Open `http://localhost:8010`. On first run you'll go through a setup wizard:
+Open `https://localhost:8010` (self-signed HTTPS — for browser warnings and device trust setup see [`docs/tech/HTTPS部署指南.md`](docs/tech/HTTPS部署指南.md)). On first run you'll go through a setup wizard:
 1. Household info (name, owner's preferred form of address, region)
 2. LLM model config (chat / vision / embed / summary — chat is required at minimum)
 3. Home Assistant connection — first complete account registration at `http://localhost:8123` and create a long-lived access token
@@ -222,7 +227,7 @@ python -m uvicorn app.main:app --host 0.0.0.0 --port 8010
 npm run build
 ```
 
-> For production use Docker: `docker compose up -d`, then open `http://localhost:8010`. Stop with `docker compose down`.
+> For production use Docker: `docker compose up -d`, then open `https://localhost:8010`. Stop with `docker compose down`.
 
 ## Remote access from outside the home (Tailscale)
 
@@ -240,7 +245,7 @@ New-NetFirewallRule -DisplayName "Aether Backend 8010 (Tailscale only)" `
   -RemoteAddress 100.64.0.0/10 -Profile Any
 ```
 
-4. On your phone, browse to `http://<PC's Tailscale IP>:8010/` (run `tailscale ip -4` on the PC to find it).
+4. On your phone, browse to `https://<PC's Tailscale IP>:8010/` (run `tailscale ip -4` on the PC to find it). The first visit shows a self-signed certificate warning — tap "Advanced → Proceed" to continue; importing `certs/rootCA.crt` removes the warning permanently (per-device steps in [`docs/tech/HTTPS部署指南.md`](docs/tech/HTTPS部署指南.md)).
 
 > **Use port 8010, not 5173**: 5173 is the Vite dev server and only listens on `127.0.0.1`, so external devices can't reach it. 8010 hosts both the frontend page and the API — it's the port for both daily use and remote access.
 

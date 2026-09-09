@@ -7,6 +7,11 @@ config.json*
 *.bak[0-9]*
 app/data/.jwt_secret
 mosquitto/config/passwd
+# 自签 HTTPS 证书（rootCA 私钥绝不入库，整套目录一起排除）
+certs/
+
+# E2E 手工测试产物（client 脚本 + 数据库备份 JSON；备份含明文 LLM key，绝不入库）
+.e2e_test/
 
 # 运行时数据(含聊天记录、数据流状态、日志)
 logs/

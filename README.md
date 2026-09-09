@@ -163,6 +163,10 @@ cp .env.example .env
 # 2. 复制配置模板
 cp config.example.json config.json
 #   ha.token 留空即可，稍后在引导向导里填
+
+# 3. （可选，建议）生成正式自签证书：不跑也能启动（容器自动生成临时证书兜底，
+#    浏览器警告点「继续前往」即可）；跑了则 SAN 覆盖本机 IP、无警告
+bash scripts/gen_https_cert.sh
 ```
 
 启动：
@@ -172,7 +176,7 @@ docker compose up -d --build      # 首次或代码更新后加 --build
 docker compose ps                 # 四个容器都 Up 即可（aether, aether-ha, mosquitto, aether-simulator）
 ```
 
-打开 `http://localhost:8010` 进入应用，首次需走引导向导：
+打开 `https://localhost:8010` 进入应用（自签 HTTPS，浏览器警告与设备信任配置见 [`docs/tech/HTTPS部署指南.md`](docs/tech/HTTPS部署指南.md)），首次需走引导向导：
 1. 家庭信息（名称、主人称呼、地区）
 2. LLM 模型配置（对话/视觉/嵌入，至少配对话模型）
 3. Home Assistant 连接 —— 需要先到 `http://localhost:8123` 完成账号注册并创建长期访问令牌
@@ -222,7 +226,7 @@ python -m uvicorn app.main:app --host 0.0.0.0 --port 8010
 npm run build
 ```
 
-> 生产部署用 Docker：`docker compose up -d`，然后浏览器访问 `http://localhost:8010`。停止用 `docker compose down`。
+> 生产部署用 Docker：`docker compose up -d`，然后浏览器访问 `https://localhost:8010`。停止用 `docker compose down`。
 
 ## 🌐 从外面远程访问（Tailscale）
 
@@ -240,7 +244,7 @@ New-NetFirewallRule -DisplayName "Aether Backend 8010 (Tailscale only)" `
   -RemoteAddress 100.64.0.0/10 -Profile Any
 ```
 
-4. 手机浏览器访问 `http://<电脑的Tailscale IP>:8010/`（用 `tailscale ip -4` 查电脑 IP）
+4. 手机浏览器访问 `https://<电脑的Tailscale IP>:8010/`（用 `tailscale ip -4` 查电脑 IP）。首次访问会有自签证书警告，点「高级 → 继续前往」即可；导入 `certs/rootCA.crt` 后永久无警告（各设备步骤见 [`docs/tech/HTTPS部署指南.md`](docs/tech/HTTPS部署指南.md)）
 
 > **访问 8010，不是 5173**：5173 是 Vite 开发服务器，只监听 `127.0.0.1`，外部设备连不上。8010 同时托管前端页面和 API，是日常使用和远程访问都该用的端口。
 

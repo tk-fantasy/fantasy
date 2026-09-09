@@ -3,12 +3,15 @@
 # 启动：docker compose up -d --build
 # 停止：docker compose down
 # 注：HA 配置里的 IP 由计划任务 \Aether\SyncHaIp 自动同步（每 10 分钟），无需手动改。
-# 访问：http://localhost:8010
+# 访问：https://localhost:8010（自签证书部署；设备导入 certs/rootCA.crt 可消除浏览器警告，
+# 详见 docs/tech/HTTPS部署指南.md）
 #
 # 首次启动前：
 #   1. cp config.example.json config.json，把 ha.token 改成 HA 长期令牌
 #      （ha.url 无需改，下方 HA_URL 环境变量会用容器服务名覆盖）
 #   2. cp .env.example .env，填入 LLM / STT 密钥
+#   3. （可选，建议）bash scripts/gen_https_cert.sh 生成正式自签证书：不跑也能起
+#      （容器自动生成临时证书，浏览器警告可点继续），跑了则 SAN 覆盖宿主 IP、无警告
 services:
   mqtt:
     container_name: mosquitto
@@ -62,8 +65,15 @@ services:
     # 开发流 docker compose build 也天然打到 latest，两条路不打架。
     # 当前实际版本看 version.json / /api/ops/version。
     image: aether-app:latest
+    # TLS 由 uvicorn 直接终结。入口脚本（从宿主挂载，随仓库更新、无需重建镜像）：
+    # certs/ 缺失时生成临时自签证书兜底，已有证书原样使用——离线升级
+    # （load 新镜像 tag 到 latest）后 TLS 配置同样不受镜像内容影响。
+    # 回滚 HTTP：删掉本 entrypoint 与下方 certs 挂载，docker compose up -d 即可。
+    entrypoint: ["sh", "/aether/entrypoint_tls.sh"]
     ports:
-      - "8010:8010"   # 主服务（API + WebSocket + 前端 SPA）
+      # 主服务（API + WebSocket + 前端 SPA）。8010 从此只讲 HTTPS：
+      # 用 http:// 访问该端口会直接连接失败，一律改用 https://
+      - "8010:8010"
       # 只绑宿主回环：进度端口响应 CORS * 且无认证，仅泄露启动阶段文本，
       # 无需暴露给局域网。加载页对它不可达有兜底（时间估算文案）。
       - "127.0.0.1:8011:8011"
@@ -75,6 +85,11 @@ services:
     volumes:
       # 配置文件（首次从 config.example.json 复制，运行时写入持久化到宿主）
       - ./config.json:/aether/config.json
+      # TLS 入口脚本（证书缺失时生成临时兜底证书，见 scripts/entrypoint_tls.sh）
+      - ./scripts/entrypoint_tls.sh:/aether/entrypoint_tls.sh:ro
+      # TLS 证书（正式证书由宿主机 scripts/gen_https_cert.sh 生成，IP 变更后重跑
+      # 该脚本再重启容器。不挂 :ro：全新部署时入口脚本会在这里生成临时兜底证书）
+      - ./certs:/aether/certs
       # Docker socket：供「高级配置 → 虚拟设备」开关停止/启动 simulator + mosquitto 容器。
       # 注意：这赋予 aether 容器宿主 Docker 管理权限，仅限本机可信部署；无需该功能可删掉此行。
       - /var/run/docker.sock:/var/run/docker.sock
@@ -96,8 +111,9 @@ services:
     # 时请求无法被处理 → 探活失败 → Docker 自动重启。进程退出场景由
     # restart: unless-stopped 兜底，这里是补上"活着但冻结"的自愈路径。
     # slim 镜像没有 curl/wget，用 python 标准库。
+    # 8010 已是 TLS 端口：探活走 https 并跳过自签证书校验（容器内只验进程活性）。
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/healthz', timeout=5)"]
+      test: ["CMD", "python", "-c", "import ssl,urllib.request; urllib.request.urlopen('https://127.0.0.1:8010/healthz', timeout=5, context=ssl._create_unverified_context())"]
       interval: 30s
       timeout: 10s
       retries: 3

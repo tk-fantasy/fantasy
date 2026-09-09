@@ -13,7 +13,7 @@
 set -euo pipefail
 
 BACKUP_DIR="backups"
-HEALTH_URL="http://127.0.0.1:8010/api/health"
+HEALTH_URL="https://127.0.0.1:8010/api/health"  # 8010 已启用自签 TLS，-k 跳过校验
 HEALTH_TIMEOUT=180
 
 log()  { echo "[upgrade] $*"; }
@@ -100,7 +100,7 @@ docker restart aether || docker compose up -d --no-build aether || rollback
 log "等待服务就绪（最长 ${HEALTH_TIMEOUT}s）"
 elapsed=0
 while [ "$elapsed" -lt "$HEALTH_TIMEOUT" ]; do
-  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "$HEALTH_URL" || echo 000)
+  code=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 3 "$HEALTH_URL" || echo 000)
   # 任何 HTTP 应答（含 401 未认证）都证明服务活着；000=连接失败
   if [ "$code" != "000" ] && [ "$code" != "" ]; then
     log "服务已就绪（HTTP $code）"
