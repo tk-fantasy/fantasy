@@ -20,7 +20,7 @@
 
 ## 访问方式变化（重要）
 
-- 一律使用 `https://`，如 `https://192.168.4.47:8010`、`https://100.125.129.111:8010`（Tailscale）。
+- 一律使用 `https://`，如 `https://<局域网IP>:8010`、`https://<Tailscale IP>:8010`（Tailscale）。
   **旧的 `http://` 地址会直接连接失败**（同一端口无法同时讲两种协议）。
 - 浏览器打开 `/` 会 307 跳转到 `/landing`——这是 `app/routes/setup_routes.py` 的原有路由设计，与 HTTPS 无关。
 - Cookie 的 `Secure` 标志自动跟随（`app/core/auth.py` 的 `is_secure_request`），无需配置。

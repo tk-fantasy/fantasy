@@ -27,7 +27,7 @@ Tailscale 是基于 WireGuard 的点对点 VPN。装上之后，你的每台设�
 我们在此基础上再加一道 Windows 防火墙规则，**只允许 Tailscale 网段（100.64.0.0/10）访问后端 8010 端口**：
 
 ```
-手机(100.88.25.58) ──加密隧道──> 电脑(100.125.129.111:8010) ──> Aether 后端
+手机(<手机 Tailscale IP>) ──加密隧道──> 电脑(<Tailscale IP>:8010) ──> Aether 后端
        │                                    │
        │                              Windows 防火墙
        │                              只放行 100.64.0.0/10
@@ -124,14 +124,14 @@ Remove-NetFirewallRule -DisplayName "Aether Backend 8010 (Tailscale only)"
 
 配置完之后，在手机（已加入 Tailscale）上：
 
-1. **打开手机上的 Tailscale App**，确认已连接（显示你的手机 IP，比如 `100.88.25.58`）
+1. **打开手机上的 Tailscale App**，确认已连接（显示你的手机 IP，比如 `<手机 Tailscale IP>`）
 2. **打开手机浏览器**，访问：
 
    ```
    http://<电脑的Tailscale IP>:8010/
    ```
 
-   比如电脑是 `100.125.129.111`，那就访问 `http://100.125.129.111:8010/`
+   比如电脑是 `<Tailscale IP>`，那就访问 `http://<Tailscale IP>:8010/`
 
 3. 应该能看到 Aether 前端页面，正常登录使用
 
@@ -153,7 +153,7 @@ Aether 跑起来后，电脑上其实有**两个**能出前端页面的端口：
 **8010 是日常使用和远程访问该用的**。它有两个身份：
 
 ```
-手机浏览器访问 http://100.125.129.111:8010/
+手机浏览器访问 http://<Tailscale IP>:8010/
                     │
                     ▼
         后端 8010（监听 0.0.0.0，Tailscale 防火墙放行）

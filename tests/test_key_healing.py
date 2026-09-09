@@ -29,7 +29,7 @@ class TestIsApiKeyValid:
 
     def test_real_key_is_valid(self):
         from app.core.key_healing import is_api_key_valid
-        assert is_api_key_valid("sk-gvibcvl1234567890") is True
+        assert is_api_key_valid("sk-example1234567890") is True
         assert is_api_key_valid("sk-real-key") is True
 
 
