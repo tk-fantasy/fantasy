@@ -147,6 +147,115 @@ async def build_device_snapshot(ha_service: Any, ha_client: Any) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# 轻量身份索引 — call_service 闸门消歧专用
+# ---------------------------------------------------------------------------
+
+def _index_label(device_name: str, full_name: str, multi: bool) -> str:
+    """索引条目的展示名，口径与 entry_label() 严格一致。
+
+    两处口径必须相同：闸门按这个名字判定精确同名，弹框也按这个名字给用户看，
+    不一致就会出现「用户勾的名字和后端判定的名字不是一回事」。
+    """
+    sub = derive_sub_name(full_name, device_name) if multi else ""
+    if sub:
+        return f"{device_name} {sub}".strip()
+    return full_name or device_name
+
+
+def _index_from_grouped(devices: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    index: list[dict[str, Any]] = []
+    for dev in devices:
+        dev_name = str(dev.get("name", "") or "")
+        ents = dev.get("entities") or []
+        controllable = [
+            e for e in ents
+            if str(e.get("domain") or str(e.get("entity_id", "")).split(".")[0])
+            not in DIAGNOSTIC_DOMAINS
+        ]
+        # 与 build_device_snapshot 同口径：多可控实体设备才需要子功能短名消歧
+        multi = len(controllable) > 1
+        for e in controllable:
+            eid = str(e.get("entity_id", "") or "")
+            if not eid:
+                continue
+            name = str(e.get("name", "") or eid)
+            index.append({
+                "entity_id": eid,
+                "name": name,
+                "domain": str(e.get("domain") or eid.split(".")[0]),
+                "device_id": str(dev.get("device_id", "") or ""),
+                "device_name": dev_name,
+                "label": _index_label(dev_name, name, multi),
+                # 实体自身的 area 优先，其次继承设备（与 grouped 的 area 口径一致）
+                "area_name": e.get("area_name") or dev.get("area_name"),
+                "state": str(e.get("state", "") or ""),
+            })
+    return index
+
+
+def _index_from_flat(devices: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """flat 回退：没有物理设备维度，device_name/label 退化为实体名。
+
+    条目可能缺 `name` 键（只有 attributes.friendly_name）——异构装配与测试桩
+    都是这种形态，取不到名字会让整个闸门失效，故逐级回退到 entity_id。
+    """
+    index: list[dict[str, Any]] = []
+    for dev in devices or []:
+        eid = str(dev.get("entity_id", "") or "")
+        if not eid:
+            continue
+        domain = str(dev.get("domain") or eid.split(".")[0])
+        if domain in DIAGNOSTIC_DOMAINS:
+            continue
+        attrs = dev.get("attributes") or {}
+        name = str(dev.get("name") or attrs.get("friendly_name") or eid)
+        index.append({
+            "entity_id": eid,
+            "name": name,
+            "domain": domain,
+            "device_id": "",
+            "device_name": name,
+            "label": name,
+            "area_name": dev.get("area_name"),
+            "state": str(dev.get("state", "") or ""),
+        })
+    return index
+
+
+async def build_match_index(ha_service: Any) -> list[dict[str, Any]]:
+    """构建闸门消歧用的轻量身份索引。
+
+    与 build_device_snapshot 的分工：快照是「给模型看什么」的全量视图，每次要跑
+    resolve_controls + flip_state_value + 3 个 DB scope，进不了 call_service 的
+    热路径（每条设备指令都要过闸门）；本函数只产出匹配判定需要的身份字段
+    （entity_id / name / domain / device_id / device_name / label / area_name / state），
+    数据源同为 get_all_devices_grouped（states 5s 缓存 + registry 缓存），
+    成本与 get_all_devices 同量级。
+
+    不做 entity_operable 黑名单过滤：调用方（闸门）已有该过滤，避免两处口径漂移。
+    grouped 不可用时（异构装配 / 测试桩只 mock 了 flat）回退 get_all_devices ——
+    索引失败不能让闸门整体失效。
+    """
+    devices = None
+    try:
+        grouped = await ha_service.get_all_devices_grouped()
+        if isinstance(grouped, dict):
+            candidate = grouped.get("devices")
+            if isinstance(candidate, list) and candidate:
+                devices = candidate
+    except Exception:  # noqa: BLE001 — 回退 flat，不向上抛
+        logger.warning("build_match_index: grouped 不可用，回退 flat", exc_info=True)
+    if devices:
+        return _index_from_grouped(devices)
+    try:
+        flat = await ha_service.get_all_devices()
+    except Exception:  # noqa: BLE001
+        logger.warning("build_match_index: flat 也不可用，返回空索引", exc_info=True)
+        return []
+    return _index_from_flat(flat if isinstance(flat, list) else [])
+
+
+# ---------------------------------------------------------------------------
 # 渲染器 — 三套视图共用同一快照
 # ---------------------------------------------------------------------------
 

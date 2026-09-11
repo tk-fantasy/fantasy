@@ -270,3 +270,106 @@ class TestCandidateLookup:
         assert all("switch.a_on_p2" not in c for c in result.get("candidates", []))
         # 右键未被禁止，仍是候选
         assert any("switch.a_on_p3（A灯 会客厅灯 右键）" in c for c in result.get("candidates", []))
+
+
+# 混合 domain 设备：闸门索引必须排除诊断类（不可控，进候选只会让用户勾到没用的东西）
+MIXED_SUBS = [
+    ("switch.gate", "大门"),
+    ("sensor.gate_fault", "大门 故障"),
+    ("binary_sensor.gate_online", "大门 在线"),
+]
+
+
+class TestBuildMatchIndex:
+    """闸门消歧用的轻量身份索引。
+
+    与 build_device_snapshot 的分工：快照每次要跑 resolve_controls +
+    flip_state_value + 3 个 DB scope，进不了 call_service 热路径；索引只出身份字段。
+    """
+
+    @pytest.mark.asyncio
+    async def test_excludes_diagnostic_domains(self):
+        from app.services.device_registry import build_match_index
+        index = await build_match_index(_make_ha_service([("大门", MIXED_SUBS, None)]))
+        eids = {e["entity_id"] for e in index}
+        assert eids == {"switch.gate"}
+
+    @pytest.mark.asyncio
+    async def test_multi_entity_device_label_matches_entry_label(self):
+        """label 口径必须与 entry_label 一致，否则用户看到的名字和闸门判定的名字不是一回事。"""
+        from app.services.device_registry import build_match_index, entry_label
+        ha_service = _make_ha_service([("A灯", A_LAMP_SUBS, None)])
+        index = await build_match_index(ha_service)
+        snapshot, _ = await _build([("A灯", A_LAMP_SUBS, None)])
+        by_eid = {e["entity_id"]: e for e in index}
+        assert len(index) == len(A_LAMP_SUBS)
+        for ent in snapshot["entries"]:
+            assert by_eid[ent["entity_id"]]["label"] == entry_label(ent)
+        assert by_eid["switch.a_on_p2"]["device_name"] == "A灯"
+        assert by_eid["switch.a_on_p2"]["label"] == "A灯 会客厅灯 左键"
+
+    @pytest.mark.asyncio
+    async def test_single_controllable_device_label_is_plain_name(self):
+        """单可控实体设备不带子功能后缀（与 build_device_snapshot 的 multi 判据同口径）。"""
+        from app.services.device_registry import build_match_index
+        index = await build_match_index(_make_ha_service([("床头灯", [("light.bed", "床头灯")], None)]))
+        assert index[0]["label"] == "床头灯"
+        assert index[0]["device_name"] == "床头灯"
+
+    @pytest.mark.asyncio
+    async def test_index_is_lightweight(self):
+        """不含 controls/note——那是快照的职责，索引进热路径不能带这些开销。"""
+        from app.services.device_registry import build_match_index
+        index = await build_match_index(_make_ha_service([("A灯", A_LAMP_SUBS, None)]))
+        for entry in index:
+            assert "controls" not in entry
+            assert "note" not in entry
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_flat_when_grouped_unavailable(self):
+        """grouped 不可用（异构装配/测试桩只 mock 了 flat）→ 回退 flat，索引不能为空。"""
+        from app.services.device_registry import build_match_index
+        ha_service = MagicMock()
+        ha_service.get_all_devices_grouped = MagicMock(side_effect=TypeError("not awaitable"))
+        ha_service.get_all_devices = AsyncMock(return_value=[
+            {"entity_id": "light.bed", "domain": "light", "name": "床头灯",
+             "state": "off", "area_name": "卧室", "attributes": {}},
+            {"entity_id": "sensor.temp", "domain": "sensor", "name": "温度",
+             "state": "26", "area_name": "卧室", "attributes": {}},
+        ])
+        index = await build_match_index(ha_service)
+        assert [e["entity_id"] for e in index] == ["light.bed"]
+        # flat 没有物理设备维度，device_name 退化为实体名
+        assert index[0]["device_name"] == "床头灯"
+        assert index[0]["label"] == "床头灯"
+
+    @pytest.mark.asyncio
+    async def test_flat_entry_without_name_uses_friendly_name(self):
+        """条目缺 name 键时从 attributes.friendly_name 取名。
+
+        tests/test_call_service_operable.py 与 test_call_service_semantic_map.py 的
+        fixture 就是这种形态，闸门靠这条不炸（那两个文件一条用例都不许改）。
+        """
+        from app.services.device_registry import build_match_index
+        ha_service = MagicMock()
+        ha_service.get_all_devices_grouped = MagicMock(side_effect=TypeError("not awaitable"))
+        ha_service.get_all_devices = AsyncMock(return_value=[
+            {"entity_id": "switch.gate", "domain": "switch",
+             "attributes": {"friendly_name": "switch.gate"}},
+        ])
+        index = await build_match_index(ha_service)
+        assert index[0]["name"] == "switch.gate"
+        assert index[0]["label"] == "switch.gate"
+
+    @pytest.mark.asyncio
+    async def test_grouped_returning_non_list_falls_back(self):
+        """grouped 返回非预期结构（MagicMock 等）时不得抛异常，回退 flat。"""
+        from app.services.device_registry import build_match_index
+        ha_service = MagicMock()   # get_all_devices_grouped() 返回 MagicMock
+        ha_service.get_all_devices = AsyncMock(return_value=[
+            {"entity_id": "light.bed", "domain": "light", "name": "床头灯",
+             "state": "off", "attributes": {}},
+        ])
+        index = await build_match_index(ha_service)
+        assert [e["entity_id"] for e in index] == ["light.bed"]
+
