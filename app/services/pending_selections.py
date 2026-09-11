@@ -132,17 +132,25 @@ def cancel_selection(session: Any, pending_id: str) -> bool:
     return True
 
 
-def drop_selection_drafts(session: Any) -> int:
-    """清掉会话内全部待选草稿，返回清掉的数量（不动其他 kind 的草稿）。
+def drop_selection_drafts(session: Any, *, except_query: str | None = None) -> int:
+    """清掉会话内待选草稿，返回清掉的数量（不动其他 kind 的草稿）。
 
     闸门干净解决一轮指令（exact / unique / all_marker）时调用。语音渠道用户被问
     「要开哪个」之后直接说「客厅吊灯」，走的就是这条路径——草稿留着只会在 TTL 内
     被 `locate_pending` 的「会话内唯一草稿」兜底误命中，把新指令的结果确认掉。
+
+    Args:
+        except_query: 保留该 query 的草稿。一轮里模型可能连调多次工具
+            （「开灯关窗帘」），第一次刚为「开灯」建的草稿不能被第二次的
+            清场动作抹掉，否则用户点弹框时草稿已不在（只能报过期）。
     """
     store = pending_store(session)
     dropped = 0
     for pid, entry in list(store.items()):
-        if isinstance(entry, dict) and entry.get("kind") == KIND_DEVICE_SELECTION:
-            store.pop(pid, None)
-            dropped += 1
+        if not isinstance(entry, dict) or entry.get("kind") != KIND_DEVICE_SELECTION:
+            continue
+        if except_query is not None and entry.get("query") == except_query:
+            continue
+        store.pop(pid, None)
+        dropped += 1
     return dropped

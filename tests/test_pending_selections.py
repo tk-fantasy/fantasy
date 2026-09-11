@@ -210,3 +210,17 @@ class TestCancelAndDrop:
 
     def test_drop_on_empty_store(self):
         assert drop_selection_drafts(_session()) == 0
+
+    def test_drop_keeps_current_query_draft(self):
+        """一轮里模型连调多次工具时，不得抹掉本轮刚建的那份草稿。
+
+        「开灯关窗帘」：第一次为「开灯」建草稿并返回 need_selection，第二次判
+        窗帘为 unique 会触发清场——若把「开灯」的草稿一起清了，用户点弹框时
+        只能收到「已过期」。
+        """
+        session = _session()
+        keep = _draft(session, query="开灯")
+        stale = _draft(session, query="上一轮的模糊指令")
+        assert drop_selection_drafts(session, except_query="开灯") == 1
+        assert keep in pending_store(session)
+        assert stale not in pending_store(session)
