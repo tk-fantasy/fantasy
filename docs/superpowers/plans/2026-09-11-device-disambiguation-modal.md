@@ -8,6 +8,64 @@
 
 **Tech Stack:** FastAPI + LangGraph（无版本/结构改动）、Vue 3 `<script setup>`、Vitest + @vue/test-utils、pytest + pytest-asyncio。
 
+---
+
+## 执行状态（2026-09-11）
+
+**Task 1-7 已完成**，下方各 Task 的 checkbox 视为已勾选（保留原文作为计划存档）。
+**Task 8（虚拟设备手测）待人工执行** —— 需要模拟器 + 浏览器 + 真实 HA 环境。
+
+回归结果：后端 `pytest -q` **3471 passed / 2 failed**，2 个失败是**既有**问题
+（`scripts/new-version.py:73` 的 `subprocess.run(text=True)` 缺 `encoding="utf-8"`，
+Windows 按 GBK 解中文 `git log` 输出时解码线程死掉 → `r.stdout` 为 None → `.strip()`
+抛 AttributeError；已用「本次改动之前的历史 `3f9af47`」复现，证明与消歧改动无关）。
+前端 `npm run test` **383 passed / 50 files**，`npm run build` 成功。
+
+### 实施中发现并修掉的问题（计划里没写到的）
+
+1. **复合句必须整句放行**（新增 `_looks_compound`）。写闸门测试时发现「开灯关窗帘」
+   被归一化成「灯关窗帘」→ 两轮子串匹配全空 → 误落 `category_miss` 弹框，文案还会
+   把归一化中间态念给用户听。判据：「开/关」出现 ≥2 次或含显式连接词。
+   只数这两个字是权衡过的——把「调」也算进去会让「空调开到26度」被误判。
+   **已知局限**：复合句句内的歧义不受闸门保护，「开灯关窗帘」里的「开灯」仍由模型
+   自己挑一盏（旧行为）。逐子句切分是另一件事，本次不做。
+2. **品类尾词收窄只作用于 area 兜底轮**。计划原写「候选按 domain 过滤」，实测发现
+   name 轮命中的候选不能收窄：「开灯」命中「客厅灯带」，它以「带」结尾不共享尾词
+   「灯」，收窄会把它误删（用户说开灯，灯带不该被排除在候选外）。
+3. **尾词门槛从「≥2 个实体共享」放宽到 ≥1**，并加兜底：收窄后为空就退回未过滤列表
+   （否则「打开客厅」会被过滤成空 → 变成放行，比不过滤更糟）。
+4. **exact/all_marker 扩展集为空时必须拒绝**（`test_tools_ops_coverage.py::
+   test_semantic_mismatch_rejected_with_candidates` 抓到的真 bug）。「打开加湿器」
+   而模型去开 `switch.other` 时，同 domain 扩展集为空，初版直接放行执行了。
+   现用 `effective` 变量统一：扩展成功则以扩展集为准（天然不算错配），扩展为空则
+   落回错配拒绝。
+5. **`drop_selection_drafts(except_query=...)`**：同轮第二次工具调用若判为干净解决，
+   会把弹框刚拿到的 `pending_id` 一起抹掉 → 用户点确认只能收到「已过期」。
+6. **`confirm_selection` 让 `AppException` 穿透**：否则禁控设备的 403 会被压成
+   `exec_failed`/502，丢掉状态码语义。
+7. **`toolNames.js` 的 `summarizeToolResult` 需要 need_selection 分支**：否则工具卡片
+   会把「一个设备都没动」显示成「已执行」——这是谎报，比不显示更糟。
+8. **前端工具短名是 `call_service`**（全名 `ha_devices___call_service`），计划初稿写的
+   `ha_call_service` 是错的，已在实施前更正。
+
+### 未提交的文件（按用户要求：改但不提交，避免卷入其在制品）
+
+`app/tools.py`、`app/routes/ha_routes.py`、`app/schema/api_schemas.py`、
+`frontend/src/views/ChatView.vue`、`frontend/src/utils/toolNames.js`、
+`tests/test_ha_routes.py`、`tests/test_call_service_disambiguation.py`、
+`frontend/tests/views/ChatView.test.js`
+
+> 这些文件在本次开工前就已有用户的未提交改动（`app/tools.py` 单独就有 341 行），
+> 且实施期间仍在被并行编辑（`integrations/feishu/ws_client.py` 12:16、
+> `tests/test_feishu_ws_client.py` 12:35 —— 后者正好落在全量测试那 3 分钟里，
+> 造成一次与本次改动无关的误报失败）。整文件 `git add` 会把这些在制品一起卷进来，
+> 故留给用户自行拆分提交。
+
+已提交：`text_match.py` / `device_registry.py` / `pending_selections.py` 及各自测试、
+`DeviceSelectModal.vue` 及其测试（这些文件开工前都是干净的）。
+
+---
+
 ## 背景：现状根因（已核实）
 
 - `match_devices()`（`app/utils/text_match.py:25`）是**双向子串**匹配。用户说「月球的灯」→ 剥「的」→ `月球灯` → 与任何实体名都无子串关系 → **返回空**。
