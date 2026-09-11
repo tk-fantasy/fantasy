@@ -11,7 +11,16 @@ from __future__ import annotations
 
 import pytest
 
-from app.utils.text_match import match_devices
+from app.utils.text_match import (
+    TIER_ALL_MARKER,
+    TIER_AMBIGUOUS,
+    TIER_CATEGORY_MISS,
+    TIER_EXACT,
+    TIER_NONE,
+    TIER_UNIQUE,
+    classify_target,
+    match_devices,
+)
 
 
 # 模拟一套含多盏灯 / 多台空调 / 风扇 / 加湿器的真实设备
@@ -155,3 +164,236 @@ class TestHumidifierMatching:
         assert matched == []
         # 显式断言：空调不应出现在误命中结果里
         assert all(d["domain"] != "climate" for d in matched)
+
+
+# ---------------------------------------------------------------------------
+# classify_target 分层判定
+# ---------------------------------------------------------------------------
+
+def _entry(eid: str, name: str, domain: str | None = None, *,
+           device_name: str = "", area: str = "客厅", state: str = "off") -> dict:
+    """构造 build_match_index 口径的条目（label 缺省时由实现退回 name）。"""
+    return {
+        "entity_id": eid,
+        "name": name,
+        "domain": domain or eid.split(".")[0],
+        "device_id": f"dev-{device_name or name}",
+        "device_name": device_name or name,
+        "label": name,
+        "area_name": area,
+        "state": state,
+    }
+
+
+# 一设备多可控子实体（真实 MIoT 命名形态，口径同 tests/test_device_registry.py 的 A_LAMP_SUBS）
+A_LAMP_ENTRIES = [
+    _entry("switch.a_bk_onoff",   "A灯 总开关",        device_name="A灯", area="公司"),
+    _entry("switch.a_first_key",  "A灯 第一键",        device_name="A灯", area="公司"),
+    _entry("switch.a_on_p2",      "A灯 会客厅灯 左键", device_name="A灯", area="公司"),
+    _entry("switch.a_on_p3",      "A灯 会客厅灯 右键", device_name="A灯", area="公司"),
+    _entry("switch.a_second_key", "A灯 第二键",        device_name="A灯", area="公司"),
+]
+
+# 别名造成的同名多实体：两盏灯都叫「B灯」→「开B灯」应两个全开；
+# 混入一盏不同名的灯，验证 exact 不会顺手多收
+B_LAMP_ENTRIES = [
+    _entry("light.b1", "B灯", device_name="厨房灯",   area="厨房"),
+    _entry("light.b2", "B灯", device_name="客厅吊灯", area="客厅"),
+    _entry("light.bedroom_bedside", "床头灯", area="卧室"),
+]
+
+# 同名跨 domain：设备「大门」下 switch + lock。classify_target 如实返回两个，
+# domain 收窄由 call_service 闸门负责（避免「开大门」顺手把门锁打开）
+DA_MEN_ENTRIES = [
+    _entry("switch.da_men", "大门", device_name="大门"),
+    _entry("lock.da_men",   "大门", device_name="大门"),
+]
+
+# 客厅多设备：area 兜底轮会把整个客厅拉进候选，靠品类尾词「灯」收窄回灯
+LIVING_ROOM_ENTRIES = [
+    _entry("light.living_main",  "客厅吊灯",     area="客厅"),
+    _entry("fan.living_fan",     "客厅风扇",     area="客厅"),
+    _entry("cover.living_curtain", "客厅窗帘",   area="客厅"),
+    _entry("switch.living_plug", "客厅智能插座", area="客厅"),
+    _entry("light.bedroom_bedside", "床头灯",    area="卧室"),
+]
+
+# 设备名自带全量词：剥标记后「全屋电源」变「屋电源」，必须靠双变体兜回来
+POWER_ENTRIES = [_entry("switch.quan_wu", "全屋电源", device_name="全屋电源")]
+
+# 候选上限截断用
+MANY_LIGHTS = [
+    _entry(f"light.l{i}", f"测试灯{i}", area="客厅") for i in range(15)
+]
+
+
+def _eids(result) -> list[str]:
+    return [c["entity_id"] for c in result.candidates]
+
+
+class TestClassifyTargetExact:
+    """精确同名（设备级 / 实体级 / 别名级）→ 全执行，不问用户。"""
+
+    def test_device_level_exact_expands_to_all_sub_entities(self):
+        """「开A灯」→ 设备名下 5 个子实体全部入选。"""
+        result = classify_target("开A灯", A_LAMP_ENTRIES)
+        assert result.tier == TIER_EXACT
+        assert len(result.candidates) == 5
+
+    def test_sub_entity_full_label_is_exact(self):
+        """说到子功能全名 → 只命中那一个。"""
+        result = classify_target("开启A灯 会客厅灯 左键", A_LAMP_ENTRIES)
+        assert result.tier == TIER_EXACT
+        assert _eids(result) == ["switch.a_on_p2"]
+
+    def test_same_name_multi_entity_is_exact_not_ambiguous(self):
+        """两盏灯同名「B灯」→ exact 两个全收，且不收不同名的床头灯。"""
+        result = classify_target("开B灯", B_LAMP_ENTRIES)
+        assert result.tier == TIER_EXACT
+        assert _eids(result) == ["light.b1", "light.b2"]
+
+    def test_exact_returns_cross_domain_entries_for_gate_to_narrow(self):
+        """同名跨 domain 如实返回，收窄是闸门的职责（不在这里偷偷丢）。"""
+        result = classify_target("开大门", DA_MEN_ENTRIES)
+        assert result.tier == TIER_EXACT
+        assert set(_eids(result)) == {"switch.da_men", "lock.da_men"}
+
+    def test_device_name_containing_all_marker_still_exact(self):
+        """设备名自带「全」→ 剥标记后失配，必须靠未剥变体兜回 exact。"""
+        result = classify_target("打开全屋电源", POWER_ENTRIES)
+        assert result.tier == TIER_EXACT
+        assert _eids(result) == ["switch.quan_wu"]
+
+    def test_exact_wins_over_all_marker(self):
+        """「成都的灯都关了」→ exact 先判，句尾的「都」不得触发全开。"""
+        entries = [_entry("light.chengdu", "成都灯", device_name="成都灯")]
+        result = classify_target("成都的灯都关了", entries)
+        assert result.tier == TIER_EXACT
+        assert _eids(result) == ["light.chengdu"]
+
+    def test_prefix_without_separator_is_not_exact(self):
+        """「客厅灯」不得当成「客厅灯带」的精确同名（无分隔符边界）。"""
+        result = classify_target("开客厅灯", DEVICES)
+        assert result.tier != TIER_EXACT
+        # 「客厅吊灯」中间隔了「吊」，更不能被 exact 吞掉
+        assert "light.living_main" not in _eids(result)
+
+
+class TestClassifyTargetAllMarker:
+    """「所有/全部/都/整个/全」→ 命中集全部执行，不问用户。"""
+
+    def test_all_marker_expands_to_whole_matched_set(self):
+        result = classify_target("把所有灯关掉", DEVICES)
+        assert result.tier == TIER_ALL_MARKER
+        assert set(_eids(result)) == {
+            "light.bedroom_bedside", "light.living_main",
+            "light.living_stripe", "light.study_desk",
+        }
+
+    def test_all_marker_du(self):
+        """「把灯都关了」——剥标记后才能匹配上（原句「灯都」与实体名无子串关系）。"""
+        result = classify_target("把灯都关了", DEVICES)
+        assert result.tier == TIER_ALL_MARKER
+        assert len(result.candidates) == 4
+
+    def test_all_marker_without_candidates_falls_through_to_none(self):
+        """有全量词但一个候选都没有 → none 放行，不能返回空候选的 all_marker。"""
+        result = classify_target("全开", [_entry("switch.gate", "switch.gate")])
+        assert result.tier == TIER_NONE
+        assert result.candidates == []
+
+
+class TestClassifyTargetAmbiguous:
+    """模糊多命中 → 转用户选择。"""
+
+    def test_generic_category_word_is_ambiguous(self):
+        result = classify_target("开灯", DEVICES)
+        assert result.tier == TIER_AMBIGUOUS
+        assert len(result.candidates) == 4
+        # 非灯设备不得混进候选
+        assert all(c["domain"] == "light" for c in result.candidates)
+
+    def test_candidates_capped_at_12(self):
+        result = classify_target("开灯", MANY_LIGHTS)
+        assert result.tier == TIER_AMBIGUOUS
+        assert len(result.candidates) == 12
+
+    def test_unique_partial_match_is_not_ambiguous(self):
+        """「开加湿器」子串命中唯一实体（名字不完全相等）→ unique 直接执行。"""
+        result = classify_target("打开加湿器", DEVICES)
+        assert result.tier == TIER_UNIQUE
+        assert _eids(result) == ["humidifier.bedroom"]
+
+    def test_exact_full_name_is_unique_hit(self):
+        result = classify_target("开客厅吊灯", DEVICES)
+        assert len(result.candidates) == 1
+        assert _eids(result) == ["light.living_main"]
+        assert result.tier in (TIER_EXACT, TIER_UNIQUE)
+
+
+class TestClassifyTargetDomainNarrowing:
+    """品类尾词收窄候选 domain —— area 兜底轮会把整个区域拉进来。"""
+
+    def test_area_fallback_narrowed_by_category_tail(self):
+        """「把客厅的灯关了」→ area 轮命中客厅全部设备，尾词「灯」收窄回吊灯一个。"""
+        result = classify_target("把客厅的灯关了", LIVING_ROOM_ENTRIES)
+        assert result.tier == TIER_UNIQUE
+        assert _eids(result) == ["light.living_main"]
+
+    def test_narrowing_never_empties_nonempty_candidates(self):
+        """「打开客厅」无品类尾词 → 退回未过滤候选，不得被过滤成空。"""
+        result = classify_target("打开客厅", LIVING_ROOM_ENTRIES)
+        assert result.candidates != []
+        assert result.tier == TIER_AMBIGUOUS
+
+    def test_explicit_domain_used_when_no_category_tail(self):
+        """query 里推不出品类时，用调用方传入的 domain（LLM 所选实体的 domain）。"""
+        entries = [
+            _entry("light.living_main", "客厅吊灯", area="客厅"),
+            _entry("fan.living_fan", "客厅风扇", area="客厅"),
+        ]
+        result = classify_target("打开客厅", entries, domain="fan")
+        assert _eids(result) == ["fan.living_fan"]
+        assert result.tier == TIER_UNIQUE
+
+
+class TestClassifyTargetCategoryMiss:
+    """说了品类词但设备不存在 → 不许瞎猜，如实说 + 给候选。"""
+
+    def test_nonexistent_qualified_name_offers_category_candidates(self):
+        """「月球的灯」→ 没有月球灯，但尾词「灯」给出真实存在的灯作候选。"""
+        result = classify_target("月球的灯", DEVICES)
+        assert result.tier == TIER_CATEGORY_MISS
+        # 客厅灯带以「带」结尾，不共享尾词「灯」，不在候选内
+        assert set(_eids(result)) == {
+            "light.bedroom_bedside", "light.living_main", "light.study_desk",
+        }
+
+    def test_single_category_member_still_offered(self):
+        """全屋只有一盏灯时也要给建议，不能因为候选少就退回瞎猜。"""
+        result = classify_target("打开阅读灯", [_entry("light.bed", "床头灯", area="卧室")])
+        assert result.tier == TIER_CATEGORY_MISS
+        assert _eids(result) == ["light.bed"]
+
+
+class TestClassifyTargetNone:
+    """无候选且无品类尾词 → 放行（保住「太热了→开空调」这类合理推断）。"""
+
+    def test_alias_or_model_word_yields_none(self):
+        result = classify_target("把飞利浦那盏打开", DEVICES)
+        assert result.tier == TIER_NONE
+        assert result.candidates == []
+
+    def test_implicit_intent_yields_none(self):
+        """「太热了」不含任何设备品类词 → 放行给 LLM 推断空调。"""
+        result = classify_target("太热了", DEVICES)
+        assert result.tier == TIER_NONE
+
+    def test_empty_inputs(self):
+        assert classify_target("", DEVICES).tier == TIER_NONE
+        assert classify_target("开灯", []).tier == TIER_NONE
+        assert classify_target("开灯", []).candidates == []
+
+    def test_normalized_query_exposed(self):
+        """normalized 供闸门写日志/文案，必须是剥离后的纯设备词。"""
+        assert classify_target("帮我开下灯", DEVICES).normalized == "灯"
