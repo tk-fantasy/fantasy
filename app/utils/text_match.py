@@ -247,6 +247,25 @@ _SUB_SEPARATORS = (" ", "-", "_", "·", "—", "（", "(")
 # 弹框候选上限：再多用户也勾不过来，超出部分由调用方提示「还有 N 个」
 _MAX_CANDIDATES = 12
 
+# 复合句连接词：出现即表示一句话里有多条指令
+_COMPOUND_CONNECTIVES = ("然后", "接着", "同时", "并且", "顺便", "之后")
+
+
+def _looks_compound(query: str) -> bool:
+    """判断是否为一句话含多条指令的复合句（「开灯关窗帘」「关灯然后拉窗帘」）。
+
+    复合句必须整句放行给 LLM 拆解，闸门不能插手：归一化是按「单个设备词」设计的，
+    「开灯关窗帘」会被剥成「灯关窗帘」——两轮子串匹配全空，落到 category_miss
+    去弹框，文案还会是"没有找到『灯关窗帘』"这种把归一化中间态念给用户听的话。
+
+    判据用「开/关」出现次数 ≥2 或显式连接词。只数这两个字是权衡过的：把「调」
+    也算进去会让「空调开到26度」（"空调"含"调"）被误判成复合句。误判成复合句的
+    代价是退回旧的放行行为（不会误弹框、不会误拒），可接受。
+    """
+    if any(w in query for w in _COMPOUND_CONNECTIVES):
+        return True
+    return query.count("开") + query.count("关") >= 2
+
 
 @dataclass
 class MatchResult:
@@ -365,6 +384,9 @@ def classify_target(
     5. `category_miss` 无候选但 query 带品类尾词 → 转用户选择（设备不存在，不许瞎猜）
     6. `none`          无线索 → 放行
 
+    前置豁免：**复合句**（「开灯关窗帘」「关灯然后拉窗帘」）直接判 `none`，
+    整句交给 LLM 拆解——归一化按单设备词设计，硬判会误落 category_miss。
+
     Args:
         query: 用户原话（未剥离），如 "开灯" / "把所有灯关掉" / "月球的灯"
         entries: device_registry.build_match_index() 的产出
@@ -379,6 +401,11 @@ def classify_target(
     raw = (query or "").strip()
     if not raw or not entries:
         return MatchResult(TIER_NONE, [], _normalize_query(raw) if raw else "")
+
+    # 复合句（一句话多条指令）整句放行：归一化按单设备词设计，拆不了「开灯关窗帘」，
+    # 硬判会落进 category_miss 弹框。拆解是 LLM 的活，闸门不插手。
+    if _looks_compound(raw):
+        return MatchResult(TIER_NONE, [], _normalize_query(raw))
 
     nq_plain = _normalize_query(raw)
     nq_bare, has_all_marker = _strip_edge_markers(nq_plain)

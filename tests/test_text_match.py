@@ -397,3 +397,37 @@ class TestClassifyTargetNone:
     def test_normalized_query_exposed(self):
         """normalized 供闸门写日志/文案，必须是剥离后的纯设备词。"""
         assert classify_target("帮我开下灯", DEVICES).normalized == "灯"
+
+
+class TestClassifyTargetCompoundSentence:
+    """复合句（一句话多条指令）整句放行，交给 LLM 拆解。
+
+    归一化是按「单个设备词」设计的：「开灯关窗帘」会被剥成「灯关窗帘」，两轮
+    子串匹配全空 → 误落 category_miss 弹框，文案还会把归一化中间态念给用户听。
+    """
+
+    def test_two_verbs_in_one_sentence_is_compound(self):
+        result = classify_target("开灯关窗帘", LIVING_ROOM_ENTRIES)
+        assert result.tier == TIER_NONE
+        assert result.candidates == []
+
+    def test_connective_marks_compound(self):
+        result = classify_target("把灯关了然后把窗帘拉上", LIVING_ROOM_ENTRIES)
+        assert result.tier == TIER_NONE
+
+    def test_single_intent_is_not_compound(self):
+        """单条指令不得被豁免，否则消歧形同虚设。"""
+        assert classify_target("开灯", LIVING_ROOM_ENTRIES).tier == TIER_AMBIGUOUS
+        assert classify_target("把所有灯关掉", DEVICES).tier == TIER_ALL_MARKER
+        assert classify_target("月球的灯", DEVICES).tier == TIER_CATEGORY_MISS
+
+    def test_device_name_containing_diao_is_not_compound(self):
+        """「空调」自带「调」字——判据只数「开/关」，不得把它误判成复合句。"""
+        result = classify_target("空调开到26度", DEVICES)
+        assert result.tier == TIER_UNIQUE
+        assert _eids(result) == ["climate.living_ac"]
+
+    def test_noun_kaiguan_falls_back_to_pass_through(self):
+        """「打开开关」被误判成复合句 → 退回放行（旧行为），不会误弹框或误拒。"""
+        entries = [_entry("switch.wall", "客厅开关", area="客厅")]
+        assert classify_target("打开开关", entries).tier == TIER_NONE
