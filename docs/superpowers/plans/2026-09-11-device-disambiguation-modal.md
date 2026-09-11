@@ -112,7 +112,7 @@ Windows 按 GBK 解中文 `git log` 输出时解码线程死掉 → `r.stdout` �
 - **`exact` 扩展只在同 domain 内**：「开大门」若同时命中 `switch.大门` 和 `lock.大门`，只扩展与 LLM 所选实体同 domain 的那些 —— 避免「开大门」顺手把门锁开了。
 - **弹框必须延后到 `Dialog.Finish` 才开**：dispatcher 轮末才 append `model_messages`，轮中确认会导致历史乱序（`app/routes/rule_routes.py:174-177`、`ChatView.vue` 的 `openPendingRuleModal` 注释已记录此硬约束）。
 - **前端工具短名是 `call_service`**，不是 `ha_call_service`：全名 `ha_devices___call_service`，`shortToolName()`（`frontend/src/utils/toolNames.js`）按 `___` 切分取后半。
-- **新 REST 端点必须带鉴权**：`Depends(get_current_user)` + `require_owned_session`（`app/core/auth.py:335`）。**不得复用 `POST /api/ha/call_service`**（`app/routes/ha_routes.py:326`）—— 该端点没有鉴权依赖、也绕过 `entity_operable` 黑名单（既有问题，本计划不修，但不能继承）。
+- **新 REST 端点必须带鉴权**：`Depends(get_current_user)` + `require_owned_session`（`app/core/auth.py:335`）—— 因为要校验会话归属，必须拿到 user_id（全局 `api_token_guard` 中间件只保证「登录了」，且放行无 JWT 身份的 APP_TOKEN 路径）。**不得复用 `POST /api/ha/call_service`**（`app/routes/ha_routes.py:326`）：它有中间件鉴权、不是安全洞，但它是**人在设备页手动操作**的入口，刻意不查 `entity_operable`（该黑名单语义是「禁止 **AI** 操作」）、审计记 `actor="手动"`；消歧弹框执行的是 AI 会话里的指令，复用手动路径等于给「禁止 AI 操作」开旁路。
 - 注释中文、说明约束原因；文案全中文；提交信息用仓库既有风格（`feat:` / `fix:` / `refactor:` / `test:` + 中文摘要）。
 - Python 用 conda 环境的解释器跑测试（不在系统 PATH）。
 
@@ -556,7 +556,7 @@ Expected: 后端全绿（本仓库基线约 99.8% 覆盖，不得下降）、前
 - 不引入 LangGraph checkpointer / `interrupt`（改动面太大，现有 pending 范式够用）。
 - 不动 system prompt 的全量目录注入策略（`prompt_service.py` 里的「按 query 做 top-k 裁剪」是既有 TODO，与本次正交）。
 - 不做跨会话「记住上次选择」（同会话内的重复弹框靠 `all_marker` 与精确命名缓解）。
-- 不修 `POST /api/ha/call_service` 缺鉴权 + 绕过黑名单这个**既有问题**（单独提 issue，避免本次改动面扩散）。
+- ~~不修 `POST /api/ha/call_service` 缺鉴权 + 绕过黑名单这个既有问题~~ —— **此条作废，判断有误**：该端点由全局 `api_token_guard` 中间件（`app/main.py:878`）守着，不是安全洞；不查 `entity_operable` 也是**设计正确**（黑名单语义是「禁止 AI 操作」，人在设备页点按钮本该能操作）。唯一真实缺口是审计只记 `actor="手动"`、不含用户身份（多用户系统里查不到是谁操作的），属可选改进，本次未做。
 
 ## 已知代价
 

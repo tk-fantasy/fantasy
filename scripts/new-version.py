@@ -68,7 +68,12 @@ def git_log_since(last_commit: str) -> str:
 
     def _run(args: list[str]) -> str:
         try:
+            # encoding 必须显式给：Windows 下 text=True 按 locale 编码（GBK）解码，
+            # 而本仓库的提交信息是 UTF-8 中文 —— 解码会在 subprocess 的 reader
+            # 线程里抛 UnicodeDecodeError，r.stdout 变成 None，下面的 .strip()
+            # 直接 AttributeError 冒到调用方（except 只接 OSError/SubprocessError）。
             r = subprocess.run(args, capture_output=True, text=True, timeout=30,
+                               encoding="utf-8", errors="replace",
                                cwd=str(VERSION_FILE.parent))
             return r.stdout.strip() if r.returncode == 0 else ""
         except (OSError, subprocess.SubprocessError):
