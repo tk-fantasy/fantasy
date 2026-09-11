@@ -170,6 +170,20 @@ class TestConfirm:
         assert pid in pending_store(session)
 
     @pytest.mark.asyncio
+    async def test_app_exception_propagates_with_status(self):
+        """路由层业务异常（禁控 403 等）原样上抛，不能被压成 exec_failed/502。"""
+        from app.core.exceptions import AppException
+        session = _session()
+        pid = _draft(session)
+        executor = AsyncMock(side_effect=AppException(
+            "设备已被禁止 AI 操作", code="entity_not_operable", http_status=403))
+        with pytest.raises(AppException) as ei:
+            await confirm_selection(session, pid, ["light.a"], executor)
+        assert ei.value.http_status == 403
+        # 草稿保留：解除限制后用户可直接重试，不必重说一遍指令
+        assert pid in pending_store(session)
+
+    @pytest.mark.asyncio
     async def test_does_not_touch_other_kind(self):
         """同会话里并存待确认规则草稿时，不能误取到别的 kind。"""
         session = _session()

@@ -21,6 +21,7 @@ import time
 from typing import Any, Awaitable, Callable
 from uuid import uuid4
 
+from ..core.exceptions import AppException
 from .pending_rules import locate_pending, pending_store
 
 logger = logging.getLogger(__name__)
@@ -91,6 +92,10 @@ async def confirm_selection(
         失败：{"ok": False, "reason", "error"}；reason ∈
         not_found / invalid_selection / exec_failed，供调用方映射各自的错误形态。
         失败一律**不摘草稿**：用户可以在 TTL 内重选，不必重说一遍指令。
+
+    Raises:
+        AppException: executor 抛出的路由层业务异常原样上抛（保住 403 这类状态码，
+            不被压成 exec_failed/502）；草稿同样保留。
     """
     resolved_id, entry, _err = locate_pending(session, pending_id or "", KIND_DEVICE_SELECTION)
     if entry is None or resolved_id is None:
@@ -110,6 +115,10 @@ async def confirm_selection(
         }
     try:
         result = await executor(entry, ",".join(picked))
+    except AppException:
+        # 路由层业务异常（如设备已被禁止 AI 操作 → 403）原样上抛，不能被压成
+        # exec_failed/502 丢掉状态码；草稿同样不摘，解除限制后用户可重试
+        raise
     except Exception as exc:  # noqa: BLE001 — 执行失败不摘草稿，用户可重试
         logger.warning("confirm_selection 执行失败: %s", exc, exc_info=True)
         return {"ok": False, "reason": "exec_failed", "error": f"执行失败：{exc}"}
