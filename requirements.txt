@@ -1,36 +1,36 @@
-fastapi==0.115.12
+fastapi==0.141.1
 # fastapi 0.115.x 依赖 starlette<0.42；全局 pip 升到 1.x 会让 Router(on_startup) 报错
-starlette>=0.37.2,<0.42
-uvicorn[standard]==0.34.3
+starlette>=1.6.0,<1.7
+uvicorn[standard]==0.52.4
 # FastAPI 处理 File/Form 上传（stt/transcribe 语音转文字）必需。
 # 下限抬到 0.0.31：清掉 pip-audit 报的 0.0.20 全部已知 CVE（PYSEC-2026-1852/3036~3040）
-python-multipart>=0.0.31
-opencv-python==4.11.0.86
-numpy==1.26.4
-faiss-cpu>=1.8.0
-scikit-learn>=1.4.0
-umap-learn>=0.5.5
-joblib>=1.3.0
-openai>=1.0.0,<3.0
+python-multipart>=0.0.32
+opencv-python==5.0.0.93
+numpy==2.5.3
+faiss-cpu>=1.15.0
+scikit-learn>=1.9.1
+umap-learn>=0.5.12
+joblib>=1.6.0
+openai>=3.13.0,<4.0
 # 钉上界：主链路（agent/vision/summary）全走 openai 客户端，大版本跳跃
 # （1.x→2.x 有破坏性变更）会在下次 rebuild 镜像时才爆，生产设备不可复现
 httpx==0.28.1
-markdownify>=0.13.1
-websockets>=12.0
+markdownify>=1.2.3
+websockets>=17.1
 aiosqlite==0.22.1
 # 钉死：0.22.1 的 worker 线程非 daemon，tests/conftest.py 有对应回收逻辑；
 # aiosqlite 历史上小版本改线程模型，浮动约束对 7x24 设备是延迟雷
 # ONVIF PTZ（云台上下左右）控制 — ptz_service.py 依赖
-onvif-zeep-async>=4.0.0
-croniter>=2.0.0
-langchain-core>=0.3.0,<2.0
-langchain-openai>=0.3.0,<2.0
-langgraph>=0.4.0,<2.0
+onvif-zeep-async>=4.2.1
+croniter>=6.2.4
+langchain-core>=1.6.2,<2.0
+langchain-openai>=1.6.2,<2.0
+langgraph>=1.2.11,<2.0
 # langchain 系 0.x/1.x 的 minor 也常有破坏性变更，统一加 <2.0 上界并
 # 在 CI 锁定具体版本（当前实测组合：core 1.5.5 / openai 1.5.1 / langgraph 1.2.11）
-PyJWT>=2.8.0
-cryptography>=41.0.0
+PyJWT>=2.14.0
+cryptography>=50.0.1
 passlib[bcrypt]>=1.7.4
-pytest>=8.0
-pytest-asyncio>=0.23
-lark-oapi>=1.7.0
+pytest>=9.1.1
+pytest-asyncio>=1.4.0
+lark-oapi>=1.7.3
