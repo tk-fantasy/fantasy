@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+#### 测试套件首次在 Linux CI 全绿（7 处 Windows 耦合 + CI 环境假设清除）
+- **背景**：Test 工作流两个月来从未在 GitHub master 实际执行过（推送事件首跑即暴露），测试套件一直只在 Windows 开发机上验证。本地"无 config.json/.env + HA 不可达"全量模拟 CI 环境（`faulthandler_timeout` 兜底）复现全部失败后逐类修复
+- **模块/类级 fixture 先于 conftest 函数级补丁**：`test_http_smoke` 与 `test_infra_coverage` 的 client fixture 进入完整 lifespan，读到未打补丁的全局 CONFIG——本地靠真实 config.json/.env 侥幸过，CI 干净环境在 agent 构建处 RuntimeError。fixture 内自种 dummy chat key，退出恢复（smoke 测试不真调 LLM）
+- **7 处平台耦合**：句柄锁阻塞 unlink / GlobalMemoryStatusEx（Windows 语义 → skipif）；CI 真有 docker.sock / favicon 产物不进库（断言前提不存在 → monkeypatch 或 skip）；`"C:/abs"` 在 POSIX 是相对路径（改平台原生断言）；POSIX 上 chmod 400 挡不住 unlink（`finally` 对已删文件 chmod 反而炸 → 改断言"装完即清成功"）
+- **test job 挂死护栏**：`timeout-minutes: 20` + `faulthandler_timeout=240`（ubuntu runner 曾 30+ 分钟不退出，超时强杀保留日志定位卡点）
+
 ### Added
 
 #### 安全加固一轮：注册邀请码门控 / 会话归属不可变 / 容器降权 / CI 质量门
