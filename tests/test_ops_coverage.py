@@ -102,16 +102,18 @@ class TestStartupProgress:
 
         port = server_obj.server_address[1]
         s.set("阶段X")
+        # /progress 是浏览器页（HTML）；JSON 契约只保留在 /api/startup-progress
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/progress", timeout=3) as r:
             assert r.status == 200
-            data = json.loads(r.read().decode("utf-8"))
-        assert data["stage"] == "阶段X" and data["ready"] is False
-        assert isinstance(data["elapsed_sec"], float)
-        # 带 query 的 /api/startup-progress 也命中
+            assert r.headers["Content-Type"].startswith("text/html")
+            assert "阶段X" in r.read().decode("utf-8")
         with urllib.request.urlopen(
             f"http://127.0.0.1:{port}/api/startup-progress?x=1", timeout=3
         ) as r:
-            assert json.loads(r.read())["stage"] == "阶段X"
+            assert r.headers["Content-Type"].startswith("application/json")
+            data = json.loads(r.read())
+        assert data["stage"] == "阶段X" and data["ready"] is False
+        assert isinstance(data["elapsed_sec"], float)
         # 未知路径 404
         try:
             urllib.request.urlopen(f"http://127.0.0.1:{port}/nope", timeout=3)
@@ -121,6 +123,33 @@ class TestStartupProgress:
 
         s.stop()
         assert s._server is None
+
+    def test_html_page_shows_setup_code_with_qr(self):
+        from app import startup_progress as sp
+
+        s = sp._State()
+        s.set_extra({"setup_code": "AB3D-EF7H"})
+        page = sp._render_progress_html(s.snapshot())
+        assert "AB3D-EF7H" in page
+        assert "首个注册" in page
+        assert "data:image/svg" in page  # segno 在场时内嵌二维码
+
+    def test_html_page_initialized_without_code(self):
+        from app import startup_progress as sp
+
+        page = sp._render_progress_html(sp._State().snapshot())
+        assert "已完成初始化" in page
+        assert "data:image/svg" not in page
+
+    def test_http_root_serves_setup_code_page(self, monkeypatch):
+        s = self._fresh(monkeypatch)
+        s.set_extra({"setup_code": "Q7W5-N2KX"})
+        s.start()
+        port = s._server.server_address[1]
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=3) as r:
+            assert r.headers["Content-Type"].startswith("text/html")
+            assert "Q7W5-N2KX" in r.read().decode("utf-8")
+        s.stop()
 
     def test_start_bind_failure_silently_skipped(self, monkeypatch):
         from app import startup_progress as sp

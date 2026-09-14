@@ -5,13 +5,14 @@
 随启动推进更新当前阶段，供加载页轮询展示真实进度。
 
 - 端口：8011（仅用标准库 http.server，daemon 线程）
-- 路径：/progress 或 /api/startup-progress
-- 返回：{"stage": str, "ready": bool, "elapsed_sec": float}
+- 路径：/ 或 /progress → 浏览器页（阶段 + 首次部署安装码大字 + 二维码，segno 渲染、
+  缺失时降级纯文字）；/api/startup-progress → JSON（前端加载页轮询依赖，契约不动）
 - 绑定地址：默认 127.0.0.1（仅本机）；容器部署设 STARTUP_PROGRESS_HOST=0.0.0.0 暴露给宿主
 - 绑定失败时静默跳过，绝不阻断主启动
 """
 from __future__ import annotations
 
+import html
 import json
 import logging
 import os
@@ -25,6 +26,43 @@ logger = logging.getLogger(__name__)
 _PROGRESS_PORT = int(os.getenv("AETHER_PROGRESS_PORT", "8011"))
 # 默认仅本机回环；容器内需置 0.0.0.0 才能让宿主浏览器访问加载进度
 _PROGRESS_HOST = os.getenv("STARTUP_PROGRESS_HOST", "127.0.0.1")
+
+_PAGE_CSS = """
+body{font-family:system-ui,sans-serif;background:#0f1115;color:#e6e6e6;margin:0;
+min-height:100vh;display:flex;align-items:center;justify-content:center;text-align:center}
+main{padding:2rem}
+.code{font-size:2.6rem;letter-spacing:.12em;font-weight:700;margin:.5rem 0 1.5rem}
+.qr{width:min(60vw,280px);height:auto;background:#fff;padding:8px;border-radius:8px}
+.hint{color:#9aa0a6;font-size:.9rem}
+"""
+
+
+def _render_progress_html(snapshot: dict) -> str:
+    """浏览器页：阶段 + 安装码大字 + 二维码（segno 缺失/失败降级纯文字，绝不 500）。"""
+    stage = html.escape(str(snapshot.get("stage", "")))
+    code = str(snapshot.get("setup_code") or "").strip()
+    if code:
+        qr_html = ""
+        try:
+            import segno
+
+            uri = segno.make(code, error="m").svg_data_uri(scale=6, border=2)
+            qr_html = f'<img class="qr" src="{uri}" alt="安装码二维码">'
+        except Exception:  # noqa: BLE001 — 降级为纯文字页
+            qr_html = ""
+        body = (
+            '<section><p class="hint">首次部署安装码（首个注册用户将成为管理员）</p>'
+            f'<div class="code">{html.escape(code)}</div>{qr_html}'
+            '<p class="hint">微信/相机扫码即可读取；也可手动填入注册表单。</p></section>'
+        )
+    else:
+        body = '<p class="hint">已完成初始化，无需安装码。</p>'
+    return (
+        '<!doctype html><html lang="zh"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        f"<title>Aether 启动进度</title><style>{_PAGE_CSS}</style></head>"
+        f"<body><main><h1>Aether</h1><p>阶段：{stage}</p>{body}</main></body></html>"
+    )
 
 
 class _State:
@@ -72,7 +110,7 @@ class _State:
             def log_message(self, *args):  # 静默访问日志
                 pass
 
-            def _respond(self) -> None:
+            def _respond_json(self) -> None:
                 payload = json.dumps(state.snapshot()).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -82,9 +120,25 @@ class _State:
                 self.end_headers()
                 self.wfile.write(payload)
 
+            def _respond_html(self) -> None:
+                try:
+                    page = _render_progress_html(state.snapshot())
+                except Exception:  # noqa: BLE001 — 进度服务永不因页面崩
+                    page = "<html><body><p>progress unavailable</p></body></html>"
+                payload = page.encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
             def do_GET(self) -> None:
-                if self.path.split("?")[0] in ("/progress", "/api/startup-progress"):
-                    self._respond()
+                path = self.path.split("?")[0]
+                if path == "/api/startup-progress":
+                    self._respond_json()
+                elif path in ("/", "/progress"):
+                    self._respond_html()
                 else:
                     self.send_response(404)
                     self.end_headers()
