@@ -23,6 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+#### 刷新不再重演加载页开场动画
+- `LoadingView` 的逐字问候动画改为**每浏览器会话只播一次**（sessionStorage 标记）：会话内刷新/切页回来时问候语静态呈现，跳过逐字动画与仪式性等待，健康检查就绪后半秒即回到 `/chat`；冷启动首次进场仍完整播放。此前路由守卫的就绪标志仅存内存，任何刷新都会把已登录用户送回加载页重演全场
+
+### Removed
+
 #### 测试套件首次在 Linux CI 全绿（7 处 Windows 耦合 + CI 环境假设清除）
 - **背景**：Test 工作流两个月来从未在 GitHub master 实际执行过（推送事件首跑即暴露），测试套件一直只在 Windows 开发机上验证。本地"无 config.json/.env + HA 不可达"全量模拟 CI 环境（`faulthandler_timeout` 兜底）复现全部失败后逐类修复
 - **模块/类级 fixture 先于 conftest 函数级补丁**：`test_http_smoke` 与 `test_infra_coverage` 的 client fixture 进入完整 lifespan，读到未打补丁的全局 CONFIG——本地靠真实 config.json/.env 侥幸过，CI 干净环境在 agent 构建处 RuntimeError。fixture 内自种 dummy chat key，退出恢复（smoke 测试不真调 LLM）
