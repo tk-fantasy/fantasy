@@ -319,6 +319,7 @@ class TestDatabaseHelpers:
         assert not list(p.parent.glob("aether.db.corrupt-*"))
         await Database.close()
 
+    @pytest.mark.skipif(os.name != "nt", reason="句柄锁阻塞 unlink 是 Windows 语义；POSIX 上删除不被打开句柄阻塞，复现不了该分支")
     async def test_force_delete_tolerates_locked_side_files(self, tmp_path, monkeypatch):
         """强制删除时个别文件被占用（OSError）→ 跳过继续，不影响建新库。"""
         import os
@@ -1314,6 +1315,8 @@ class TestDiag:
 
     async def test_collect_docker_status_none_and_error(self, tmp_path, monkeypatch):
         from app.ops import diag
+        # CI/装了 docker 的机器上真 sock 存在，先指到不存在路径再断言 None 分支
+        monkeypatch.setattr(diag, "DOCKER_SOCK", tmp_path / "no-such.sock")
         assert await diag.collect_docker_status() is None  # 无 docker.sock
         fake_sock = tmp_path / "docker.sock"
         fake_sock.write_bytes(b"")

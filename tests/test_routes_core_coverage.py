@@ -1437,8 +1437,13 @@ class TestSetupRoutes:
         assert resp.headers["location"] == "/landing"
 
     async def test_favicon_serves_build_artifact(self):
+        from pathlib import Path
         from app.routes.setup_routes import favicon
 
+        ico = Path(__file__).resolve().parent.parent / "app" / "static" / "frontend" / "favicon.ico"
+        if not ico.is_file():
+            import pytest
+            pytest.skip("前端构建产物未同步（npm run build 后生成，CI/干净检出没有）")
         resp = await favicon()
         assert resp.status_code == 200
         assert resp.media_type == "image/x-icon"

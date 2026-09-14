@@ -3,7 +3,10 @@
 边界 mock 原则：只 mock subprocess / HTTP 客户端 / 文件系统（tmp_path）/ socket，
 业务逻辑全部走真实代码并断言真实返回值。
 """
+
 from __future__ import annotations
+
+import os
 
 import asyncio
 import base64
@@ -413,6 +416,7 @@ class TestDiagnoseResources:
         mem = [r for r in results if r["name"] == "内存"][0]
         assert mem["status"] == "fail" and "2GB" in mem["advice"]
 
+    @pytest.mark.skipif(os.name != "nt", reason="GlobalMemoryStatusEx 是 Windows ctypes 分支；POSIX 走 /proc 读取，monkeypatch 不生效")
     def test_memory_none_warns(self, monkeypatch):
         from app.ops import diagnose as dg
 
@@ -1528,12 +1532,11 @@ class TestApplyLocalPack:
                 assert result["to_version"] == "1.2.1"
                 assert pack.exists()  # 删包失败只告警，不阻断
         else:
-            pack.chmod(0o400)
-            try:
-                result = asyncio.run(pe.apply_local_pack("aether-update-1.2.1.tar.gz", "t"))
-                assert result["to_version"] == "1.2.1"
-            finally:
-                pack.chmod(0o600)
+            # POSIX：unlink 只看目录写权限，chmod 400 挡不住删包 → 走"装完即清
+            # 成功"路径（Windows 分支才复现删包失败只告警）
+            result = asyncio.run(pe.apply_local_pack("aether-update-1.2.1.tar.gz", "t"))
+            assert result["to_version"] == "1.2.1"
+            assert not pack.exists()  # 删包成功
 
 
 # ==================== app/ops/upgrade ====================

@@ -15,7 +15,10 @@
 边界 mock：LLM/vision 客户端、HA websocket、Database（patch 类）、时间。
 不触碰真实 app/data 与 logs/。
 """
+
 from __future__ import annotations
+
+import os
 
 import asyncio
 import json
@@ -437,9 +440,12 @@ class TestEmojiService:
         rel = svc._resolve_index_path()
         # 相对路径 → 相对项目根解析
         assert rel.is_absolute() and rel.parts[-3:] == ("sub", "dir", "emoji_index.json")
+        # 平台原生绝对路径（"C:/abs" 在 POSIX 是相对路径）
+        abs_p = Path("/abs/emoji_index.json") if os.name != "nt" else Path("C:/abs/emoji_index.json")
         monkeypatch.setattr("app.services.emoji_service.get_config",
-                            lambda k, d=None: "C:/abs/emoji_index.json")
-        assert svc._resolve_index_path() == Path("C:/abs/emoji_index.json")
+                            lambda k, d=None: str(abs_p))
+        resolved = svc._resolve_index_path()
+        assert resolved == abs_p and resolved.is_absolute()
 
     async def test_load_index_success(self, tmp_path):
         idx = tmp_path / "emoji_index.json"

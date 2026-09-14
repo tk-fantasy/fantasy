@@ -9,7 +9,10 @@ directly with patched container/service boundaries (external HTTP, DB,
 docker socket). Every test asserts real behavior (status codes, JSON
 bodies, service state, written config).
 """
+
 from __future__ import annotations
+
+import os
 
 import sys
 import time
@@ -193,7 +196,11 @@ class TestSimulatorDockerInternals:
     def test_socket_available_real_path(self):
         from app.routes.simulator_routes import docker_socket_available
 
-        # Windows 上 /var/run/docker.sock 不存在
+        # Windows 上 /var/run/docker.sock 不存在；Linux/CI 有真 socket，该断言不成立
+        import os
+        if os.name != "nt":
+            import pytest
+            pytest.skip("POSIX 上 /var/run/docker.sock 可能真实存在，无'不存在'前提")
         assert docker_socket_available() is False
 
     def test_socket_available_tmp_sock(self, fake_sock):
