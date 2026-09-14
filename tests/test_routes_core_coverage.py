@@ -958,7 +958,9 @@ class TestDeleteLlmKeyRoute:
                    new=AsyncMock()) as sync_user:
             result = await delete_llm_key_route("k1", {"user_id": "u1"},
                                                 container=MagicMock())
-        assert result.data == remaining
+        # 响应必须脱敏：内存列表可能含 key_healing 回填的明文，不能原样外吐
+        assert [k["id"] for k in result.data] == ["other"]
+        assert all("api_key" not in k for k in result.data)
         del_key.assert_called_once_with("k1")
         reload_pools.assert_called_once()
         sync_user.assert_awaited_once()
@@ -1269,9 +1271,12 @@ class TestAuthRegisterRoute:
         db.user_get_by_username = AsyncMock(return_value=None)
         db.user_count = AsyncMock(return_value=0)
         db.user_create = AsyncMock()
+        # 注册门控：无用户阶段要求安装码（invite_service.verify_registration_code）
+        db.kv_get = AsyncMock(return_value="ABCD-2345")
 
         resp = client.post("/auth/register",
-                           json={"username": "alice", "password": "password123"})
+                           json={"username": "alice", "password": "password123",
+                                 "code": "ABCD-2345"})
         assert resp.status_code == 200
         body = resp.json()
         assert body["data"]["user"]["is_admin"] == 1
@@ -1286,8 +1291,12 @@ class TestAuthRegisterRoute:
     def test_duplicate_username_rejected(self, auth_client):
         client, db, _ = auth_client
         db.user_get_by_username = AsyncMock(return_value={"id": "x"})
+        # 门控先于用户名查重（避免无码状态下的用户名枚举），先让门控通过
+        db.user_count = AsyncMock(return_value=0)
+        db.kv_get = AsyncMock(return_value="ABCD-2345")
         resp = client.post("/auth/register",
-                           json={"username": "alice", "password": "password123"})
+                           json={"username": "alice", "password": "password123",
+                                 "code": "ABCD-2345"})
         assert resp.status_code == 400
         assert resp.json()["code"] == "username_exists"
 

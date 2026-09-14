@@ -28,6 +28,9 @@ class TestSetupStatus:
             "display_name": "New User"
         })
         mock_db.user_setting_set = AsyncMock()
+        # 注册门控：无用户阶段要求安装码
+        mock_db.user_count = AsyncMock(return_value=0)
+        mock_db.kv_get = AsyncMock(return_value="ABCD-2345")
 
         mock_request = AsyncMock(spec=Request)
         mock_request.client = AsyncMock()
@@ -36,7 +39,8 @@ class TestSetupStatus:
         mock_request.headers = {}
         mock_request.url = MagicMock(scheme="http")
         mock_response = AsyncMock()
-        payload = AuthRegisterRequest(username="newuser", password="password123")
+        payload = AuthRegisterRequest(username="newuser", password="password123",
+                                      code="ABCD-2345")
 
         with patch("app.routes.auth_routes.Database.get", return_value=mock_db):
             result = await register(mock_request, mock_response, payload)
@@ -66,6 +70,9 @@ class TestSetupStatus:
             "display_name": "Test"
         })
         mock_db.user_setting_set = AsyncMock()
+        # 注册门控：无用户阶段要求安装码
+        mock_db.user_count = AsyncMock(return_value=0)
+        mock_db.kv_get = AsyncMock(return_value="ABCD-2345")
 
         mock_request = AsyncMock(spec=Request)
         mock_request.client = AsyncMock()
@@ -74,7 +81,8 @@ class TestSetupStatus:
         mock_request.headers = {}
         mock_request.url = MagicMock(scheme="http")
         mock_response = AsyncMock()
-        payload = AuthRegisterRequest(username="testuser", password="password123")
+        payload = AuthRegisterRequest(username="testuser", password="password123",
+                                      code="ABCD-2345")
 
         with patch("app.routes.auth_routes.Database.get", return_value=mock_db):
             await register(mock_request, mock_response, payload)

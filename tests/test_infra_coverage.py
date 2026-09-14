@@ -693,17 +693,20 @@ class TestSessionStorePersistence:
         got = await store.get_session("s1")
         assert got is not None and got.user_id == "u1"
         await store.load_from_db()  # 幂等：重复加载 no-op
-        # get_or_create 更新内存里的 request_id/user_id，但不再整序列化落库
-        # （轮首只改了 request_id，全量重 dump 是纯浪费；轮末 store_session 落盘）
-        s = await store.get_or_create("s1", "r2", user_id="u9")
-        assert s.request_id == "r2" and s.user_id == "u9"
+        # 归属不可变：他人请求被拒（不再覆盖 user_id——那是可反向"过户"绕过
+        # require_owned_session 的横向越权），属主轮首仍更新 request_id
+        from app.services.session_store import SessionOwnershipError
+        with pytest.raises(SessionOwnershipError):
+            await store.get_or_create("s1", "r2", user_id="u9")
+        s = await store.get_or_create("s1", "r2", user_id="u1")
+        assert s.request_id == "r2" and s.user_id == "u1"
         await store.shutdown()
         async with db._db.execute("SELECT user_id FROM sessions WHERE id='s1'") as cur:
             assert (await cur.fetchone())[0] == "u1"  # 轮首未写库
         await store.store_session(s)
         await store.shutdown()
         async with db._db.execute("SELECT user_id FROM sessions WHERE id='s1'") as cur:
-            assert (await cur.fetchone())[0] == "u9"  # store_session 落盘
+            assert (await cur.fetchone())[0] == "u1"  # store_session 落盘（归属未被篡改）
 
     async def test_load_from_db_failure_starts_fresh(self, env, monkeypatch):
         store, _ = env
@@ -1960,16 +1963,32 @@ def _auth_header() -> dict:
 class TestMainMiddlewareAndSpa:
     @pytest.fixture(scope="class")
     def client(self, tmp_path_factory):
-        """进入完整 lifespan 的共享客户端（与 test_http_smoke 同路径，DB 指向 tmp）。"""
+        """进入完整 lifespan 的共享客户端（与 test_http_smoke 同路径，DB 指向 tmp）。
+
+        类级 fixture 先于 conftest 函数级 CONFIG 补丁执行，需自种 chat key，
+        否则干净环境（无 config.json/.env）在 lifespan 的 agent 构建处
+        RuntimeError——与 test_http_smoke 同一层问题。
+        """
         from fastapi.testclient import TestClient
+        import app.core.config as cfg
         import app.main as main
         db_path = tmp_path_factory.mktemp("mw") / "mw" / "aether.db"
         old_path = dbmod.DB_PATH
+        old_config = cfg.CONFIG
+        seeded = dict(old_config)
+        seeded["llm_keys"] = [{
+            "id": "mw-chat-key", "base_url": "https://dummy.invalid",
+            "model": "test-chat-model", "type": "chat",
+            "chat_path": "/chat/completions",
+            "api_key": "sk-test-dummy-not-a-real-key",
+        }]
         dbmod.DB_PATH = db_path
+        cfg.CONFIG = seeded
         try:
             with TestClient(main.app) as c:
                 yield c
         finally:
+            cfg.CONFIG = old_config
             dbmod.DB_PATH = old_path
             asyncio.run(Database.close_all())
             Database._instance = None

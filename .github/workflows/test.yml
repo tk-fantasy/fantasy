@@ -10,6 +10,10 @@ jobs:
   # 默认回归：单测 + mock 级 e2e（真实子进程的 slow 用例不在此跑）
   test:
     runs-on: ubuntu-latest
+    # 挂死护栏：正常 ~4 分钟，超时强杀并保留日志（曾出现 ubuntu runner 上
+    # 30+ 分钟不退出，需日志尾部定位卡点）。faulthandler_timeout：单个测试
+    # 卡 4 分钟即自动 dump 全部线程栈到日志。
+    timeout-minutes: 20
 
     steps:
       - uses: actions/checkout@v4
@@ -23,7 +27,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run tests
-        run: pytest -m "not slow" --tb=short -q
+        run: pytest -m "not slow" --tb=short -q -o faulthandler_timeout=240
 
   # slow E2E：拉起真实插件子进程走 RPC（~4 分钟），合入前必须全绿
   e2e-slow:
