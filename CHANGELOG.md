@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+#### 邀请码/安装码二维码展示 + 邀请码 24h 过期
+- **8011 启动页升级**（`startup_progress.py`）：浏览器访问 `/` 或 `/progress` 从裸 JSON 改为极简页——安装码大字 + `segno` 服务端渲染的二维码 SVG（微信/相机扫码即读码，免人工抄写）；`/api/startup-progress` JSON 契约不动；segno 缺失/渲染失败降级纯文字，进度服务永不 500
+- **运维页邀请码二维码**（`OperationsView.vue` + npm `qrcode`）：未使用的码弹大图二维码，内容为注册深链 `{origin}/login?mode=register&code=X`——家人扫码点开直达注册页、码已填好；localhost 访问时警示"手机扫不开，请用局域网 IP"
+- **注册页深链填码**（`LoginView.vue`）：`?code=` 自动填入邀请码并切注册模式
+- **邀请码 24h 过期**（`invite_service.py`）：签发后 24 小时未用自动失效，兜住码泄露长期潜伏；过期与无效同一句报错维持无侧信道；存量无 `expires_at` 的码视为永不过期。设计文档：`docs/superpowers/specs/2026-09-14-invite-qr-design.md`
+
 ### Fixed
 
 #### 测试套件首次在 Linux CI 全绿（7 处 Windows 耦合 + CI 环境假设清除）
