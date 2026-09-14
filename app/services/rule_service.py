@@ -309,7 +309,7 @@ class RuleService:
             try:
                 ha_catalog = self._ha_catalog_provider()
                 devices = self._parse_ha_catalog(ha_catalog)
-            except Exception:
+            except Exception:  # noqa: BLE001
                 pass
 
         # 获取完整设备数据（带 attributes，用于校验）
@@ -345,7 +345,7 @@ class RuleService:
             try:
                 from ..core.database import Database
                 notes_map = await Database.get().prefs_get_by_scope("entity_note")
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.warning("Failed to load entity notes for rule generation", exc_info=True)
             # 为所有 full_devices 预计算 _controls（用于校验 + 提示词）
             for d in full_devices:

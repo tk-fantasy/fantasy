@@ -145,7 +145,7 @@ class SummarizationService:
                 summary = str(summary).strip()
                 if summary:
                     return summary
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.warning("LLM summary failed, fall back to truncation", exc_info=True)
         return self._truncate_summary(chunk)
 

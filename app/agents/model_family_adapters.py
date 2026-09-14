@@ -112,7 +112,7 @@ def refresh_plugin_adapters(plugin_dir: str | Path | None = None,
         try:
             from ..integration.config_helper import get_disabled_plugins
             disabled = get_disabled_plugins()
-        except Exception:
+        except Exception:  # noqa: BLE001
             disabled = []
 
     loaded: list[ModelFamilyAdapter] = []

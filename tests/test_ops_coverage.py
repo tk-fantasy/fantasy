@@ -756,7 +756,7 @@ class TestBuildQweatherJwt:
         raw = "".join(pem.strip().splitlines()[1:-1])
         token = _build_qweather_jwt("host", "kid1", "sub1", raw)
         h, p, sig = token.split(".")
-        pad = lambda s: s + "=" * (-len(s) % 4)  # noqa: E731
+        pad = lambda s: s + "=" * (-len(s) % 4)
         header = json.loads(base64.urlsafe_b64decode(pad(h)))
         payload = json.loads(base64.urlsafe_b64decode(pad(p)))
         assert header == {"alg": "EdDSA", "kid": "kid1"}

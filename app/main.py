@@ -200,7 +200,7 @@ def _make_plugin_tool_handler(integration_layer, plugin_id: str, tool_name: str)
             return await proc.call(METHOD_TOOLS_CALL,
                                    {"name": tool_name, "arguments": parameters,
                                     "context": context})
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning("插件工具调用失败 %s/%s: %s", plugin_id, tool_name, exc)
             return {"error": f"插件 {plugin_id} 未响应（可能正在重启），请稍后重试",
                     "hint": "不要编造结果；如仍失败请如实告知用户该功能暂不可用。"}
@@ -228,7 +228,7 @@ async def _sync_plugin_agent_tools(integration_layer=None) -> None:
             from app.integration.rpc_protocol import METHOD_TOOLS_LIST
             try:
                 result = await asyncio.wait_for(proc.call(METHOD_TOOLS_LIST, {}), timeout=10)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.warning("拉取插件 %s 工具定义失败（跳过）: %s", pid, exc)
                 continue
             from .mcp.mcp_client_manager import MCPTool
@@ -313,7 +313,7 @@ async def _ws_verify_token(websocket: WebSocket) -> str | None:
                 await websocket.close(code=1008)
                 return None
             return payload.get("sub", "")  # 返回 user_id
-        except Exception:
+        except Exception:  # noqa: BLE001
             pass  # JWT 验证失败，继续尝试 APP_TOKEN
 
     # 向后兼容：检查 APP_TOKEN（compare_digest 防时序侧信道）
@@ -335,7 +335,7 @@ async def _ws_heartbeat(websocket: WebSocket, interval: int = 30):
         await asyncio.sleep(interval)
         try:
             await websocket.send_json({"type": "ping"})
-        except Exception:
+        except Exception:  # noqa: BLE001
             break
 
 
@@ -358,7 +358,7 @@ async def _refresh_ha_catalog() -> None:
         snapshot = await build_device_snapshot(ha_service, ha_client)
         _ha_catalog_cache_ref[0] = render_catalog_text(snapshot)
         _ha_controls_cache_ref[0] = render_controls_text(snapshot)
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.warning("HA catalog refresh failed", exc_info=True)
 
 
@@ -446,6 +446,17 @@ async def lifespan(_: FastAPI):
     db = Database.get()
     await migrate_global_llm_keys(db)
 
+    # 首次部署安装码：还没有任何用户时生成并展示（启动日志 + 8011 进度页），
+    # 首个注册者（未来的管理员）必须提供，堵住新部署到户主注册之间的抢注窗口。
+    # 已有用户后不再生成/校验，此码随之失效。
+    try:
+        if await db.user_count() == 0:
+            from .services import invite_service as _invite_service
+            _setup_code = await _invite_service.get_setup_code(db)
+            _startup_progress.set_extra({"setup_code": _setup_code})
+    except Exception:
+        logger.warning("setup code generation failed", exc_info=True)
+
     # 启动自愈：全局 llm_keys 非空但某些角色 key 无效（空/占位符）时，
     # 从 per-user DB 找第一个有该角色有效明文 api_key 的用户条目恢复。
     # 场景：wizard 把 embed/vision key 同时写进全局 .env（env 引用）和
@@ -460,9 +471,9 @@ async def lifespan(_: FastAPI):
             try:
                 _container.reload_all_clients()
                 logger.info("Reloaded LLM clients after healing %d keys", len(healed))
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 logger.warning("Failed to reload clients after key healing: %s", e)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.warning("Failed to heal global LLM keys from user DB: %s", e)
 
     await migrate_home_info(db)
@@ -544,7 +555,7 @@ async def lifespan(_: FastAPI):
             logger.info("集成插件平台已启动: %s (广播=%s)",
                         [p["id"] for p in integration_layer.list_plugins() if p["alive"]],
                         integration_layer.sink_manager.broadcast_enabled)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.error("集成插件平台启动失败（不阻塞主服务）: %s", exc)
             integration_layer = None
 
@@ -799,7 +810,7 @@ def _reset_global_state() -> None:
     ``dispatcher`` 等仍指向已关闭的旧对象（僵尸）。agent 的 httpx 客户端已在此前
     由 ``dispatcher.close_all_agent_clients()`` 回收，这里只解除引用。
     """
-    global dispatcher, langgraph_agent  # noqa: PLW0603
+    global dispatcher, langgraph_agent
     dispatcher = None
     langgraph_agent = None
     _container.dispatcher = None
@@ -901,7 +912,7 @@ async def api_token_guard(request, call_next):
     if token:
         try:
             payload = verify_token(token)
-        except Exception:
+        except Exception:  # noqa: BLE001
             token = None  # token 无效，落入下方 401
         else:
             # refresh token 不能访问 API（只能用于 /api/auth/refresh）。
@@ -1019,7 +1030,7 @@ def _build_dispatch_fn(dispatcher):
                 if ns == "Template" and name == "ToastStream":
                     return payload.get("stream", "") or ""
             return ""
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning("集成 dispatch 失败: %s", exc)
             return "抱歉，处理消息时出错了。"
 
@@ -1095,7 +1106,7 @@ def _load_host_integration_meta(name: str, integrations_dir: str) -> dict:
             "config_schema": getattr(mod, "CONFIG_SCHEMA", {}),
             "alive": True,
         }
-    except Exception:
+    except Exception:  # noqa: BLE001
         return default_meta
 
 

@@ -131,7 +131,7 @@ def _memory_info() -> tuple[Any, Any]:
         if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
             raise OSError("GlobalMemoryStatusEx failed")
         return stat.ullTotalPhys // 1024**2, stat.ullAvailPhys // 1024**2
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None, None
 
 

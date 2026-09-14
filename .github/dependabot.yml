@@ -1,0 +1,24 @@
+# 依赖更新：pip 生态每周检查（GitHub Actions 与 pip 依赖分开分组），
+# npm 前端依赖同理。合并节奏由人工把控，避免 7x24 设备的运行时被静默漂移。
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      python-deps:
+        patterns:
+          - "*"
+  - package-ecosystem: "npm"
+    directory: "/frontend"
+    schedule:
+      interval: "weekly"
+    groups:
+      npm-deps:
+        patterns:
+          - "*"
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"

@@ -48,7 +48,7 @@ class SinkManager:
         async def _send(plugin_id: str, proc) -> None:
             try:
                 await proc.call(METHOD_SPEAK, {"text": text, "msg_id": msg_id})
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.warning("广播到 sink %s 失败: %s", plugin_id, exc)
 
         await asyncio.gather(*[_send(pid, proc) for pid, proc in sinks])
@@ -62,7 +62,7 @@ class SinkManager:
         async def _stop(plugin_id: str, proc) -> None:
             try:
                 await proc.call(METHOD_INTERRUPT, {})
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.warning("中断 sink %s 失败: %s", plugin_id, exc)
 
         await asyncio.gather(*[_stop(pid, proc) for pid, proc in sinks])

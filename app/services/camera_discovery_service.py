@@ -143,7 +143,7 @@ class CameraDiscoveryService:
                     hw = str(getattr(nic_info, "HwAddress", "") or "").strip()
                     if normalize_mac(hw):
                         return hw
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.debug("GetNetworkInterfaces failed, falling back to DeviceInformation", exc_info=True)
 
             info = await devicemgmt.GetDeviceInformation()
@@ -152,7 +152,7 @@ class CameraDiscoveryService:
             # 探测候选设备时一轮可能连 1-5 台,不关会累积连接耗尽 fd。
             try:
                 await cam.close()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.debug("ONVIFCamera close failed", exc_info=True)
 
         # 优先级 2: HardwareId(仅当长得像 MAC)
@@ -370,7 +370,7 @@ class CameraDiscoveryService:
             if self._on_ip_changed is not None:
                 try:
                     self._on_ip_changed(camera_id, new_ip)
-                except Exception:  # noqa: BLE001
+                except Exception:
                     logger.exception("on_ip_changed callback failed for %s", camera_id)
             return
 

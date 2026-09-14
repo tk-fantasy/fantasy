@@ -94,5 +94,5 @@ async def test_model_connection(
         return {"ok": False, "error": f"连接超时（{timeout}秒）"}
     except httpx.ConnectError as e:
         return {"ok": False, "error": f"连接失败: {e}"}
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": f"未知错误: {e}"}

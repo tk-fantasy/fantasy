@@ -159,7 +159,7 @@ async def probe_exa(api_key: str) -> ProbeResult:
                         detail=f"Exa 返回错误：{err_text[:120]}",
                     )
             return ProbeResult(ok=True, detail="Exa key 验证通过")
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         reason, detail = _classify_httpx_error(e)
         logger.warning("Exa probe failed: %s (%s)", reason, detail)
         return ProbeResult(ok=False, reason=reason, detail=detail)
@@ -219,7 +219,7 @@ async def probe_weather(host: str, kid: str, sub: str, private_key: str) -> Prob
         token = _build_qweather_jwt(host, kid, sub, private_key)
     except ValueError as e:
         return ProbeResult(ok=False, reason="bad_format", detail=f"凭证格式错误：{e}")
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return ProbeResult(ok=False, reason="bad_format", detail=f"private_key 无效：{e}")
 
     url = f"https://{host}/geo/v2/city/lookup"
@@ -238,7 +238,7 @@ async def probe_weather(host: str, kid: str, sub: str, private_key: str) -> Prob
                     detail=f"和风返回 HTTP {resp.status_code}：{resp.text[:200]}",
                 )
             return ProbeResult(ok=True, detail="和风天气凭证验证通过")
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         reason, detail = _classify_httpx_error(e)
         logger.warning("Weather probe failed: %s (%s)", reason, detail)
         return ProbeResult(ok=False, reason=reason, detail=detail)

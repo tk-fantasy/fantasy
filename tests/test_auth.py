@@ -202,6 +202,9 @@ class TestAuthRoutes:
             "display_name": "New User"
         })
         mock_db.user_setting_set = AsyncMock()
+        # 注册门控：无用户阶段按"安装码"路径校验（invite_service.verify_registration_code）
+        mock_db.user_count = AsyncMock(return_value=0)
+        mock_db.kv_get = AsyncMock(return_value="ABCD-2345")  # auth_setup_code
 
         mock_request = AsyncMock(spec=Request)
         mock_request.client = AsyncMock()
@@ -210,7 +213,7 @@ class TestAuthRoutes:
         mock_request.headers = {}
         mock_request.url = MagicMock(scheme="http")
         mock_response = Response()
-        payload = AuthRegisterRequest(username="newuser", password="password123")
+        payload = AuthRegisterRequest(username="newuser", password="password123", code="ABCD-2345")
 
         with patch("app.routes.auth_routes.Database.get", return_value=mock_db):
             result = await register(mock_request, mock_response, payload)

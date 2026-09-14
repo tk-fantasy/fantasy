@@ -242,7 +242,7 @@ class AutomationService:
             try:
                 from ..container import get_container
                 get_container().metrics_service.record_automation_eval()
-            except Exception:
+            except Exception:  # noqa: BLE001
                 pass
             if result == 1:
                 applied.extend(await self._run_actions(rule, now, camera_id=camera_id))
@@ -267,7 +267,7 @@ class AutomationService:
                 "condition": str(rule.get("condition", "")),
                 "result": int(result) if isinstance(result, (int, float)) else str(result),
             })
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.debug("rule eval log insert failed", exc_info=True)
 
     def _cooldown_remaining(self, rule: dict, now: float) -> float:
@@ -406,15 +406,15 @@ class AutomationService:
             try:
                 from ..container import get_container
                 get_container().metrics_service.record_tool_call(resolved)
-            except Exception:
+            except Exception:  # noqa: BLE001
                 pass
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception("Rule MCP action failed", extra={"tool": resolved})
             # 记录工具调用错误
             try:
                 from ..container import get_container
                 get_container().metrics_service.record_tool_call(resolved, error=True)
-            except Exception:
+            except Exception:  # noqa: BLE001
                 pass
             await self._record_action_log(camera_id, resolved, tool_input, attempted=True, error="execution failed")
             return None
@@ -448,7 +448,7 @@ class AutomationService:
             if result_summary is not None:
                 content["result"] = result_summary
             await Database.get().vision_log_insert(camera_id, "action", content)
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.debug("action log insert failed", exc_info=True)
 
     async def _resolve_chat_client(self, user_id: str = ""):
@@ -464,7 +464,7 @@ class AutomationService:
             from ..core.key_resolver import resolve_key_for_role_user
             try:
                 key_info = await resolve_key_for_role_user("chat", user_id)
-            except Exception:
+            except Exception:  # noqa: BLE001
                 key_info = None
             if key_info and key_info.get("api_key"):
                 sig = (key_info.get("api_key"), key_info.get("base_url"), key_info.get("model"))
@@ -524,7 +524,7 @@ class AutomationService:
             parts.append(
                 f"当前时间：{time_data.get('date', '')} {weekday} {time_data.get('time', '')}"
             )
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.debug("Failed to get time for condition context", exc_info=True)
 
         # 天气：60s 缓存
@@ -536,7 +536,7 @@ class AutomationService:
                 if isinstance(data, dict) and "error" not in data:
                     self._weather_cache = data
                     self._weather_cache_at = now
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.debug("Failed to get weather for condition context", exc_info=True)
 
         if self._weather_cache:

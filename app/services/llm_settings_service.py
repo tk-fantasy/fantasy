@@ -29,7 +29,7 @@ class LlmSettingsService:
         for fn in self._reload_hooks:
             try:
                 fn()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.exception("LLM settings reload hook failed")
 
     def current_settings(self) -> dict[str, Any]:

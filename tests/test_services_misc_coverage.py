@@ -1285,7 +1285,7 @@ class TestControlProbe:
 # entity_controls 边角分支
 # ===========================================================================
 
-from app.services.entity_controls import (  # noqa: E402
+from app.services.entity_controls import (
     _concept_match,
     controls_to_text,
     resolve_controls,

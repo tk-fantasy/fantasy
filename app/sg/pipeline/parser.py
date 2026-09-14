@@ -111,7 +111,7 @@ def parse_all(docs_root: str, index_path: str = "") -> list[Document]:
     try:
         subdirs = [d for d in os.listdir(docs_root)
                    if os.path.isdir(os.path.join(docs_root, d))]
-    except Exception:
+    except Exception:  # noqa: BLE001
         subdirs = []
 
     category_dir_map = {}

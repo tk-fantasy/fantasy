@@ -133,12 +133,12 @@ async def apply_upgrade(pack_path: Path, operator: str) -> dict:
             try:
                 r = await _docker("POST", f"/containers/{CONTAINER_NAME}/restart", params={"t": 5})
                 logger.info("Upgrade restart status: %s", r.status_code)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.exception("Upgrade restart failed（可手动 docker restart aether）")
 
         try:
             asyncio.new_event_loop().run_until_complete(_do())
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception("Upgrade restart thread failed")
 
     timer = threading.Timer(4.0, _restart_soon)

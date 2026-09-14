@@ -74,7 +74,7 @@ class WeeklyReportService:
                     await self.generate()
             except asyncio.CancelledError:
                 raise
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.exception("weekly report daily check failed")
             await asyncio.sleep(6 * 3600)  # 6 小时查一次（重启后最多延迟 6h 补生成）
 
@@ -129,7 +129,7 @@ class WeeklyReportService:
                     timeout,
                 )
                 text = str(text).strip()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.warning("Weekly report LLM summarize failed, fallback to stats", exc_info=True)
                 text = ""
         if not text:
@@ -208,7 +208,7 @@ class WeeklyReportService:
                     if m.get("role") == "user":
                         total += 1
             return total
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.debug("count chat turns failed", exc_info=True)
             return 0
 

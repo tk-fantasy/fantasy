@@ -48,7 +48,11 @@ services:
     # 国内拉 ghcr.io 经常超时，改用 Docker Hub 镜像（homeassistant/home-assistant 是官方同步发布）
     image: homeassistant/home-assistant:stable
     ports:
-      - "8123:8123"
+      # 只绑宿主回环：HA UI 是管理面（onboarding/集成/令牌都在这里），不应对
+      # 局域网开放。设备控制走 Aether，Aether 经 docker 内部网络（服务名
+      # homeassistant）访问 8123，与宿主绑定无关。临时需要直开 HA UI 时改回
+      # "8123:8123" 或绑定指定 IP，改完 docker compose up -d 生效。
+      - "127.0.0.1:8123:8123"
     volumes:
       - ./ha_config:/config
     environment:

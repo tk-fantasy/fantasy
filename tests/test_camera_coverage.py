@@ -232,7 +232,7 @@ class TestInferSchedulerWorker:
         s = _stream()
         s._running = True
         seen: list = []
-        monkey_target = lambda frame: seen.append(frame)  # noqa: E731
+        monkey_target = lambda frame: seen.append(frame)
         s._run_inference = monkey_target  # 实例属性遮蔽，executor 会调到它
         t = threading.Thread(target=s._infer_scheduler_worker, daemon=True)
         t.start()

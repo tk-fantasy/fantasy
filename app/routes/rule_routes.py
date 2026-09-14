@@ -229,7 +229,7 @@ def _known_cameras(container: AppContainer) -> list[dict] | None:
         return None
     try:
         return [c for c in (manager.list_cameras() or []) if isinstance(c, dict)]
-    except Exception:  # noqa: BLE001 — 含 MagicMock 等不可迭代返回值
+    except Exception:
         logger.warning("list_cameras 失败，跳过摄像头校验", exc_info=True)
         return None
 

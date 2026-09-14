@@ -255,7 +255,7 @@ async def upload_plugin_file(
                     raise ValueError(
                         f"文件过大（> {MAX_PLUGIN_FILE_SIZE // 1024 // 1024 // 1024}GB 上限）")
                 out.write(chunk)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         dest.unlink(missing_ok=True)  # 失败清理半截文件
         logger.warning("插件 %s 文件上传失败: %s", plugin_id, exc)
         return {"success": False, "message": f"上传失败: {exc}"}
@@ -295,7 +295,7 @@ async def call_plugin_method(
     try:
         params = (req.params if req is not None else {}) or {}
         result = await proc.call(method, params)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         return {"success": False, "message": f"调用失败: {exc}"}
     return {"success": True, "data": result}
 
@@ -321,7 +321,7 @@ def _get_current_mode_safe() -> str:
     try:
         from ..integration.config_helper import get_current_mode
         return get_current_mode()
-    except Exception:
+    except Exception:  # noqa: BLE001
         return "aether"
 
 
@@ -478,7 +478,7 @@ async def upload_plugin(file: UploadFile = File(...), admin: dict = Depends(get_
         import json
         raw = json.loads(zf.read(manifest_name).decode("utf-8"))
         manifest = Manifest.model_validate(raw)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         return {"success": False, "message": f"manifest 校验失败: {exc}"}
 
     # id 合法性（防路径穿越）
@@ -527,7 +527,7 @@ async def upload_plugin(file: UploadFile = File(...), admin: dict = Depends(get_
         return {"success": True,
                 "data": {"id": manifest.id, "name": manifest.name,
                          "message": "上传成功，重启 Aether 后生效"}}
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         # 失败回滚：删除已解压的目录
         shutil.rmtree(target_dir, ignore_errors=True)
         logger.error("插件 %s 上传解压失败: %s", manifest.id, exc)
@@ -565,7 +565,7 @@ async def delete_plugin(plugin_id: str, container=Depends(get_container), admin:
         if proc and proc.is_alive:
             try:
                 await proc.stop()
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.warning("停止插件 %s 进程失败: %s", plugin_id, exc)
         # 兜底注销该插件的虚拟摄像头（进程未运行时 stop 回调不会触发）
         try:

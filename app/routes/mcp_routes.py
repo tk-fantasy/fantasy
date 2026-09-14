@@ -67,7 +67,7 @@ async def connect_mcp_server(payload: MCPConnectRequest, container: AppContainer
             )
         except asyncio.TimeoutError:
             raise AppException(f"连接 {name} 超时（60s）", code="mcp_timeout", http_status=504)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             raise AppException(f"连接 {name} 失败: {e}", code="mcp_error", http_status=502)
         await _rebuild_agent()
     return ApiResponse(data={"connected": True, "name": name, "tools": len(tools)})

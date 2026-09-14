@@ -303,7 +303,7 @@ class LlmVisionClient(LlmBaseClient):
             try:
                 resp = await client.post(url, json=payload, headers=headers, timeout=timeout)
                 if resp.status_code == 429 and attempt < max_retries:
-                    await asyncio.sleep(0.5 * (2 ** attempt) + random.uniform(0, 0.1))
+                    await asyncio.sleep(0.5 * (2 ** attempt) + random.uniform(0, 0.1))  # nosec B311 - 重试退避抖动，非密码学用途
                     continue
                 resp.raise_for_status()
                 data = resp.json()
@@ -314,7 +314,7 @@ class LlmVisionClient(LlmBaseClient):
             except (httpx.ConnectError, httpx.TimeoutException) as exc:
                 last_exc = exc
                 if attempt < max_retries:
-                    await asyncio.sleep(0.3 * (2 ** attempt) + random.uniform(0, 0.05))
+                    await asyncio.sleep(0.3 * (2 ** attempt) + random.uniform(0, 0.05))  # nosec B311 - 重试退避抖动，非密码学用途
                     continue
                 logger.warning("evaluate_condition request failed after %d retries: %s", max_retries, exc)
                 return "0", False

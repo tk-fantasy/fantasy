@@ -131,7 +131,7 @@ async def revoke_token_persisted(payload: dict[str, Any]) -> None:
     try:
         from .database import Database
         await Database.get().emoji_pref_upsert(_REVOKED_KV_SCOPE, jti, str(exp))
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.warning("Failed to persist revoked token (memory-only revocation)", exc_info=True)
 
 
@@ -143,7 +143,7 @@ async def load_revoked_tokens() -> int:
     try:
         from .database import Database
         rows = await Database.get().prefs_get_by_scope(_REVOKED_KV_SCOPE)
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.warning("Failed to load revoked tokens from KV", exc_info=True)
         return 0
     now = int(time.time())
@@ -322,7 +322,7 @@ async def get_current_admin(
     try:
         db = Database.get()
         user = await db.user_get_by_id(current_user["user_id"])
-    except Exception:
+    except Exception:  # noqa: BLE001
         user = None
     if not user or not user.get("is_admin"):
         raise AppException(

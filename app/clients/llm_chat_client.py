@@ -18,7 +18,7 @@ class LlmChatClient(LlmBaseClient):
             from ..container import get_container
             metrics = get_container().metrics_service
             metrics.record_llm_call()
-        except Exception:
+        except Exception:  # noqa: BLE001
             pass  # 容器未初始化时忽略
 
         # 思考模式由角色配置决定(设置页可开关),默认关:家居助手不需要先吐推理。
@@ -40,6 +40,6 @@ class LlmChatClient(LlmBaseClient):
                 from ..container import get_container
                 metrics = get_container().metrics_service
                 metrics.record_llm_call(error=True)
-            except Exception:
+            except Exception:  # noqa: BLE001
                 pass
             raise

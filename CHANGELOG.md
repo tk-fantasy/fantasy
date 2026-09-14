@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### 安全加固一轮：注册邀请码门控 / 会话归属不可变 / 容器降权 / CI 质量门
+- **背景**：第三方安全评估给出三个多用户场景下的不合格项——① 新部署到户主注册之间，局域网内任何人可抢注首用户成为管理员，而管理员可上传"模型家族适配插件"（在宿主进程内 `exec_module` 执行）+ 容器持有宿主 docker.sock，构成直通宿主 root 的沦陷链；② `POST/DELETE /api/llm_keys` 把内存 llm_keys 列表原样返回，key_healing 自愈会把全局明文 key 回填进内存 CONFIG，任意登录用户一次 POST 即可批量导出全部全局 LLM 明文 key；③ `session_store.get_or_create` 轮首无条件覆盖 user_id，任何成员拿到他人 session_id 即可反向"过户"会话、绕过 `require_owned_session` 读历史。修复①③后，插件链的入口收敛为"管理员凭证被盗"这一家用场景普遍接受的残余信任模型（与 WordPress 插件 / HA Add-on 同级）
+- **注册邀请码门控**（`app/services/invite_service.py` + `auth_routes` + 前端登录页/运维页）：两级码制，注册从此默认关闭——首用户凭**安装码**（无用户时启动自动生成，醒目横幅打印到部署日志与 8011 启动进度页（仅回环可达），管理员可重置），后续成员凭管理员签发的**一次性邀请码**（运维中心新「注册邀请码」区块：生成/备注/状态/吊销）。码错误统一同一句话，不区分"不存在/已使用/已吊销"，不给爆破者码状态侧信道；码字符表剔除 0/O/1/I/L，人工抄写不易错。`/api/auth/*` 被 api_token_guard 中间件放行（注册登录本就无登录态），邀请码管理端点的管理员鉴权完全依赖 `get_current_admin` 依赖，不可省略
+- **会话归属不可变**：`get_or_create` 已归属会话被他人请求时抛 `SessionOwnershipError`（AppException 403），不再覆盖归属；无归属的旧数据由首个认证使用者认领（与 `require_owned_session` 放行无归属会话口径一致）；user_id 为空的内部调用（后台任务）不触碰归属。`dispatch`/`dispatch_stream` 捕获后发 `Dialog.Exception("无权访问该会话")` + `Finish(success=False)`——此前异常逃逸到 WS 包装层只留日志，用户端表现为无响应
+- **llm_keys 出口全脱敏**：per-user `POST/DELETE /api/llm_keys` 响应改走 `llm_key_service.mask_global_keys`（与全局 key 读端点同口径）。内存明文保留（key_resolver 运行时兜底需要），只在 API 边界剥
+- **容器降权运行**：镜像新增 `aether` 用户（UID 10001），入口脚本以 root 完成三件装配（证书属主、docker.sock 属组动态探测后补给应用用户——虚拟设备开关/离线升级不受影响、挂载目录属主修正）后 `gosu` 降权运行主进程与插件子进程；`docker run <image> bash/pytest` 任意命令透传同样降权。`.dockerignore` 放行 `scripts/entrypoint_tls.sh` 进镜像作内置 ENTRYPOINT（compose 仍用宿主挂载覆盖，随仓库更新无需重建镜像）。实跑验证：PID 1 与插件子进程均为 10001、TLS 证书生成、/healthz 200、注册门控 403 生效
+- **HA 8123 改绑回环**：`docker-compose.yml` 的 HA 端口从 `"8123:8123"` 收紧为 `"127.0.0.1:8123:8123"`——HA UI 是管理面（onboarding/集成/长期令牌都在这里），设备控制走 Aether 经 docker 内部网络，与宿主绑定无关；临时直开 HA UI 改一行配置即可
+- **CI 质量门**（`.github/workflows/test.yml` 新 `lint-security` job）：ruff（`ruff.toml`，起点选 E9/F63/F7/F82/BLE/B023/RUF100 高信号规则集，第一天全绿后逐级收紧；存量 113 处裸 `except Exception` 按项目既有惯例补显式 `# noqa: BLE001`）+ bandit（B110/B112 全局豁免，其余逐点 `# nosec` 带理由）为**阻断**项；pip-audit 依赖漏洞审计为**非阻断**（现有依赖链存在生态约束下清不掉的已知 CVE：starlette 被 fastapi 0.115.x 钉在 <0.42、pillow 为传递依赖，分批升级清零后翻回阻断）。新增 dependabot（pip/npm/actions 周检）。`ws_routes` 文档聊天流闭包按默认参数绑定循环变量（B023，防御性加固）
+- **依赖**：`python-multipart>=0.0.31`（清 0.0.20 全部已知 CVE），上传相关 25 个测试实跑通过
+
 #### 对话工具瘦身——删 http_request/verify_action/scene_create，联网工具改开关控制
 - **为什么**：22 个工具对弱模型（glm-4-flash/agnes-3.0-flash 实测）选择精度压力过大——查询自动化规则时反复绕道 `http_request` 直连 HA 内网（被 net_guard 拦截）或误查定时任务列表，通用工具的宽泛描述会"吸走"意图
 - **删 http_request**：通用 HTTP 客户端对对话模型无不可替代场景（查天气/设备/规则都有专用工具），且是内网安全面；net_guard 防线与其相关测试一并清理

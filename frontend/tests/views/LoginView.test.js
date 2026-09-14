@@ -49,11 +49,11 @@ describe('LoginView', () => {
     expect(wrapper.find('input[type="password"]').exists()).toBe(true)
   })
 
-  it('shows display name input in register mode', async () => {
+  it('shows display name and invite code inputs in register mode', async () => {
     const wrapper = mount(LoginView)
     await wrapper.find('.switch-btn').trigger('click')
     const inputs = wrapper.findAll('input[type="text"]')
-    expect(inputs.length).toBe(2) // username + display name
+    expect(inputs.length).toBe(3) // username + display name + invite code
   })
 
   it('has submit button', () => {

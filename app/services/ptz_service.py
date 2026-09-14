@@ -142,7 +142,7 @@ class PtzService:
         部分摄像头对纯 ProfileToken 的 Stop 响应不稳。Stop 在已停止时报错属正常，忽略。"""
         try:
             await self._ptz.Stop({"ProfileToken": self._profile_token, "PanTilt": True})
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.debug("PTZ stop error (ignored): %s", exc)
 
     async def move(self, direction: str) -> dict:

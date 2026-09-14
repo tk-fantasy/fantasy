@@ -104,7 +104,7 @@ class Worker:
                         await asyncio.sleep(SEND_INTERVAL)
             except asyncio.TimeoutError:
                 self.ws_errors += 1
-            except Exception:
+            except Exception:  # noqa: BLE001
                 self.ws_errors += 1
             if not self.stop.is_set():
                 await asyncio.sleep(2.0)
@@ -115,7 +115,7 @@ async def check_health(token: str) -> bool:
         async with httpx.AsyncClient(timeout=5) as c:
             r = await c.get(f"{API_URL}/api/health", headers={"Authorization": f"Bearer {token}"})
             return r.status_code == 200
-    except Exception:
+    except Exception:  # noqa: BLE001
         return False
 
 
@@ -131,7 +131,7 @@ async def monitor_container() -> None:
             if line:
                 cpu, mem = line.split(" ", 1)
                 print(f"[{time.strftime('%H:%M:%S')}] docker stats: CPU={cpu} MEM={mem}")
-        except Exception:
+        except Exception:  # noqa: BLE001
             pass
         await asyncio.sleep(10)
 

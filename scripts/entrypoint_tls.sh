@@ -6,11 +6,29 @@
 # 访问的是宿主机局域网 IP——精确覆盖宿主 IP、无浏览器警告的正式证书请在
 # 宿主机跑 scripts/gen_https_cert.sh（IP 变更后同样），然后重启容器。
 # 宿主机已生成过的证书会原样使用，本脚本绝不覆盖。
+#
+# 权限模型：脚本以 root 启动完成三件装配（生成/修正证书属主、把 docker.sock
+# 的组加给应用用户、修正挂载目录属主），随后 gosu 降权到 aether（UID 10001）
+# 运行主进程——主服务不再以 root 跑，插件子进程/工具执行全部继承低权限。
+# 宿主 bind-mount（Windows/Docker Desktop）chown 多半是 no-op，一律 `|| true`
+# 兼容，不阻塞启动。
 set -eu
 
 CERT_DIR=/aether/certs
 CRT="$CERT_DIR/aether.crt"
 KEY="$CERT_DIR/aether.key"
+APP_USER=aether
+
+# 任意命令透传（docker run <image> bash / pytest ...）：以应用用户直接执行。
+# 默认 CMD（python -m uvicorn ...，compose 的 entrypoint 覆盖也会追加 CMD）
+# 走下方 TLS 启动路径。
+if [ "$#" -gt 0 ] && [ "$1" != "python" ]; then
+    if command -v gosu >/dev/null 2>&1; then
+        exec gosu "$APP_USER" "$@"
+    fi
+    echo "[entrypoint] 警告：镜像缺少 gosu，命令以当前用户执行（请重建镜像）" >&2
+    exec "$@"
+fi
 
 if [ ! -f "$CRT" ] || [ ! -f "$KEY" ]; then
     echo "[entrypoint] 未找到 TLS 证书，生成临时自签证书（浏览器会警告，点「继续前往」可用；"
@@ -32,10 +50,42 @@ if [ ! -f "$CRT" ] || [ ! -f "$KEY" ]; then
         -addext "keyUsage=digitalSignature,keyEncipherment" \
         -addext "extendedKeyUsage=serverAuth" \
         -addext "subjectAltName=$SAN" >/dev/null 2>&1
-    # 宿主机后续重签时可能以非 root 用户运行 gen 脚本，放开属主限制避免写不进
-    chmod 666 "$CRT" "$KEY" 2>/dev/null || true
     echo "[entrypoint] 临时证书已生成（SAN: $SAN）"
 fi
 
-exec python -m uvicorn app.main:app --host 0.0.0.0 --port 8010 \
-    --ssl-certfile "$CRT" --ssl-keyfile "$KEY"
+# ---- root 装配（仅在具备 root 权限时执行；旧镜像/显式 user: 覆盖时跳过） ----
+if [ "$(id -u)" = "0" ]; then
+    # 证书交给应用用户读（私钥不放宽到 other，仅属主可读）
+    chown "$APP_USER:$APP_USER" "$CRT" "$KEY" 2>/dev/null || true
+    chmod 600 "$KEY" 2>/dev/null || true
+    chmod 644 "$CRT" 2>/dev/null || true
+
+    # docker.sock：把 socket 的属组补给应用用户，虚拟设备开关/离线升级
+    # （依赖宿主 Docker）继续可用。Linux 宿主 GID 各不相同，动态探测；
+    # Docker Desktop 里 socket 属 root 组，同样适用。
+    SOCK=/var/run/docker.sock
+    if [ -S "$SOCK" ]; then
+        SOCK_GID=$(stat -c '%g' "$SOCK" 2>/dev/null || true)
+        if [ -n "$SOCK_GID" ]; then
+            getent group "$SOCK_GID" >/dev/null 2>&1 || groupadd -f -g "$SOCK_GID" dockersock 2>/dev/null || true
+            usermod -aG "$SOCK_GID" "$APP_USER" 2>/dev/null || true
+        fi
+    fi
+
+    # 挂载目录属主修正：named volume 存量数据（旧部署 root 属主）、Linux 宿主
+    # bind-mount 的新目录。Windows bind mount 上 chown 是 no-op，不报错。
+    for dir in /aether/app/data /aether/logs /aether/backups /aether/app/sg/output /aether/certs; do
+        chown -R "$APP_USER:$APP_USER" "$dir" 2>/dev/null || true
+    done
+    # 单文件 bind-mount（Linux 宿主上须可写：运行时配置更新会回写）
+    chown "$APP_USER:$APP_USER" /aether/config.json 2>/dev/null || true
+fi
+
+Uvicorn="python -m uvicorn app.main:app --host 0.0.0.0 --port 8010 --ssl-certfile $CRT --ssl-keyfile $KEY"
+
+if command -v gosu >/dev/null 2>&1; then
+    exec gosu "$APP_USER" $Uvicorn
+fi
+# 旧镜像（未含 gosu）兼容：不降权直接跑，打警告提示重建
+echo "[entrypoint] 警告：镜像缺少 gosu，无法降权运行（请 docker compose build 重建镜像）" >&2
+exec $Uvicorn

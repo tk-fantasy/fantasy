@@ -36,7 +36,7 @@ class TestToolError:
 
 
 class TestVerifyReadback:
-    @pytest.mark.asyncio  # noqa: plain function is fine too
+    @pytest.mark.asyncio
     async def _none(self):
         pass
 
@@ -780,7 +780,7 @@ class TestAuditGaps:
         """审计写失败不抛（audit dir 位置被文件占用）。"""
         blocking = tmp_path / "audit_blocked"
         blocking.write_text("i am a file", encoding="utf-8")
-        audit_env.AUDIT_DIR  # noqa: B018
+        audit_env.AUDIT_DIR
         audit_env.AUDIT_DIR = blocking  # plain attr already patched by fixture
         entry = audit_env.record("tester", "op", None)
         assert entry["action"] == "op" and entry["detail"] == {}

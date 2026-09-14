@@ -32,7 +32,7 @@ async def _reload_cache() -> None:
         _cache.clear()
         _cache.update(parsed)
         _cache_loaded = True
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.warning("动作映射缓存加载失败", exc_info=True)
 
 

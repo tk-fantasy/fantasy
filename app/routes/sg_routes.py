@@ -180,7 +180,7 @@ async def sg_search(q: str = "", top_k: int = 10, container: AppContainer = Depe
                 "prompt": q,
             })
             q_vec = np.array(result["embedding"], dtype=np.float32)
-        except Exception:
+        except Exception:  # noqa: BLE001
             logger.warning("search: embed 失败，退化为关键词匹配")
             return {"results": _keyword_search(q, top_k, nodes)}
 
@@ -193,7 +193,7 @@ async def sg_search(q: str = "", top_k: int = 10, container: AppContainer = Depe
             logger.warning("SG search: 维度不匹配 (query=%d, index=%d)，模型可能已变更，请重建语义图", q_vec.shape[1], idx.d)
             return {"results": _keyword_search(q, top_k, nodes)}
         scores, indices = idx.search(q_vec, min(top_k * 2, idx.ntotal))
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.warning("SG search: FAISS 检索失败，退化为关键词匹配: %s", e)
         return {"results": _keyword_search(q, top_k, nodes)}
     id_to_node = {n["id"]: n for n in nodes}

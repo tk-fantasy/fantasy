@@ -98,7 +98,7 @@ def _need_selection(session, query: str, res: Any, domain: str, service: str,
             session, query=query, domain=domain, service=service, data=data,
             candidates=candidates, reason=res.tier,
         )
-    except Exception:  # noqa: BLE001 — 草稿挂不上也不能放行执行
+    except Exception:
         logger.warning("call_service: 待选草稿创建失败，退化为口头确认", exc_info=True)
         pending_id = ""
     logger.info("call_service 转用户选择(%s): query=%r candidates=%s",
@@ -399,7 +399,7 @@ def _register_ha_get_device_manual(deps: ToolDeps) -> None:
             try:
                 from .core.database import Database
                 notes_map = await Database.get().prefs_get_by_scope("entity_note")
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.warning("get_device_manual: 备注读取失败", exc_info=True)
 
             dev_by_eid = {d["entity_id"]: d for d in devices}
@@ -416,7 +416,7 @@ def _register_ha_get_device_manual(deps: ToolDeps) -> None:
                 try:
                     from .services.semantic_map import flip_state_value
                     dev = {**dev, "state": await flip_state_value(eid, str(dev.get("state", "")))}
-                except Exception:  # noqa: BLE001
+                except Exception:
                     logger.warning("get_device_manual: state 翻转失败", exc_info=True)
                 controls = resolve_controls(dev, raw_svc_defs)
                 blocks.append(
@@ -519,7 +519,7 @@ def _register_ha_call_service(deps: ToolDeps) -> None:
                                     )
                                 else:
                                     err["hint"] = "用户指令没有匹配到任何真实设备，请如实告知设备不存在，不要编造。"
-                            except Exception:  # noqa: BLE001
+                            except Exception:
                                 logger.warning("call_service: 候选反查失败", exc_info=True)
                         return {"success": False, **err}
                 except Exception:
@@ -649,7 +649,7 @@ def _register_ha_call_service(deps: ToolDeps) -> None:
                             mapped_description = entry0.get("description", "")
                         logger.info("call_service 语义映射: %s.%s → %s",
                                     entity_id, original_service, service)
-                except Exception:  # noqa: BLE001
+                except Exception:
                     logger.warning("call_service: 语义映射查询失败，放行原 service", exc_info=True)
             result = await call_with_probe(ha_client, domain, service, entity_id, data)
             new_state = None
@@ -699,7 +699,7 @@ def _register_ha_call_service(deps: ToolDeps) -> None:
                     if friendly:
                         name_of[new_state_eid] = str(friendly)
                 await record_device_op(eid_list, service, "AI", name_of)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.debug("record device_op failed", exc_info=True)
             if state_check_failed:
                 ret["state_check"] = "failed"
@@ -720,7 +720,7 @@ def _register_ha_call_service(deps: ToolDeps) -> None:
                 try:
                     from .services.semantic_map import apply_state_flip
                     ret["new_state"] = apply_state_flip(new_state, new_state_eid)
-                except Exception:  # noqa: BLE001
+                except Exception:
                     logger.warning("call_service: state 翻转失败，放行原 state", exc_info=True)
             return ret
         except Exception as e:
@@ -915,7 +915,7 @@ async def connect_external_mcp_servers(mcp_client_manager: MCPClientManager) -> 
                 timeout=60,
             )
             logger.info("External MCP %s connected", name, extra={"tools": len(tools)})
-        except Exception:
+        except Exception:  # noqa: BLE001
             logger.info("External MCP %s not available (optional, skipped)", name)
 
     tasks = []
@@ -1096,7 +1096,7 @@ def _register_automation_rule_tools(deps: ToolDeps) -> None:
         user_id = getattr(session, "user_id", "") or ""
         try:
             rule = await svc.build_rule(text, user_id=user_id, camera_id=camera_id)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.exception("automation_rule_create 解析失败")
             return tool_error(str(exc), hint="规则解析失败，请如实告知用户，或请其换种说法重试。")
         if not rule.get("actions"):
@@ -1170,7 +1170,7 @@ def _register_automation_rule_tools(deps: ToolDeps) -> None:
         user_id = getattr(session, "user_id", "") or ""
         try:
             result = await svc.revise_rule(entry["rule"], instruction, user_id=user_id)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.exception("automation_rule_revise 失败")
             return tool_error(str(exc), hint="修改失败，请如实告知用户。")
         new_rule = result.get("rule") or entry["rule"]

@@ -48,7 +48,7 @@ def _scan_all(root: Path, api_version: str) -> list[Manifest]:
             continue
         try:
             manifest = Manifest.model_validate(raw)
-        except Exception:
+        except Exception:  # noqa: BLE001
             continue
         if manifest.aether_api_version != api_version:
             continue

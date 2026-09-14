@@ -20,7 +20,7 @@ from ..services.pending_rules import (
     wants_rule_creation,
     wants_rule_query,
 )
-from ..services.session_store import SessionStore
+from ..services.session_store import SessionOwnershipError, SessionStore
 
 logger = logging.getLogger(__name__)
 
@@ -383,11 +383,11 @@ class Dispatcher:
         sync_client, async_client = clients
         try:
             sync_client.close()
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.debug("close sync httpx client failed", exc_info=True)
         try:
             await async_client.aclose()
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.debug("close async httpx client failed", exc_info=True)
 
     async def close_all_agent_clients(self) -> None:
@@ -683,7 +683,7 @@ class Dispatcher:
         from .langgraph_agent import _load_model_config_from_config
         try:
             return str(_load_model_config_from_config().get("model", ""))
-        except Exception:
+        except Exception:  # noqa: BLE001
             logger.debug("全局 chat 模型解析失败（可能未配置 chat key）")
             return ""
 
@@ -728,7 +728,26 @@ class Dispatcher:
 
     async def dispatch(self, event: Event, user_id: str = "") -> list[Instruction]:
         """处理聊天事件，返回 instruction 列表（非流式，兼容 REST 回退）。"""
-        session = await self._session_store.get_or_create(event.header.session_id, event.header.request_id, user_id=user_id)
+        try:
+            session = await self._session_store.get_or_create(event.header.session_id, event.header.request_id, user_id=user_id)
+        except SessionOwnershipError:
+            # 会话已归属其他用户：拒绝接管而不是静默覆盖归属（配合
+            # require_owned_session 形成完整隔离）。返回错误指令让调用方
+            # （REST 直连/测试）拿到结构化结果。
+            logger.warning(
+                "dispatch: rejected request to foreign session %s",
+                event.header.session_id,
+            )
+            return [
+                Instruction.build_instruction(
+                    Dialog.Exception(message="无权访问该会话"),
+                    event.header.request_id, event.header.session_id,
+                ),
+                Instruction.build_instruction(
+                    Dialog.Finish(success=False),
+                    event.header.request_id, event.header.session_id,
+                ),
+            ]
         session.latest_visual_state = self._get_camera_state()
         session.history_events.append(event)
         query = event.payload.get("query", "")
@@ -769,9 +788,33 @@ class Dispatcher:
             ws_send: WebSocket 发送函数 (async def send(data))
             user_id: 当前用户 ID，用于会话隔离
         """
-        session = await self._session_store.get_or_create(
-            event.header.session_id, event.header.request_id, user_id=user_id,
-        )
+        try:
+            session = await self._session_store.get_or_create(
+                event.header.session_id, event.header.request_id, user_id=user_id,
+            )
+        except SessionOwnershipError:
+            # 与 dispatch 同口径：拒绝接管他人会话，并在聊天流里给出可见错误，
+            # 而不是让异常逃逸到 WS 循环后只留日志（用户端表现为无响应）。
+            logger.warning(
+                "dispatch_stream: rejected request to foreign session %s",
+                event.header.session_id,
+            )
+            try:
+                await ws_send(
+                    Instruction.build_instruction(
+                        Dialog.Exception(message="无权访问该会话"),
+                        event.header.request_id, event.header.session_id,
+                    ).model_dump()
+                )
+                await ws_send(
+                    Instruction.build_instruction(
+                        Dialog.Finish(success=False),
+                        event.header.request_id, event.header.session_id,
+                    ).model_dump()
+                )
+            except Exception:
+                logger.exception("dispatch_stream: failed to send ownership error to ws")
+            return
         session.latest_visual_state = self._get_camera_state()
         session.history_events.append(event)
         query = event.payload.get("query", "")
@@ -826,7 +869,7 @@ class Dispatcher:
             session.history_instructions = []  # 流式模式不存 history_instructions
             try:
                 await self._session_store.store_session(session)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.exception("dispatch_stream: store_session failed after turn")
 
     # ------------------------------------------------------------------
@@ -913,7 +956,7 @@ class Dispatcher:
             except asyncio.CancelledError:
                 await self._handle_cancelled(emit, request_id, session_id)
                 return
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 # WS：emit 可能因连接断开抛错，兜底设 has_error 并尝试发 Dialog.Exception。
                 # REST：emit=append 不会抛，run_agent_streaming 内部已吞异常 yield error，
                 # 此分支对 REST 是死代码，不改变其行为。
@@ -949,7 +992,7 @@ class Dispatcher:
             except asyncio.CancelledError:
                 await self._handle_cancelled(emit, request_id, session_id)
                 return
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 # 重试轮异常兜底：置 has_error 让 while 退出，收尾发 Finish(success=False)，
                 # 避免异常逃出 _run_turn 导致客户端收不到 Finish。
                 await self._emit_turn_error(e, state, emit, request_id, session_id, path)
@@ -976,7 +1019,7 @@ class Dispatcher:
             except asyncio.CancelledError:
                 await self._handle_cancelled(emit, request_id, session_id)
                 return
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 # 收尾轮异常兜底：与重试轮同策略，避免客户端收不到 Finish。
                 await self._emit_turn_error(e, state, emit, request_id, session_id, path)
 
@@ -1026,7 +1069,7 @@ class Dispatcher:
             except asyncio.CancelledError:
                 await self._handle_cancelled(emit, request_id, session_id)
                 return
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 # Validator 重试轮异常兜底：同上，置 has_error 退出 while，收尾发 Finish(success=False)
                 await self._emit_turn_error(e, state, emit, request_id, session_id, path)
 
@@ -1047,7 +1090,7 @@ class Dispatcher:
                 )
                 await emit(
                     Instruction.build_instruction(
-                        Template.TokenStream(token="", is_final=True),
+                        Template.TokenStream(token="", is_final=True),  # nosec B106 - 空字符串为未配置哨兵/流结束标记，非凭证
                         request_id, session_id,
                     )
                 )
@@ -1073,7 +1116,7 @@ class Dispatcher:
                 # is_final 重置前端流式索引
                 await emit(
                     Instruction.build_instruction(
-                        Template.TokenStream(token="", is_final=True),
+                        Template.TokenStream(token="", is_final=True),  # nosec B106 - 空字符串为未配置哨兵/流结束标记，非凭证
                         request_id, session_id,
                     )
                 )
@@ -1109,7 +1152,7 @@ class Dispatcher:
                     emit, request_id, session_id, est_seconds))
                 self._bg_tasks.add(_t)
                 _t.add_done_callback(self._bg_tasks.discard)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.warning("集成广播失败（不影响主流程）: %s", exc)
 
         # Finish 反映真实状态：仍有未解决失败或执行出错时标记失败

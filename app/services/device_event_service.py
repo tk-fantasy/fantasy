@@ -83,7 +83,7 @@ async def record_device_op(
             name = (name_of or {}).get(e) or e
             await alert_service.record(
                 "device_op", f"device:{e}", f"{actor}将「{name}」执行 {label}", actor)
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.warning("record_device_op failed (service=%s)", service, exc_info=True)
 
 
@@ -154,7 +154,7 @@ class DeviceEventService:
                     await self._consume(ws)
             except asyncio.CancelledError:
                 raise
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.warning(
                     "HA event stream down, retrying in %.0fs", backoff, exc_info=True)
             await asyncio.sleep(backoff)
@@ -194,7 +194,7 @@ class DeviceEventService:
                     str(data.get("entity_id", "")),
                     data.get("old_state"), data.get("new_state"),
                 )
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.exception("state_changed handling failed")
 
     # ------------------------------------------------------------------
@@ -253,7 +253,7 @@ class DeviceEventService:
                 await self._flush_sensors()
             except asyncio.CancelledError:
                 raise
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.exception("sensor flush failed")
 
     async def _flush_sensors(self, force: bool = False) -> None:

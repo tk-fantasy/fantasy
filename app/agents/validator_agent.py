@@ -457,7 +457,7 @@ class ValidatorAgent:
             try:
                 from ..container import get_container
                 get_container().metrics_service.record_llm_call()
-            except Exception:
+            except Exception:  # noqa: BLE001
                 pass
 
             response = await llm.ainvoke(messages)
@@ -473,7 +473,7 @@ class ValidatorAgent:
             try:
                 from ..container import get_container
                 get_container().metrics_service.record_llm_call(error=True)
-            except Exception:
+            except Exception:  # noqa: BLE001
                 pass
             return False
 

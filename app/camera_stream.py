@@ -913,7 +913,7 @@ class CameraStream:
         if moved and self._on_automation_trigger is not None:
             try:
                 self._on_automation_trigger(self.camera_id)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.exception("on_automation_trigger callback failed")
 
         # /camera 展示推理：视觉展示关 或 视觉模型未启用 → 不调度预览推理
@@ -971,7 +971,7 @@ class CameraStream:
             )
             with self._lock:
                 self._latest_result = result
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.exception("Inference failed")
             with self._lock:
                 self._latest_result = ActionResult("idle", f"模型识别失败: {exc}", {"source": "vision", "enabled": self._recognizer.enabled})
@@ -1008,7 +1008,7 @@ class CameraStream:
                 "observation": (result.details or {}).get("observation", ""),
                 "elapsed_ms": round((time.time() - started) * 1000),
             })
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.exception("Inference failed")
             with self._lock:
                 self._latest_result = ActionResult("idle", f"模型识别失败: {exc}", {"source": "vision", "enabled": self._recognizer.enabled})
@@ -1022,7 +1022,7 @@ class CameraStream:
         try:
             from .core.database import Database
             await Database.get().vision_log_insert(self.camera_id, kind, content)
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.debug("vision log insert failed", exc_info=True)
 
     def _resolve_display_result(self, result: ActionResult) -> ActionResult:

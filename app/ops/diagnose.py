@@ -91,7 +91,7 @@ def check_ha(config: dict) -> list[dict]:
                         advice="完成初始引导或高级设置里配置 HA")]
     try:
         req = urllib.request.Request(url.rstrip("/") + "/api/", method="GET")
-        urllib.request.urlopen(req, timeout=4)
+        urllib.request.urlopen(req, timeout=4)  # nosec B310 - 固定内部地址自检
         return [_result("Home Assistant 可达", PASS, f"{url} 响应正常")]
     except urllib.error.HTTPError as e:
         # 401 也证明服务活着（只是没带 token）
@@ -264,7 +264,7 @@ def _memory() -> tuple[int | None, int | None]:
         if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
             raise OSError("GlobalMemoryStatusEx failed")
         return stat.ullTotalPhys // 1024**2, stat.ullAvailPhys // 1024**2
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None, None
 
 
@@ -272,7 +272,7 @@ def _memory() -> tuple[int | None, int | None]:
 
 def check_clock() -> list[dict]:
     """时间校验：先试系统工具（主机模式），容器内/工具不可用时用 HTTP Date 对时。"""
-    import subprocess
+    import subprocess  # nosec B404 - 固定参数诊断命令
 
     cmds = [
         (["timedatectl", "show", "-p", "NTPSynchronized", "--value"], "yes"),
@@ -280,7 +280,7 @@ def check_clock() -> list[dict]:
     ]
     for cmd, needle in cmds:
         try:
-            out = subprocess.run(cmd, capture_output=True, timeout=5)
+            out = subprocess.run(cmd, capture_output=True, timeout=5)  # nosec B603 - 命令为代码内固定清单，不含外部输入
             if out.returncode != 0:
                 continue
             text = _decode_console_bytes(out.stdout)
@@ -296,7 +296,7 @@ def check_clock() -> list[dict]:
     for url in ("http://www.baidu.com", "http://www.qq.com"):
         try:
             req = urllib.request.Request(url, method="HEAD")
-            resp = urllib.request.urlopen(req, timeout=4)
+            resp = urllib.request.urlopen(req, timeout=4)  # nosec B310 - 固定内部地址自检
             date_header = resp.headers.get("Date")
             if not date_header:
                 continue

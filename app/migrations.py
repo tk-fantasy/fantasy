@@ -70,7 +70,7 @@ async def migrate_global_llm_keys(db) -> None:
                 break
             if not migrated:
                 logger.info("No LLM keys found in config.json or any user DB")
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.warning("Failed to load global LLM keys: %s", e)
 
 
@@ -108,7 +108,7 @@ async def migrate_home_info(db) -> None:
                     user["username"], home_data.get("city"),
                 )
                 break
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.warning("Failed to migrate home_info from user DB to config.json: %s", e)
 
 

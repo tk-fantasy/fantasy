@@ -23,11 +23,18 @@ FROM python:3.11-slim AS runtime
 
 # OpenCV 运行时依赖：opencv-python 需要 libGL / libglib，slim 镜像默认没有
 # （本项目用 RTSP 网络流，无需 GUI；若改用 opencv-python-headless 可省去 libgl1）
+# gosu：入口脚本做 root 装配（证书/目录属主/docker.sock 组）后降权到 aether 用户
+# openssl：entrypoint_tls.sh 在 certs/ 缺失时生成兜底自签证书
 # 国内 apt 镜像（容器内访问 deb.debian.org 易超时，Debian 12 sources 在 .sources 文件里）
 RUN sed -i "s@http://deb.debian.org@http://mirrors.tuna.tsinghua.edu.cn@g" /etc/apt/sources.list.d/debian.sources && apt-get update && apt-get install -y --no-install-recommends \
         libgl1 \
         libglib2.0-0 \
-    && rm -rf /var/lib/apt/lists/*
+        gosu \
+        openssl \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --create-home --uid 10001 aether \
+    && mkdir -p /aether/app/data /aether/logs /aether/backups /aether/app/sg/output /aether/certs \
+    && chown -R aether:aether /aether/app/data /aether/logs /aether/backups /aether/app/sg/output /aether/certs
 
 WORKDIR /aether
 
@@ -69,6 +76,13 @@ ENV STARTUP_PROGRESS_HOST=0.0.0.0 \
     PYTHONPATH=/aether
 
 EXPOSE 8010 8011
+
+# 入口：镜像内置一份 entrypoint_tls.sh（root 装配 → gosu 降权到 aether 用户运行）。
+# compose 会用宿主挂载的同名脚本覆盖（scripts/entrypoint_tls.sh 随仓库更新、
+# 无需重建镜像），两份内容保持一致。默认 CMD（python -m uvicorn ...）走 TLS 启动；
+# `docker run <image> bash/pytest ...` 等任意命令以 aether 用户直接执行。
+COPY scripts/entrypoint_tls.sh /usr/local/bin/entrypoint_tls.sh
+ENTRYPOINT ["/usr/local/bin/entrypoint_tls.sh"]
 
 # 与 run_app.bat 一致的启动命令（纯 Docker 模式）
 CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8010"]

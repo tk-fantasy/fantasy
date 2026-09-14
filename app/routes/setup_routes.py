@@ -51,7 +51,7 @@ async def setup_status(request: Request, container: AppContainer = Depends(get_c
         try:
             payload = verify_token(token)
             current_user = {"user_id": payload["sub"], "username": payload.get("username", "")}
-        except Exception:
+        except Exception:  # noqa: BLE001
             pass
 
     # 检查 LLM keys（优先用户级，回退全局）
@@ -69,7 +69,7 @@ async def setup_status(request: Request, container: AppContainer = Depends(get_c
                 # 只有用户配置非空，才认定"用户有自己的配置"，不再回退全局。
                 # 空数组（注册时自动埋的占位）应回退全局，避免新用户被卡在 setup。
                 user_has_llm_keys_setting = has_llm_key
-        except Exception:
+        except Exception:  # noqa: BLE001
             pass
 
     # 回退到全局 config（仅当用户没有非空 llm_keys 设置时）
@@ -89,7 +89,7 @@ async def setup_status(request: Request, container: AppContainer = Depends(get_c
         try:
             states = await ha_client.get_states()
             ha_connected = len(states) > 0
-        except Exception:
+        except Exception:  # noqa: BLE001
             ha_connected = False
 
     # 检查家庭信息（优先用户级，回退全局）
@@ -101,7 +101,7 @@ async def setup_status(request: Request, container: AppContainer = Depends(get_c
             if home_info:
                 home_data = _json.loads(home_info)
                 has_home_info = bool(home_data.get("home_name") or home_data.get("owner_name"))
-        except Exception:
+        except Exception:  # noqa: BLE001
             pass
 
     if not has_home_info:
@@ -142,7 +142,7 @@ async def setup_ha(
         return ApiResponse(code="missing_auth", message="未提供认证信息", data=None)
     try:
         verify_token(token)
-    except Exception:
+    except Exception:  # noqa: BLE001
         return ApiResponse(code="invalid_token", message="认证已过期", data=None)
 
     url = body.url.strip()
@@ -171,7 +171,7 @@ async def setup_ha(
         states = await ha_client.get_states()
         entity_count = len(states)
         ha_connected = entity_count > 0
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.warning("HA connection test failed (effective_url=%s): %s", effective_url, e)
 
     return ApiResponse(data={

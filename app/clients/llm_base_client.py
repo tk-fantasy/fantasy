@@ -133,7 +133,7 @@ class LlmBaseClient:
                     timeout=timeout,
                 )
                 if response.status_code == 429 and attempt < max_retries:
-                    backoff = 0.5 * (2 ** attempt) + random.uniform(0, 0.1)
+                    backoff = 0.5 * (2 ** attempt) + random.uniform(0, 0.1)  # nosec B311 - 重试退避抖动，非密码学用途
                     logger.warning("LLM rate limited (429), retry in %.1fs", backoff,
                                    extra={"role": self._role, "attempt": attempt})
                     await asyncio.sleep(backoff)
@@ -149,7 +149,7 @@ class LlmBaseClient:
                     client = _get_shared_client()
                 last_exc = exc
                 if attempt < max_retries and isinstance(exc, (httpx.ConnectError, httpx.TimeoutException)):
-                    await asyncio.sleep(0.3 * (2 ** attempt) + random.uniform(0, 0.05))
+                    await asyncio.sleep(0.3 * (2 ** attempt) + random.uniform(0, 0.05))  # nosec B311 - 重试退避抖动，非密码学用途
                     continue
                 logger.exception("LLM request failed", extra={"role": self._role})
                 raise ModelServiceException(f"LLM 请求失败: {exc}") from exc

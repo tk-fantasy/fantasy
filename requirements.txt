@@ -2,8 +2,9 @@ fastapi==0.115.12
 # fastapi 0.115.x 依赖 starlette<0.42；全局 pip 升到 1.x 会让 Router(on_startup) 报错
 starlette>=0.37.2,<0.42
 uvicorn[standard]==0.34.3
-# FastAPI 处理 File/Form 上传（stt/transcribe 语音转文字）必需
-python-multipart>=0.0.9
+# FastAPI 处理 File/Form 上传（stt/transcribe 语音转文字）必需。
+# 下限抬到 0.0.31：清掉 pip-audit 报的 0.0.20 全部已知 CVE（PYSEC-2026-1852/3036~3040）
+python-multipart>=0.0.31
 opencv-python==4.11.0.86
 numpy==1.26.4
 faiss-cpu>=1.8.0

@@ -26,7 +26,7 @@ def _copy_file(src: str, dst: str) -> None:
 class CopyTruncateRotatingFileHandler(RotatingFileHandler):
     """轮转 = 备份链复制 + 主文件原地截断，无 rename。"""
 
-    def doRollover(self) -> None:  # noqa: D102 - 覆写 stdlib 行为
+    def doRollover(self) -> None:
         if self.stream:
             self.stream.close()
             self.stream = None

@@ -1,0 +1,20 @@
+# Ruff 配置——质量门策略：第一天必须绿，规则集按"高信号低噪音"逐级收紧。
+# 现有代码未做过全量 lint（历史上有 346 处 except Exception、未排序 import 等），
+# 一次性全开会把 CI 淹没；因此起点只选真实缺陷类规则，后续按批次加规则收紧。
+target-version = "py311"
+line-length = 120
+
+[lint]
+# E9   语法错误（真缺陷）
+# F63/F7/F82  无效比较语句/循环控制误用/未定义名字（真缺陷）
+# BLE  裸 except Exception（项目惯例：必须显式 noqa 说明理由才允许）
+# B023 循环变量闭包捕获（asyncio 场景的经典 bug 源）
+# RUF100 无效 noqa（防止 noqa 变成永久豁免的摆设）
+select = ["E9", "F63", "F7", "F82", "BLE", "B023", "RUF100"]
+
+[lint.per-file-ignores]
+# 测试里的宽 except 是标准做法，不做要求
+"tests/**" = ["BLE001"]
+
+[lint.isort]
+known-first-party = ["app"]

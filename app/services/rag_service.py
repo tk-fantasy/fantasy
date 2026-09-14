@@ -110,7 +110,7 @@ class RagService:
                     self.build_index()
                     self._rebuild_message = f"重建完成: {self.chunk_count} chunks"
                     return  # 构建成功
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001
                     self._rebuild_message = f"重建失败(第{attempt}次): {e}"
                     logger.warning("RAG index build failed (attempt %d/%d): %s", attempt, max_retries, e)
                     if attempt < max_retries:
@@ -172,7 +172,7 @@ class RagService:
             self.chunks = json.loads(chunks_file.read_text(encoding="utf-8"))
             self._embed_model = meta["embed_model"]
             return True
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.warning("RAG: 加载持久化索引失败，回退重建: %s", e)
             return False
 
@@ -273,7 +273,7 @@ class RagService:
                         "RAG embed batch timed out after %ss (attempt %d/%d)",
                         _EMBED_RESULT_TIMEOUT, attempt + 1, retries,
                     )
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001
                     last_err = e
                     logger.warning("RAG embed batch failed (attempt %d/%d): %s", attempt + 1, retries, e)
             raise last_err  # 重试耗尽，抛出最后的错误
@@ -287,7 +287,7 @@ class RagService:
                 vecs = _embed_batch(batch_texts)
                 all_vecs.extend(vecs)
                 kept_chunks.extend(batch_texts)
-            except Exception:
+            except Exception:  # noqa: BLE001
                 # 整批重试仍失败：跳过这些 chunk（不进索引，检索不到而已，不影响整体）
                 self._rebuild_errors += len(batch_texts)
                 logger.warning("RAG: 批次 %d-%d 向量化失败，跳过该批 chunk", i, i + len(batch_texts))
@@ -335,7 +335,7 @@ class RagService:
                 json.dumps(meta, ensure_ascii=False), encoding="utf-8"
             )
             logger.info("RAG index persisted to %s", self._index_dir)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.warning("RAG: 索引落盘失败（不影响本次构建）: %s", e)
 
     async def search(self, query: str) -> str:
@@ -375,7 +375,7 @@ class RagService:
         loop = asyncio.get_running_loop()
         try:
             context_chunks = await loop.run_in_executor(None, _embed_and_search)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.warning("RAG search 失败，返回空上下文: %s", e)
             return ""
         return "\n\n---\n\n".join(context_chunks)

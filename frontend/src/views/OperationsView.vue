@@ -3,7 +3,7 @@
  * 运维页（/operations）—— 09 清单的运维能力全部按钮化。
  *
  * 入口：聊天框输入 /operations 回车。
- * 六个区块：系统体检 / 诊断包导出 / 备份与恢复 / 版本与升级 / 升级历史 / 操作审计。
+ * 六个区块：系统体检 / 诊断包导出 / 备份与恢复 / 注册邀请码 / 版本与升级 / 升级历史 / 操作审计。
  * 脚本（scripts/*.sh|py）保留为"应用起不来时"的兜底，日常操作全在本页完成。
  */
 import { ref, computed, onMounted } from 'vue'
@@ -308,7 +308,61 @@ onMounted(() => {
   loadAudit()
   pollPackExport()      // 恢复上次未完成的导出进度轮询
   loadLocalPacks()
+  loadInvites()
 })
+
+// --------------- 注册邀请码 ---------------
+// 注册默认关闭（首用户凭安装码、成员凭邀请码），管理员在此签发一次性邀请码。
+const invites = ref([])
+const invitesLoading = ref(false)
+const inviteCreating = ref(false)
+const inviteNote = ref('')
+const inviteMessage = ref('')
+
+async function loadInvites() {
+  invitesLoading.value = true
+  try {
+    invites.value = await apiGet('/api/auth/invites')
+  } catch (e) {
+    console.error('Failed to load invites:', e)
+  } finally {
+    invitesLoading.value = false
+  }
+}
+
+async function createInvite() {
+  inviteCreating.value = true
+  inviteMessage.value = ''
+  try {
+    await apiPost('/api/auth/invites', { note: inviteNote.value.trim() })
+    inviteNote.value = ''
+    await loadInvites()
+  } catch (e) {
+    inviteMessage.value = e?.message || '生成失败'
+  } finally {
+    inviteCreating.value = false
+  }
+}
+
+async function revokeInvite(code) {
+  try {
+    await apiDelete(`/api/auth/invites/${encodeURIComponent(code)}`)
+    await loadInvites()
+  } catch (e) {
+    inviteMessage.value = e?.message || '吊销失败'
+  }
+}
+
+function inviteStatus(it) {
+  if (it.revoked_at) return { text: '已吊销', cls: 'warn' }
+  if (it.used_at) return { text: `已使用（${it.used_by || '?'}）`, cls: 'muted' }
+  return { text: '有效', cls: 'pass' }
+}
+
+function fmtMs(ms) {
+  return ms ? new Date(ms).toLocaleString() : '—'
+}
+
 </script>
 
 <template>
@@ -434,6 +488,53 @@ onMounted(() => {
           </tbody>
         </table>
         <div v-else class="op-muted">暂无备份。建议定期点击「立即备份」，或配置主机 cron。</div>
+      </div>
+    </section>
+
+    <!-- 注册邀请码 -->
+    <section class="setting-section">
+      <h2 class="section-title"><span class="section-icon">&#127919;</span> 注册邀请码</h2>
+      <div class="setting-card">
+        <div class="setting-row">
+          <div class="setting-label">
+            <span class="label-text">给家人签发一次性邀请码</span>
+            <span class="label-desc">注册默认关闭：新成员注册时须填邀请码，用一次即作废。首次部署的管理员注册用安装码（部署日志 / 8011 启动页）。</span>
+          </div>
+          <div class="invite-create">
+            <input
+              v-model="inviteNote"
+              type="text"
+              class="invite-note-input"
+              placeholder="备注（可选，如：给妈妈）"
+              maxlength="32"
+            />
+            <button class="btn-primary" :disabled="inviteCreating" @click="createInvite">
+              {{ inviteCreating ? '生成中...' : '生成邀请码' }}
+            </button>
+          </div>
+        </div>
+        <div v-if="inviteMessage" class="op-message error">{{ inviteMessage }}</div>
+
+        <div v-if="invitesLoading" class="op-message">加载中...</div>
+        <table v-else-if="invites.length" class="diag-table invite-table">
+          <thead><tr><th>邀请码</th><th>备注</th><th>状态</th><th>创建时间</th><th></th></tr></thead>
+          <tbody>
+            <tr v-for="it in invites" :key="it.code">
+              <td class="invite-code">{{ it.code }}</td>
+              <td>{{ it.note || '—' }}</td>
+              <td><span class="sum" :class="inviteStatus(it).cls">{{ inviteStatus(it).text }}</span></td>
+              <td>{{ fmtMs(it.created_at) }}</td>
+              <td>
+                <button
+                  v-if="!it.used_at && !it.revoked_at"
+                  class="btn-link danger"
+                  @click="revokeInvite(it.code)"
+                >吊销</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <div v-else class="op-message">还没有邀请码。生成一枚，把码发给要注册的家庭成员。</div>
       </div>
     </section>
 
@@ -686,7 +787,32 @@ onMounted(() => {
 .sum.pass { color: var(--color-success); }
 .sum.warn { color: var(--color-warning); }
 .sum.fail { color: var(--color-danger); }
+.sum.muted { color: var(--color-text-tertiary); font-weight: var(--weight-normal); }
 .sum-meta { color: var(--color-text-tertiary); font-size: var(--text-xs); margin-left: auto; }
+
+.invite-create { display: flex; gap: var(--space-8); align-items: center; }
+.invite-note-input {
+  padding: var(--space-8) var(--space-10);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  color: var(--color-text);
+  font-size: var(--text-sm);
+  font-family: var(--font-family);
+}
+.invite-table { margin-top: var(--space-12); }
+.invite-code { font-family: var(--font-mono, monospace); letter-spacing: 1px; }
+.btn-link {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: var(--color-text-tertiary);
+  font-size: var(--text-sm);
+  font-family: var(--font-family);
+}
+.btn-link.danger { color: var(--color-danger); }
+.btn-link.danger:hover { text-decoration: underline; }
 
 .diag-table { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }
 .diag-table th, .diag-table td {

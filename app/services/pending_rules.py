@@ -240,7 +240,7 @@ async def confirm_pending(
         }
     try:
         saved = registry.add_rule(rule, user_id=user_id)
-    except Exception as exc:  # noqa: BLE001 — 落库失败不能把草稿摘掉，用户可重试
+    except Exception as exc:
         logger.warning("confirm_pending 落库失败: %s", exc, exc_info=True)
         return {"ok": False, "reason": "save_failed", "error": f"规则保存失败：{exc}"}
     pending_store(session).pop(resolved_id, None)

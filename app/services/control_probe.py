@@ -172,6 +172,6 @@ async def _probe_range(
             if exc.response.status_code == 400:
                 continue
             return None
-        except Exception:
+        except Exception:  # noqa: BLE001
             return None
     return None

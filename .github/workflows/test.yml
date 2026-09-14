@@ -72,3 +72,31 @@ jobs:
       # Node 版本与 Dockerfile 的 node:22-alpine 保持一致。
       - name: Build (vite)
         run: npm run build
+
+  # 代码质量门：lint（ruff）+ 安全扫描（bandit）为阻断项，依赖漏洞审计
+  # （pip-audit）当前为非阻断——现有依赖链存在生态约束下的已知 CVE
+  # （starlette 被 fastapi 0.115.x 钉在 <0.42、pillow 为传递依赖等），
+  # 分批升级清零后翻回阻断。规则集见 ruff.toml，按"高信号低噪音"逐级收紧。
+  lint-security:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install tools
+        run: pip install ruff bandit pip-audit
+
+      - name: Lint (ruff)
+        run: ruff check app tests scripts
+
+      - name: Security scan (bandit)
+        run: bandit -r app -q --skip B110,B112,B104
+
+      - name: Dependency audit (pip-audit, non-blocking)
+        continue-on-error: true
+        run: pip-audit -r requirements.txt --no-deps

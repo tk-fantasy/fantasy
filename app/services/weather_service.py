@@ -94,7 +94,7 @@ async def _qweather_request(path: str, params: dict[str, str] | None = None) -> 
                 resp = await client.get(url, headers=headers, params=params or {})
                 resp.raise_for_status()
                 return resp.json()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             last_error = e
             if attempt < _MAX_RETRIES:
                 logger.warning("QWeather request failed (attempt %d/%d): %s", attempt + 1, _MAX_RETRIES + 1, e)

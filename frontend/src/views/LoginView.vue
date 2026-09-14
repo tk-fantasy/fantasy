@@ -11,6 +11,7 @@ const isRegister = ref(false)
 const username = ref('')
 const password = ref('')
 const displayName = ref('')
+const inviteCode = ref('')
 const error = ref('')
 const loading = ref(false)
 
@@ -27,7 +28,7 @@ async function handleSubmit() {
 
   try {
     if (isRegister.value) {
-      await register(username.value, password.value, displayName.value)
+      await register(username.value, password.value, displayName.value, inviteCode.value)
     } else {
       await login(username.value, password.value)
     }
@@ -78,6 +79,18 @@ async function handleSubmit() {
             class="form-input"
             placeholder="你的名字（可选）"
           />
+        </div>
+
+        <div v-if="isRegister" class="form-group">
+          <label class="form-label">邀请码</label>
+          <input
+            v-model="inviteCode"
+            type="text"
+            class="form-input"
+            placeholder="XXXX-XXXX"
+            autocomplete="off"
+          />
+          <p class="form-hint">首次部署填安装码（见部署日志或 http://localhost:8011/progress）；之后向管理员要邀请码</p>
         </div>
 
         <div class="form-group">
@@ -267,6 +280,13 @@ async function handleSubmit() {
   border-radius: var(--radius-md);
   color: var(--color-danger);
   font-size: var(--text-sm);
+}
+
+.form-hint {
+  margin-top: var(--space-6);
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  line-height: 1.5;
 }
 
 .submit-btn {

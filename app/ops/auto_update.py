@@ -77,7 +77,7 @@ async def watcher_loop() -> None:
                         result = await pack_export.apply_local_pack(path.name, "auto")
                     logger.info("Auto-update applied: %s → %s, restarting",
                                 result.get("from_version"), result.get("to_version"))
-        except Exception:  # noqa: BLE001 — 监视器必须活着
+        except Exception:
             logger.exception("Auto-update watcher iteration failed")
             # 失败隔离：改名 .failed 防止每分钟重试（大包每次 docker load 很重）。
             # 人工排障后删掉后缀即可重新触发。

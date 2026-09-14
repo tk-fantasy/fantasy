@@ -32,7 +32,7 @@ class HealthChecker:
         except asyncio.TimeoutError:
             self.ha_available = False
             logger.warning("HA health check: timeout (5s)")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             self.ha_available = False
             logger.warning("HA health check: failed - %s", e)
         return self.ha_available
@@ -57,7 +57,7 @@ class HealthChecker:
         except asyncio.TimeoutError:
             self.llm_available = False
             logger.warning("LLM health check: timeout (15s)")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             self.llm_available = False
             logger.warning("LLM health check: failed - %s", e)
         return self.llm_available

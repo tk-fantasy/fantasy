@@ -72,7 +72,7 @@ class MCPClientManager:
             self._external_servers.remove(server)
             try:
                 await server.stop()
-            except Exception:
+            except Exception:  # noqa: BLE001
                 pass  # 不掩盖 list_tools 的原始异常
             raise
         registered: list[MCPTool] = []
@@ -99,7 +99,7 @@ class MCPClientManager:
                 content = await server.call_tool(tool_name, parameters)
                 texts = [c.get("text", "") for c in content if c.get("type") == "text"]
                 return {"content": content, "text": "\n".join(texts)}
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.warning("External MCP tool call failed", extra={"server": server.name, "tool": tool_name, "error": str(exc)})
                 return {"error": str(exc)}
 

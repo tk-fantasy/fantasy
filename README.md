@@ -134,7 +134,7 @@ AI 回复采用流式输出，逐字显示如同真人打字。支持 Markdown �
 |------|------|------|
 | Aether 应用 | `8010` | FastAPI 主服务（REST + WebSocket + 前端 SPA 托管） |
 | 启动进度 | `8011` | 冷启动进度上报，供加载页轮询（主端口就绪前可用） |
-| Home Assistant | `8123` | 智能家居大脑，Aether 通过其 REST API 控制设备 |
+| Home Assistant | `8123` | 智能家居大脑，Aether 通过其 REST API 控制设备（宿主仅绑回环，管理面不对局域网开放） |
 | Mosquitto MQTT | `1884` | 虚拟设备模拟器 → HA 的消息通道 |
 | Vite 开发服务器 | `5173` | 仅前端本地开发用，生产环境由 8010 直接托管构建产物 |
 
@@ -180,6 +180,8 @@ docker compose ps                 # 四个容器都 Up 即可（aether, aether-h
 1. 家庭信息（名称、主人称呼、地区）
 2. LLM 模型配置（对话/视觉/嵌入，至少配对话模型）
 3. Home Assistant 连接 —— 需要先到 `http://localhost:8123` 完成账号注册并创建长期访问令牌
+
+> **注册需要安装码**：首个注册用户自动成为管理员，为防新部署窗口期被局域网内他人抢注，首次注册要求填一枚**安装码**——容器首次启动时自动生成并打印到部署日志（`docker compose logs aether`，搜「安装码」），也显示在 `http://localhost:8011/progress`。之后给家人开通走**管理员邀请码**（运维中心 → 注册邀请码），详见 [`docs/01-安装部署/Docker服务部署指南.md`](docs/01-安装部署/Docker服务部署指南.md)。
 
 > **HA 首次初始化**（新用户必读）：
 > 1. 打开 `http://localhost:8123` → 创建管理员账号（onboarding 流程，会要求填姓名/密码/位置）

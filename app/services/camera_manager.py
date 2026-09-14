@@ -122,7 +122,7 @@ class CameraManager:
         if "motion_threshold" in _vision_cfg:
             try:
                 stream.set_motion_threshold(int(_vision_cfg["motion_threshold"]))
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.exception("apply vision.motion_threshold to %s failed", cid)
         self._streams[cid] = stream
         stream.start()
@@ -178,7 +178,7 @@ class CameraManager:
         if stream:
             try:
                 stream.stop()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.exception("stop virtual stream %s failed", camera_id)
         if self._active_display_id == camera_id:
             self._active_display_id = None
@@ -254,7 +254,7 @@ class CameraManager:
                 "usb_index": None,
                 "rtsp_url": "",
                 "rtsp_username": "",
-                "rtsp_password": "",
+                "rtsp_password": "",  # nosec - 空字符串为未配置哨兵，非凭证
                 "area": "",
                 "device_mac": "",
                 "discovery_enabled": 0,
@@ -275,7 +275,7 @@ class CameraManager:
         for s in self._streams.values():
             try:
                 s.stop()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.exception("stop camera %s failed", getattr(s, "camera_id", "?"))
 
     # —— CRUD(转发 DB + 增删 stream)——
@@ -324,7 +324,7 @@ class CameraManager:
         if old:
             try:
                 old.stop()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.exception("stop old stream %s failed", camera_id)
         row = await self._db.cameras_get(camera_id)
         if row and row.get("enabled", 1):
@@ -336,7 +336,7 @@ class CameraManager:
         if old:
             try:
                 old.stop()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.exception("stop stream %s on delete failed", camera_id)
         if self._active_display_id == camera_id:
             self._active_display_id = None
@@ -353,7 +353,7 @@ class CameraManager:
                 found[1]["spec"]["display_enabled"] = value
             elif self._db is not None:
                 await self._db.cameras_update(camera_id, {"display_enabled": value})
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception("persist display_enabled failed (%s=%d)", camera_id, value)
 
     async def enable_display(self, camera_id: str) -> None:
@@ -394,7 +394,7 @@ class CameraManager:
         for s in self._streams.values():
             try:
                 s.set_motion_threshold(threshold)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.exception("set_motion_threshold failed for %s", getattr(s, "camera_id", "?"))
 
     def set_camera_vl_display_enabled(self, enabled: bool) -> None:
@@ -535,7 +535,7 @@ class CameraManager:
             await self._automation_service.evaluate(
                 frames=frames, camera_id=camera_id, rule_types=("vision",)
             )
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception("automation eval failed for %s", camera_id)
 
     def _on_camera_ip_changed(self, camera_id: str, new_ip: str) -> None:

@@ -85,7 +85,7 @@ class SemanticGraphService:
             if g.exists():
                 try:
                     return json.loads(g.read_text(encoding="utf-8")), td
-                except Exception:
+                except Exception:  # noqa: BLE001
                     continue
         return None
 
@@ -160,7 +160,7 @@ class SemanticGraphService:
         from ..sg.pipeline.graph_builder import GraphBuilder
 
         task_dir = self.task_dir
-        assert task_dir is not None
+        assert task_dir is not None  # nosec B101 - 类型收窄断言（内部不变量），非安全校验
 
         # ---- 桥接回调 ----
         embed_fn = self._make_embed_fn()

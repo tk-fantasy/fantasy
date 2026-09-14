@@ -54,7 +54,7 @@ async def _load_scope(scope: str) -> dict[str, str]:
     try:
         from ..core.database import Database
         return await Database.get().prefs_get_by_scope(scope)
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.warning("device_registry: 读取 %s 失败", scope, exc_info=True)
         return {}
 
@@ -243,13 +243,13 @@ async def build_match_index(ha_service: Any) -> list[dict[str, Any]]:
             candidate = grouped.get("devices")
             if isinstance(candidate, list) and candidate:
                 devices = candidate
-    except Exception:  # noqa: BLE001 — 回退 flat，不向上抛
+    except Exception:
         logger.warning("build_match_index: grouped 不可用，回退 flat", exc_info=True)
     if devices:
         return _index_from_grouped(devices)
     try:
         flat = await ha_service.get_all_devices()
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.warning("build_match_index: flat 也不可用，返回空索引", exc_info=True)
         return []
     return _index_from_flat(flat if isinstance(flat, list) else [])

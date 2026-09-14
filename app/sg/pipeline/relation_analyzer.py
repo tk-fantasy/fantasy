@@ -57,7 +57,7 @@ def _call_llm(doc_a, doc_b, chat_fn) -> str | None:
         if rtype == "无明显关系":
             return None
         return rtype
-    except Exception:
+    except Exception:  # noqa: BLE001
         return "同主题"
 
 
@@ -111,7 +111,7 @@ def analyze_neighbor_pairs(
         try:
             results_cache = json.loads(progress_path.read_text(encoding="utf-8"))
             print(f"  恢复断点：已完成 {len(results_cache)}/{len(pairs_to_analyze)} 对")
-        except Exception:
+        except Exception:  # noqa: BLE001
             results_cache = {}
 
     def _pair_key(doc_id, neighbor_id):

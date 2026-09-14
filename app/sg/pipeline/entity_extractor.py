@@ -53,7 +53,7 @@ class EntityExtractor:
                 done += 1
                 try:
                     results[idx] = fut.result()
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001
                     msg = str(e).encode('ascii', errors='replace').decode()
                     print(f"  ! [{done}/{len(docs)}] doc {idx}: {msg}")
                     results[idx] = {"entities": [], "relations": []}
@@ -76,7 +76,7 @@ class EntityExtractor:
             )
             result = parse_json_from_llm(content)
             return result if result else {"entities": [], "relations": []}
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             msg = str(e).encode('ascii', errors='replace').decode()
             print(f"  ! extract error: {msg}")
             return {"entities": [], "relations": []}

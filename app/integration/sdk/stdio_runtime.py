@@ -114,7 +114,7 @@ class _StdioRuntime:
                 }
             else:
                 result = await self._plugin.handle(method, params)
-        except Exception as exc:  # 插件代码异常不能崩 runtime
+        except Exception as exc:  # 插件代码异常不能崩 runtime  # noqa: BLE001
             # 回传给宿主的 error 只保留异常类型名——message 可能含敏感信息（路径/token 片段）。
             # 完整 traceback 写 stderr，宿主 _drain_stderr 以 debug 记录（不外泄）。
             print(f"[{self._manifest.get('id', '?')}] plugin error: "

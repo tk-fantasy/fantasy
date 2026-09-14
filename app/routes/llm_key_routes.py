@@ -106,7 +106,9 @@ async def upsert_llm_key_route(
     keys = upsert_llm_key(entry, api_key_value=api_key if api_key else None)
     llm_key_service.reload_key_pools(container)
     await llm_key_service.sync_llm_keys_to_current_user(current_user)
-    return ApiResponse(data=keys)
+    # key_healing 会把全局明文 key 回填进内存 CONFIG，直接返回 upsert 结果会
+    # 连带泄漏全部全局 key 明文（写操作仅需普通登录态），必须按 GET 同口径脱敏。
+    return ApiResponse(data=llm_key_service.mask_global_keys(keys))
 
 
 @router.delete("/llm_keys/{key_id}")
@@ -119,7 +121,8 @@ async def delete_llm_key_route(
     keys = delete_llm_key(key_id)
     llm_key_service.reload_key_pools(container)
     await llm_key_service.sync_llm_keys_to_current_user(current_user)
-    return ApiResponse(data=keys)
+    # 同 POST：内存列表可能含 key_healing 回填的全局明文，脱敏后返回。
+    return ApiResponse(data=llm_key_service.mask_global_keys(keys))
 
 
 @router.get("/llm/settings")
@@ -197,7 +200,7 @@ async def set_llm_settings(
             current_user["user_id"], "providers",
             json.dumps(providers, ensure_ascii=False),
         )
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.warning(f"Failed to sync providers to user: {e}")
     return ApiResponse(data=result)
 

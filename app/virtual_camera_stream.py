@@ -71,6 +71,6 @@ class VirtualCameraStream(CameraStream):
                         self.camera_id, self._inject_queue.qsize(), self._dropped_frames,
                     )
                     last_log_time = now
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.exception("Virtual camera worker crashed")
                 time.sleep(0.5)

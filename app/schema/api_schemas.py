@@ -14,6 +14,8 @@ class AuthRegisterRequest(BaseModel):
     username: str = Field(min_length=1, max_length=32)
     # 注册密码至少 8 位；登录用 AuthLoginRequest 不设下限，避免锁死历史短密码用户
     password: str = Field(min_length=8, max_length=128)
+    # 注册门控：首用户填安装码（部署日志/8011 页可查），之后填管理员邀请码
+    code: str = Field(default="", max_length=64)
 
 
 class AuthLoginRequest(BaseModel):

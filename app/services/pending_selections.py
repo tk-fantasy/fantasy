@@ -119,7 +119,7 @@ async def confirm_selection(
         # 路由层业务异常（如设备已被禁止 AI 操作 → 403）原样上抛，不能被压成
         # exec_failed/502 丢掉状态码；草稿同样不摘，解除限制后用户可重试
         raise
-    except Exception as exc:  # noqa: BLE001 — 执行失败不摘草稿，用户可重试
+    except Exception as exc:
         logger.warning("confirm_selection 执行失败: %s", exc, exc_info=True)
         return {"ok": False, "reason": "exec_failed", "error": f"执行失败：{exc}"}
     pending_store(session).pop(resolved_id, None)

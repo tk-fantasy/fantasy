@@ -75,7 +75,7 @@ def compute_next_run(schedule: dict, now_ts: float) -> float | None:
             now_dt = datetime.fromtimestamp(now_ts)
             nxt = croniter(expr, now_dt).get_next(datetime)
             return nxt.timestamp()
-        except Exception:
+        except Exception:  # noqa: BLE001
             logger.warning("scheduler: invalid cron expr: %s", expr)
             return None
     logger.warning("scheduler: unknown schedule kind: %s", kind)
@@ -262,7 +262,7 @@ class SchedulerService:
             task["last_status"] = "success"
             logger.info("scheduled task '%s' (%s) succeeded", name, task_id)
             await self._record_task_event("task_success", name, "执行成功")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             task["last_status"] = "failed"
             task["last_error"] = str(exc)
             logger.warning("scheduled task '%s' (%s) failed: %s", name, task_id, exc)
@@ -287,7 +287,7 @@ class SchedulerService:
         try:
             from .alert_service import alert_service
             await alert_service.record(kind, f"scheduler:{name}", message)
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.debug("record task event failed", exc_info=True)
 
     async def _execute_tool_payload(self, payload: dict) -> None:
@@ -421,7 +421,7 @@ class SchedulerService:
         if self._sink_manager is not None:
             try:
                 await self._sink_manager.broadcast(reply, rid)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.warning("scheduled reminder '%s' 语音广播失败（不影响任务）", task_name, exc_info=True)
         await self._push_reply_to_user(user_id, session_id, reply, rid)
 
@@ -445,7 +445,7 @@ class SchedulerService:
             await push_to_user(user_id, Instruction.build_instruction(
                 Dialog.Finish(success=True), request_id, session_id,
             ).model_dump())
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.warning("scheduled reply WS 推送失败（不影响任务）", exc_info=True)
 
     async def _resolve_reminder_client(self, user_id: str = "") -> Any | None:
@@ -554,7 +554,7 @@ class SchedulerService:
             except asyncio.TimeoutError:
                 logger.warning("scheduled task '%s' 手动触发等待超时（继续后台执行）",
                                task.get("name", task_id))
-            except Exception:
+            except Exception:  # noqa: BLE001
                 pass  # _execute_task 已把异常记入 last_status/last_error
         elif self._task_manager is not None:
             self._task_manager.spawn(self._execute_task(task), name=f"scheduled-manual-{task_id}")

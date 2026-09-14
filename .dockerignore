@@ -51,6 +51,9 @@ mosquitto/
 # integrations/ 保留：插件子进程 spawn 需要。tests/ 也保留（ Stage 3 test target 用，
 # 生产 runtime stage 不再 COPY 进镜像）
 todo/
-scripts/
+# scripts/ 里仅入口脚本需进镜像（ENTRYPOINT 内置一份，compose 仍用宿主挂载
+# 覆盖）；注意 Docker 规则：父目录被排除后无法用 ! 重新包含，故排除用 scripts/*
+scripts/*
+!scripts/entrypoint_tls.sh
 # 示例文件保留 config.example.json（Dockerfile 需要），其余示例排除
 .env.example

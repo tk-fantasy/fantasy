@@ -10,6 +10,10 @@ import json
 import logging
 import os
 import time
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.clients.llm_vision_client import LlmVisionClient
 import wave
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -67,7 +71,7 @@ def patched_shared_client(monkeypatch):
     return client
 
 
-def _vision_client() -> "app.clients.llm_vision_client.LlmVisionClient":
+def _vision_client() -> "LlmVisionClient":
     from app.clients.llm_vision_client import LlmVisionClient
 
     return LlmVisionClient()

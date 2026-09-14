@@ -204,7 +204,7 @@ class InboundPipeline:
         except asyncio.CancelledError:
             pending.cancel()
             raise
-        except Exception:  # noqa: BLE001 — handler 异常不逃出车道（保序继续服务）
+        except Exception:
             logger.exception("处理消息异常（chat=%s）", chat_key)
             try:
                 await self._notify(chat_key, "抱歉，处理这条消息时出错了。")

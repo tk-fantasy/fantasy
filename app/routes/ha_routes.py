@@ -33,7 +33,7 @@ def _spawn_catalog_refresh(refresh_fn) -> None:
         t = asyncio.create_task(refresh_fn())
         _bg_refresh_tasks.add(t)
         t.add_done_callback(_bg_refresh_tasks.discard)
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.warning("catalog refresh spawn failed", exc_info=True)
 
 
@@ -102,7 +102,7 @@ async def set_entity_alias(
     ha_name = alias or None  # 空串 → 清除 HA 自定义名，恢复默认
     try:
         await container.ha_client.update_entity_name(entity_id, ha_name)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.warning("同步别名到 HA 失败: %s", e)
         raise AppException(
             f"同步到 Home Assistant 失败: {e}", code="ha_sync_failed", http_status=502
@@ -351,7 +351,7 @@ async def ha_call_service(payload: HAServiceCallRequest, container: AppContainer
                 pass
             eids = [e.strip() for e in str(entity_id).split(",") if e.strip()] if entity_id else []
             await record_device_op(eids, service, "手动", name_of)
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.debug("record device_op failed", exc_info=True)
         return ApiResponse(data={"success": True, "result": result})
     except Exception as e:
@@ -417,7 +417,7 @@ async def _execute_selection(container: AppContainer, draft: dict, entity_id: st
         name_of = {str(c.get("entity_id", "")): str(c.get("label", ""))
                    for c in (draft.get("candidates") or [])}
         await record_device_op(eids, service, "AI", name_of)
-    except Exception:  # noqa: BLE001 — 审计失败不影响执行结果
+    except Exception:
         logger.debug("record device_op failed", exc_info=True)
     return result
 
@@ -524,7 +524,7 @@ async def set_ha_config(
         probe = HomeAssistantClient(base_url=url, token=verify_token)
         try:
             await probe.get_states()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             await probe.close()
             info = _classify_ha_error(e)
             logger.warning("HA config save rejected: %s (%s)", info["reason"], info["detail"])

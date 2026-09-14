@@ -8,9 +8,20 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..core.database import Database
+from ..core.exceptions import AppException
 from ..schema.chat_schema import Event, Instruction
 
 logger = logging.getLogger(__name__)
+
+
+class SessionOwnershipError(AppException):
+    """会话归属校验失败（已归属他人却被另一用户请求），HTTP 语义 403。"""
+
+    def __init__(self, session_id: str) -> None:
+        super().__init__(
+            "无权访问该会话", code="forbidden", http_status=403,
+        )
+        self.session_id = session_id
 
 # 会话历史上限：超过后截断旧条目，防止内存和序列化开销随对话长度线性增长
 _MAX_HISTORY_EVENTS = 100
@@ -270,9 +281,19 @@ class SessionStore:
                 # 一遍（100 轮老会话 = 每条消息两次全量重写）。轮末 store_session
                 # 会带着这些字段落盘；仅当进程在轮中崩溃，DB 少一次无实质变化
                 # 的中间态。
-                session.request_id = request_id
-                if user_id:
+                # 归属不可变：已归属他人的会话拒绝接管。此前这里无条件覆盖
+                # user_id，任何成员拿到他人 session_id 就能把会话改成"自己的"，
+                # 反向绕过 require_owned_session 的归属校验（历史/草稿全暴露）。
+                if user_id and session.user_id and user_id != session.user_id:
+                    raise SessionOwnershipError(session_id)
+                if user_id and not session.user_id:
+                    # 旧版数据（鉴权引入前/内部创建）没有归属：首个认证使用者
+                    # 认领，与 require_owned_session 放行无归属会话的口径一致。
+                    logger.warning(
+                        "Session %s has no owner; claimed by user %s", session_id, user_id,
+                    )
                     session.user_id = user_id
+                session.request_id = request_id
                 session.updated_at = _now_ms()
         return session
 

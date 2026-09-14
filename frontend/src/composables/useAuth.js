@@ -69,12 +69,12 @@ export function useAuth() {
     return json.data
   }
 
-  async function register(username, password, displayName) {
+  async function register(username, password, displayName, code = '') {
     const res = await fetch('/api/auth/register', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
-      body: JSON.stringify({ username, password, display_name: displayName || username }),
+      body: JSON.stringify({ username, password, display_name: displayName || username, code }),
     })
     const json = await res.json()
     if (!res.ok) {

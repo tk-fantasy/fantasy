@@ -112,7 +112,7 @@ async def test_stream(camera_id: str, body: dict):
     if cm is not None:
         try:
             row = await Database.get().cameras_get(camera_id)
-        except Exception:
+        except Exception:  # noqa: BLE001
             row = None
         if row is not None:
             st = cm.get_state(camera_id)

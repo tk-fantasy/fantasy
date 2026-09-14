@@ -212,7 +212,7 @@ class IntegrationPlugin:
             # stdin，子类覆写 on_shutdown 做快速清理；stdin 关闭才是真正停止信号。
             try:
                 await self.on_shutdown()
-            except Exception as exc:  # 清理失败不阻塞停止流程，stderr 已有栈
+            except Exception as exc:  # 清理失败不阻塞停止流程，stderr 已有栈  # noqa: BLE001
                 import sys
                 print(f"[{self.manifest.get('id', '?')}] on_shutdown error: "
                       f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)

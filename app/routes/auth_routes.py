@@ -13,6 +13,7 @@ from ..core.auth import (
     create_refresh_token,
     extract_refresh_token_from_request,
     extract_token_from_request,
+    get_current_admin,
     get_current_user,
     hash_password,
     is_secure_request,
@@ -25,6 +26,7 @@ from ..core.database import Database
 from ..core.exceptions import AppException
 from ..core.rate_limit import RateLimiter
 from ..schema.api_schemas import AuthLoginRequest, AuthRegisterRequest
+from ..services import invite_service
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +54,10 @@ async def register(request: Request, response: Response, payload: AuthRegisterRe
     display_name = username  # Pydantic model doesn't have display_name, use username
 
     db = Database.get()
+
+    # 注册门控：首用户比安装码、之后比管理员邀请码（失败抛 403）。
+    # 必须先于任何用户写入，防新部署窗口期抢注管理员。
+    await invite_service.verify_registration_code(db, payload.code, username=username)
 
     # 检查用户名是否已存在
     existing = await db.user_get_by_username(username)
@@ -153,7 +159,7 @@ async def logout(request: Request, response: Response) -> ApiResponse[dict]:
         try:
             payload = verify_token(access_token)
             await revoke_token_persisted(payload)
-        except Exception:
+        except Exception:  # noqa: BLE001
             pass  # token 无效/已过期，无需撤销
     # 撤销 refresh token（cookie）
     refresh_token = extract_refresh_token_from_request(request)
@@ -161,7 +167,7 @@ async def logout(request: Request, response: Response) -> ApiResponse[dict]:
         try:
             payload = verify_token(refresh_token)
             await revoke_token_persisted(payload)
-        except Exception:
+        except Exception:  # noqa: BLE001
             pass
     clear_auth_cookies(response)
     logger.info("User logged out, tokens revoked")
@@ -177,3 +183,44 @@ async def get_me(current_user: dict = Depends(get_current_user)) -> ApiResponse[
         raise AppException("用户不存在", code="user_not_found", http_status=404)
 
     return ApiResponse(data=user)
+
+# --------------- 注册邀请码（管理员） ---------------
+# 说明：/api/auth/* 被全局 api_token_guard 中间件放行（注册/登录本就不能要求
+# 登录态），因此下列端点的管理员鉴权完全依赖 get_current_admin 依赖本身，
+# 不能省略该依赖。
+
+
+@router.post("/auth/invites")
+async def create_invite(
+    current_user: dict = Depends(get_current_admin),
+) -> ApiResponse[dict]:
+    """生成一枚一次性注册邀请码（管理员）。"""
+    entry = await invite_service.create_invite(Database.get(), created_by=current_user["username"])
+    return ApiResponse(data=entry)
+
+
+@router.get("/auth/invites")
+async def list_invites(
+    current_user: dict = Depends(get_current_admin),
+) -> ApiResponse[list[dict]]:
+    """列出全部邀请码及其状态（管理员）。"""
+    return ApiResponse(data=await invite_service.list_invites(Database.get()))
+
+
+@router.delete("/auth/invites/{code}")
+async def revoke_invite(
+    code: str,
+    current_user: dict = Depends(get_current_admin),
+) -> ApiResponse[dict]:
+    """吊销一枚邀请码（管理员）。已使用的码吊销幂等成功。"""
+    await invite_service.revoke_invite(Database.get(), code)
+    return ApiResponse(data={"revoked": True, "code": code})
+
+
+@router.post("/auth/setup-code/regenerate")
+async def regenerate_setup_code(
+    current_user: dict = Depends(get_current_admin),
+) -> ApiResponse[dict]:
+    """重置安装码（管理员，仅尚无用户时可用——防怀疑泄露）。"""
+    code = await invite_service.regenerate_setup_code(Database.get())
+    return ApiResponse(data={"code": code})

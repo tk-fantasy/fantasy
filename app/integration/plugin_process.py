@@ -177,7 +177,7 @@ class PluginProcess:
         if self._process is None or self._process.stdin is None or self._process.stdin.is_closing():
             raise RuntimeError(f"插件 {self.manifest.id} 未运行")
         line = json.dumps(payload, ensure_ascii=False)
-        assert self._process.stdin is not None
+        assert self._process.stdin is not None  # nosec B101 - 类型收窄断言（内部不变量），非安全校验
         self._process.stdin.write((line + "\n").encode("utf-8"))
         try:
             await asyncio.wait_for(self._process.stdin.drain(), timeout=self._rpc_timeout)
@@ -213,7 +213,7 @@ class PluginProcess:
           reader 立即继续读下一条，不被 dispatch 阻塞（避免反向调用回环死锁）。
         - 其余 = 方向 1 响应，按 id 配对到 pending future（含 error 字段 → set_exception）。
         """
-        assert self._process is not None and self._process.stdout is not None
+        assert self._process is not None and self._process.stdout is not None  # nosec B101 - 类型收窄断言（内部不变量），非安全校验
         while True:
             line = await self._process.stdout.readline()
             if not line:
@@ -256,7 +256,7 @@ class PluginProcess:
         except PermissionError as exc:
             logger.warning("插件 %s 反向调用被拒: %s", self.manifest.id, exc)
             response = build_error(rid, -32500, f"permission denied: {exc}")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning("插件 %s 反向调用 %s 失败: %s", self.manifest.id, method, exc)
             response = build_error(rid, -32000, f"{type(exc).__name__}: {exc}")
         try:
@@ -267,7 +267,7 @@ class PluginProcess:
 
     async def _drain_stderr(self) -> None:
         """把插件 stderr 当日志（带 plugin_id 前缀）。"""
-        assert self._process is not None and self._process.stderr is not None
+        assert self._process is not None and self._process.stderr is not None  # nosec B101 - 类型收窄断言（内部不变量），非安全校验
         while True:
             line = await self._process.stderr.readline()
             if not line:
@@ -345,5 +345,5 @@ class PluginProcess:
             if self._on_stopped is not None:
                 try:
                     self._on_stopped(self.manifest.id)
-                except Exception:  # noqa: BLE001
+                except Exception:
                     logger.exception("插件 %s on_stopped 回调失败", self.manifest.id)

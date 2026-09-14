@@ -38,7 +38,7 @@ class PluginSupervisor:
         for manifest in manifests:
             try:
                 await self._start_with_retries(manifest, plugin_dir)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.error("插件 %s 启动失败（已重试 %d 次，已熔断）: %s",
                              manifest.id, self._max_restarts, exc)
                 # 熔断告警（内部吞异常；插件功能静默失效是家庭产品最典型的
@@ -89,7 +89,7 @@ class PluginSupervisor:
         for proc in procs:
             try:
                 await proc.stop()
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.warning("停止插件 %s 出错: %s", proc.manifest.id, exc)
 
     async def stop_one(self, plugin_id: str) -> bool:
@@ -104,7 +104,7 @@ class PluginSupervisor:
         try:
             await proc.stop()
             return True
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning("停止插件 %s 出错: %s", plugin_id, exc)
             return False
 
@@ -118,7 +118,7 @@ class PluginSupervisor:
         try:
             await self._start_with_retries(manifest, plugin_dir)
             return True
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.error("插件 %s 热启动失败（已重试 %d 次）: %s",
                          manifest.id, self._max_restarts, exc)
             return False

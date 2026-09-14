@@ -58,7 +58,7 @@ async def sync_llm_keys_to_current_user(current_user: dict) -> None:
             "llm_keys",
             json.dumps(keys, ensure_ascii=False),
         )
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.warning(f"Failed to sync llm_keys to user: {e}")
 
 
@@ -73,7 +73,7 @@ async def save_user_provider(user_id: str, role: str, key_id: str, values: dict)
             user_id, "providers",
             json.dumps(providers, ensure_ascii=False),
         )
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.warning(f"Failed to save user provider: {e}")
 
 
@@ -83,7 +83,7 @@ async def get_user_providers(user_id: str) -> dict:
         db = Database.get()
         providers_json = await db.user_setting_get(user_id, "providers")
         return json.loads(providers_json) if providers_json else {}
-    except Exception:
+    except Exception:  # noqa: BLE001
         return {}
 
 

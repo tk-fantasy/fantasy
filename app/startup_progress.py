@@ -33,12 +33,21 @@ class _State:
         self._stage = "正在启动..."
         self._ready = False
         self._start_ts = time.monotonic()
+        self._extra: dict = {}
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
     def set(self, stage: str) -> None:
         with self._lock:
             self._stage = stage
+
+    def set_extra(self, extra: dict) -> None:
+        """附加展示字段（如首次部署的安装码）。合并写入，随 snapshot 返回。
+
+        仅用于部署者本机可见的非敏感运维信息；页面默认绑回环，但不要放密钥。
+        """
+        with self._lock:
+            self._extra.update(extra)
 
     def mark_ready(self) -> None:
         with self._lock:
@@ -51,6 +60,7 @@ class _State:
                 "stage": self._stage,
                 "ready": self._ready,
                 "elapsed_sec": round(time.monotonic() - self._start_ts, 1),
+                **self._extra,
             }
 
     def start(self) -> None:
@@ -101,7 +111,7 @@ class _State:
         if self._server is not None:
             try:
                 self._server.shutdown()
-            except Exception:
+            except Exception:  # noqa: BLE001
                 pass
             self._server = None
 

@@ -82,7 +82,7 @@ class AlertService:
             await self._record("alert", source, message)
             logger.warning("[Alert] %s: %s", source, message)
             await self._broadcast(message, level)
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception("alert_service.notify failed (source=%s)", source)
 
     async def resolve(self, source: str, message: str = "") -> None:
@@ -95,14 +95,14 @@ class AlertService:
             await self._record("alert_resolved", source, text)
             logger.info("[Alert resolved] %s: %s", source, text)
             await self._broadcast(f"✅ {text}", "info")
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception("alert_service.resolve failed (source=%s)", source)
 
     async def record(self, kind: str, source: str, message: str, actor: str = "") -> None:
         """只落库不广播（任务成败/自动化触发等周报数据用）。actor 见 family_event_add。"""
         try:
             await self._record(kind, source, message, actor)
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception("alert_service.record failed (kind=%s)", kind)
 
     # ------------------------------------------------------------------
@@ -138,7 +138,7 @@ class AlertService:
                 await self._check_ha()
             except asyncio.CancelledError:
                 raise
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.exception("alert monitor tick failed")
 
     async def _restore_active_from_events(self) -> None:
@@ -172,7 +172,7 @@ class AlertService:
                     "Alert state restored: %d unresolved alert(s) %s",
                     len(self._active), sorted(self._active),
                 )
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception("restore alert state from family_events failed")
 
     async def _check_cameras(self) -> None:
@@ -240,7 +240,7 @@ class AlertService:
         try:
             from ..core import ws_registry
             await ws_registry.push_to_all({"type": "alert", "level": level, "message": message})
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.debug("alert ws push failed (no online users?)", exc_info=True)
 
     async def broadcast_report(self, text: str) -> None:
@@ -249,7 +249,7 @@ class AlertService:
             await self._dispatch_notifiers(text, "info")
             from ..core import ws_registry
             await ws_registry.push_to_all({"type": "report", "message": text})
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.debug("report broadcast failed", exc_info=True)
 
     async def _dispatch_notifiers(self, message: str, level: str) -> None:
@@ -257,7 +257,7 @@ class AlertService:
         for name, fn in list(self._notifiers.items()):
             try:
                 await asyncio.wait_for(fn(message, level), timeout=10.0)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.warning("alert notifier %s dispatch failed", name, exc_info=True)
 
 

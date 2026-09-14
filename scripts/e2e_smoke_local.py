@@ -34,14 +34,14 @@ class _FakeOpenAI(BaseHTTPRequestHandler):
 mock_srv = HTTPServer(("127.0.0.1", 9099), _FakeOpenAI)
 threading.Thread(target=mock_srv.serve_forever, daemon=True).start()
 
-import app.core.config as cfg  # noqa: E402
+import app.core.config as cfg
 cfg.CONFIG_PATH = tmp / "config.json"  # 写入隔离；内存 CONFIG 用真实值无妨
-import app.core.database as dbmod  # noqa: E402
+import app.core.database as dbmod
 dbmod.DB_PATH = tmp / "aether.db"
 
-from fastapi.testclient import TestClient  # noqa: E402
-from app.main import app  # noqa: E402
-from app.core import auth as auth_mod  # noqa: E402
+from fastapi.testclient import TestClient
+from app.main import app
+from app.core import auth as auth_mod
 
 failures = []
 

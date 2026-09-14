@@ -272,7 +272,7 @@ async def run_agent_streaming(
     try:
         from ..container import get_container
         metrics = get_container().metrics_service
-    except Exception:
+    except Exception:  # noqa: BLE001
         pass
 
     try:

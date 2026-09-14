@@ -64,7 +64,7 @@ class Database:
         DB_PATH.parent.mkdir(parents=True, exist_ok=True)
         try:
             db = await cls._open_connection()
-        except Exception as first_err:
+        except Exception as first_err:  # noqa: BLE001
             # SQLite 文件损坏（典型：宿主掉电打断 WAL 写入）→ 此前直接抛异常
             # → uvicorn 退出 → Docker 重启 → 再失败，启动崩溃循环直到人工介入。
             # 自愈路径：损坏文件 rename 保留现场 → 从 backups/ 找最近一次 db
@@ -109,7 +109,7 @@ class Database:
                      "rename to %s and restore/create fresh", first_err, corrupt.name)
         try:
             await asyncio.to_thread(cls._move_corrupt_files, corrupt)
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception("Failed to move corrupt db files; forcing delete")
             # move 失败退化为强制删除（连接已关，句柄应已释放）
             for p in (DB_PATH, Path(str(DB_PATH) + "-wal"), Path(str(DB_PATH) + "-shm")):
@@ -123,7 +123,7 @@ class Database:
             logger.warning("Database restored from backup: %s", restored)
             try:
                 return await cls._open_connection()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.exception("Restored backup still fails to open; creating fresh db")
                 await asyncio.to_thread(lambda: DB_PATH.exists() and DB_PATH.unlink())
         logger.warning("No usable db backup found; creating fresh database "
@@ -546,7 +546,7 @@ class Database:
         col_list = ",".join(cols)
         async with self._write_lock:
             await self._db.execute(
-                f"INSERT INTO cameras ({col_list}) VALUES ({placeholders})",
+                f"INSERT INTO cameras ({col_list}) VALUES ({placeholders})",  # nosec B608 - 列名/占位符来自内部常量，值全部参数化
                 values,
             )
             await self._db.commit()
@@ -579,7 +579,7 @@ class Database:
         params = [fields[c] for c in set_cols] + [now, camera_id]
         async with self._write_lock:
             cursor = await self._db.execute(
-                f"UPDATE cameras SET {assignments}, updated_at = ? WHERE id = ?", params
+                f"UPDATE cameras SET {assignments}, updated_at = ? WHERE id = ?", params  # nosec B608 - 列名/占位符来自内部常量，值全部参数化
             )
             await self._db.commit()
             return cursor.rowcount > 0
@@ -628,7 +628,7 @@ class Database:
         where = f"WHERE {' AND '.join(conds)}" if conds else ""
         args.append(max(1, min(int(limit), 1000)))
         async with self._db.execute(
-            f"SELECT id, created_at, camera_id, kind, content FROM vision_logs "
+            f"SELECT id, created_at, camera_id, kind, content FROM vision_logs "  # nosec B608 - 列名/占位符来自内部常量，值全部参数化
             f"{where} ORDER BY id DESC LIMIT ?",
             args,
         ) as cursor:
@@ -673,11 +673,11 @@ class Database:
         """取 since_ms 之后的事件（升序）。kinds 为空取全部。"""
         if kinds:
             placeholders = ",".join("?" * len(kinds))
-            sql = (f"SELECT id, created_at, kind, source, message, actor FROM family_events "
+            sql = (f"SELECT id, created_at, kind, source, message, actor FROM family_events "  # nosec B608 - 列名/占位符来自内部常量，值全部参数化
                    f"WHERE created_at >= ? AND kind IN ({placeholders}) ORDER BY created_at")
             params: tuple = (since_ms, *kinds)
         else:
-            sql = ("SELECT id, created_at, kind, source, message, actor FROM family_events "
+            sql = ("SELECT id, created_at, kind, source, message, actor FROM family_events "  # nosec B608 - 列名/占位符来自内部常量，值全部参数化
                    f"WHERE created_at >= ? ORDER BY created_at")
             params = (since_ms,)
         async with self._db.execute(sql, params) as cursor:

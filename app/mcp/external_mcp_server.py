@@ -95,7 +95,7 @@ class ExternalMCPServer:
                 if not line:
                     break
                 logger.debug("External MCP %s stderr: %s", self.name, line.decode("utf-8", errors="replace").rstrip()[:200])
-        except Exception:
+        except Exception:  # noqa: BLE001
             pass
 
     async def _send_request(self, method: str, params: dict | None = None, timeout: float = 30.0) -> dict:
@@ -165,7 +165,7 @@ class ExternalMCPServer:
                     logger.warning("MCP server %s did not exit gracefully, forcing kill", self.name)
                     self._process.kill()
                     await self._process.wait()
-            except Exception:
+            except Exception:  # noqa: BLE001
                 pass
             # 关闭 stdin/stdout/stderr 管道。at_eof 只有读端有，
             # StreamWriter 上调它会 AttributeError（曾致 stop() 恒崩）。
@@ -177,7 +177,7 @@ class ExternalMCPServer:
                     if callable(at_eof) and at_eof():
                         continue
                     stream.close()
-                except Exception:
+                except Exception:  # noqa: BLE001
                     pass
 
 

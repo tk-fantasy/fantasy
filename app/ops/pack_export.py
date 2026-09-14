@@ -150,7 +150,7 @@ async def _export_job(operator: str, notes: str) -> None:
             "size_bytes": (PACK_DIR / out_name).stat().st_size,
         })
         logger.info("Update pack exported: %s", out_name)
-    except Exception as e:  # noqa: BLE001 — 状态接口要把失败原因带给前端
+    except Exception as e:
         _state["status"] = "error"
         _state["error"] = str(e)
         logger.exception("Pack export failed")

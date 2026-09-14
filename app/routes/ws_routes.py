@@ -24,7 +24,7 @@ async def _cancel_current(task: asyncio.Task | None, container) -> None:
         task.cancel()
         try:
             await task  # 等 CancelledError 传播完毕（Dispatcher 内部已处理）
-        except (asyncio.CancelledError, Exception):
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001
             pass  # task 内部异常已自己处理
     # 停所有 sink（即使 task 已结束，小爱可能还在念）
     layer = getattr(container, "integration_layer", None)
@@ -77,7 +77,7 @@ async def _handle_direct(websocket, container, payload, rid: str, user_id: str,
             if sink_manager is not None:
                 try:
                     await sink_manager.broadcast(f"好的，{msg}", rid)
-                except Exception:  # noqa: BLE001
+                except Exception:
                     logger.warning("直通退出确认播报失败（不影响退出）", exc_info=True)
             ok = True
         else:
@@ -89,7 +89,7 @@ async def _handle_direct(websocket, container, payload, rid: str, user_id: str,
                 rid, session_id,
             ).model_dump()
         )
-    except Exception:
+    except Exception:  # noqa: BLE001
         await websocket.send_json(
             Instruction.build_instruction(
                 Dialog.Finish(success=False, message="直通执行失败"),
@@ -112,7 +112,7 @@ def _resolve_mode(payload_mode: str) -> str:
         try:
             from ..integration.config_helper import get_current_mode
             mode = get_current_mode() or "aether"
-        except Exception:
+        except Exception:  # noqa: BLE001
             mode = "aether"
     return mode
 
@@ -253,7 +253,10 @@ async def doc_chat_ws(websocket: WebSocket):
             # 后，新文档问答会全部排队）
             stream_stop = threading.Event()
 
-            def _run_stream():
+            # 循环变量按默认参数绑定（B023）：闭包提交进线程池后即使外层循环
+            # 因断连提前进入下一轮，本轮捕获的 client/queue 也不被重绑污染。
+            def _run_stream(client=client, chat_model=chat_model, system=system,
+                            query=query, stream_stop=stream_stop, token_queue=token_queue):
                 try:
                     stream = client.chat.completions.create(
                         model=chat_model,

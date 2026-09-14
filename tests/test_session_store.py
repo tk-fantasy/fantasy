@@ -185,3 +185,61 @@ class TestSessionStoreInMemory:
     async def test_clear_nonexistent(self):
         store = SessionStore()
         assert await store.clear_messages("nonexistent") is False
+
+
+class TestSessionOwnership:
+    """会话归属不可变：他人 session_id 不能接管（此前轮首覆盖 user_id 的横向越权）。"""
+
+    @pytest.mark.asyncio
+    async def test_new_session_carries_user_id(self):
+        store = SessionStore()
+        s = await store.get_or_create("sid-1", "req-1", user_id="alice")
+        assert s.user_id == "alice"
+
+    @pytest.mark.asyncio
+    async def test_owner_reentry_preserves_ownership(self):
+        store = SessionStore()
+        await store.get_or_create("sid-1", "req-1", user_id="alice")
+        s = await store.get_or_create("sid-1", "req-2", user_id="alice")
+        assert s.user_id == "alice"
+        assert s.request_id == "req-2"
+
+    @pytest.mark.asyncio
+    async def test_foreign_user_rejected(self):
+        from app.services.session_store import SessionOwnershipError
+
+        store = SessionStore()
+        await store.get_or_create("sid-1", "req-1", user_id="alice")
+        with pytest.raises(SessionOwnershipError):
+            await store.get_or_create("sid-1", "req-2", user_id="mallory")
+        # 归属未被篡改，且会话仍然存在
+        s = await store.get_session("sid-1")
+        assert s is not None
+        assert s.user_id == "alice"
+
+    @pytest.mark.asyncio
+    async def test_ownership_error_is_app_exception_403(self):
+        from app.core.exceptions import AppException
+        from app.services.session_store import SessionOwnershipError
+
+        err = SessionOwnershipError("sid-1")
+        assert isinstance(err, AppException)
+        assert err.http_status == 403
+        assert err.code == "forbidden"
+
+    @pytest.mark.asyncio
+    async def test_unowned_session_claimed_by_first_user(self):
+        store = SessionStore()
+        await store.create_session()  # 无归属（旧版数据路径）
+        sessions = await store.list_summaries()
+        sid = sessions[0]["id"]
+        s = await store.get_or_create(sid, "req-1", user_id="alice")
+        assert s.user_id == "alice"
+
+    @pytest.mark.asyncio
+    async def test_internal_call_without_user_id_keeps_ownership(self):
+        """内部调用（user_id 为空，如后台任务）不覆盖归属也不触发越权。"""
+        store = SessionStore()
+        await store.get_or_create("sid-1", "req-1", user_id="alice")
+        s = await store.get_or_create("sid-1", "req-2", user_id="")
+        assert s.user_id == "alice"

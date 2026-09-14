@@ -82,7 +82,7 @@ class IntegrationLayer:
                 t = loop.create_task(camera_manager.unregister_plugin_cameras(plugin_id))
                 unregister_tasks.add(t)
                 t.add_done_callback(unregister_tasks.discard)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.warning("注销插件 %s 虚拟摄像头失败", plugin_id, exc_info=True)
 
         self._supervisor = PluginSupervisor(
@@ -244,7 +244,7 @@ class IntegrationLayer:
                 _t = asyncio.get_running_loop().create_task(result)
                 self._tool_refresh_tasks.add(_t)
                 _t.add_done_callback(self._tool_refresh_tasks.discard)
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.warning("on_plugin_tools_changed 回调失败", exc_info=True)
 
     def get_agent_tool_plugins(self) -> list[tuple[str, Any]]:
@@ -344,7 +344,7 @@ class IntegrationLayer:
         try:
             from .config_helper import set_broadcast_enabled as persist
             persist(bool(enabled))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning("广播开关持久化失败（内存状态已更新）: %s", exc)
 
     def list_ui_contributions(self) -> list[dict]:
@@ -459,7 +459,7 @@ class IntegrationLayer:
                 if proc and proc.is_alive:
                     try:
                         return await proc.call(METHOD_ROUTE, {"text": text, "mode": mode})
-                    except Exception as exc:
+                    except Exception as exc:  # noqa: BLE001
                         logger.warning("路由到插件 %s 失败: %s", manifest.id, exc)
                         return {"ok": False, "error": f"插件 {manifest.id} 路由失败"}
         return {"ok": False, "error": "no inbound router available"}

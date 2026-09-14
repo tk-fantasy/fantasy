@@ -208,7 +208,7 @@ class EmojiService:
                             "name": item["name"],
                             "vec": result["embedding"],
                         }
-                    except Exception:
+                    except Exception:  # noqa: BLE001
                         self._rebuild_errors += 1
                         self._rebuild_done += 1
                         logger.warning("Failed to embed emoji '%s' (%s), skipped",

@@ -116,6 +116,6 @@ async def generate_weekly_report(container: AppContainer = Depends(get_container
     try:
         result = await svc.generate()
         return ApiResponse(data=result)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.exception("manual weekly report generation failed")
         raise AppException(f"生成失败: {e}", code="report_generate_failed", http_status=500)

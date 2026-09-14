@@ -21,7 +21,7 @@ class CamRegPlugin(IntegrationPlugin):
         try:
             result = await self.host.camera.register({"name": "e2e虚拟摄像头"})
             self.camera_id = str(result.get("camera_id", ""))
-        except Exception:  # noqa: BLE001
+        except Exception:
             import traceback
             traceback.print_exc()
 
