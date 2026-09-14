@@ -984,6 +984,27 @@ def _register_scene_tools(deps: ToolDeps) -> None:
         return {"success": ok > 0,
                 "summary": f"场景「{result.get('scene')}」部分应用（{ok}/{total} 成功），失败: {', '.join(failed)}"}
 
+    async def create_handler(parameters: dict, session) -> dict:
+        svc = _svc()
+        if svc is None:
+            return tool_error("场景服务未就绪", hint="场景服务尚未初始化，请如实告知用户稍后再试。")
+        name = str(parameters.get("name", "")).strip()
+        if not name:
+            return tool_error("name 不能为空",
+                              hint="给场景起个名字，如「观影模式」「睡眠模式」。")
+        user_id = getattr(session, "user_id", "") or ""
+        try:
+            if parameters.get("capture"):
+                scene = await svc.capture_scene(name, user_id=user_id)
+            else:
+                actions = parameters.get("actions") or []
+                scene = await svc.create_scene(name, actions, user_id=user_id)
+        except (ValueError, RuntimeError) as e:
+            return tool_error(str(e), hint="capture 与 actions 二选一：capture=true 拍当前状态，"
+                                           "或传 [{domain,service,entity_id,data}] 动作列表。")
+        return {"success": True, "scene_id": scene["id"], "name": name,
+                "actions_count": len(scene.get("actions", []))}
+
     deps.mcp_client_manager.register_tool(MCPTool(
         client_id="local",
         tool_name="scene_list",
@@ -1007,10 +1028,30 @@ def _register_scene_tools(deps: ToolDeps) -> None:
         },
         handler=apply_handler,
     ))
-
-# scene_create 聊天工具已下线：对话创建场景的使用率低且与设备控制意图混淆
-# （模型经常把"开灯"误路由成建场景），场景创建收敛到 REST /api/scenes 与规则页 UI；
-# scene_service.create_scene/capture_scene 保留供 REST 使用。
+    deps.mcp_client_manager.register_tool(MCPTool(
+        client_id="local",
+        tool_name="scene_create",
+        description=(
+            "【创建场景】保存一组设备状态为场景。两种方式："
+            "① capture=true：把设备当前状态拍下来存成场景（用户说'把现在的灯光存成观影模式'时用）；"
+            "② 传 actions 列表（[{domain,service,entity_id,data}]，格式同 call_service 参数）。"
+            "用户只是要控制设备时不要用本工具，直接调 call_service。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "场景名（如'观影模式'）"},
+                "capture": {"type": "boolean", "description": "true=捕获当前所有设备状态"},
+                "actions": {
+                    "type": "array",
+                    "description": "动作列表（capture=false 时必填）",
+                    "items": {"type": "object"},
+                },
+            },
+            "required": ["name"],
+        },
+        handler=create_handler,
+    ))
 
 
 # ---------------------------------------------------------------------------

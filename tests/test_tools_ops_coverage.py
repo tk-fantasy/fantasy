@@ -2013,3 +2013,38 @@ class TestResolveChatClientGaps:
         svc = AutomationService(MagicMock())
         monkeypatch.setattr(svc, "_resolve_chat_client", AsyncMock(return_value=client))
         assert await svc._evaluate_context_only("夜里了", "ctx", "") == 0
+
+
+class TestSceneToolsCreate:
+    """scene_create 对话建场景（capture / actions 两种方式）。"""
+
+    @pytest.mark.asyncio
+    async def test_create_with_actions_and_capture(self, monkeypatch):
+        svc = TestSceneTools._svc()
+        TestSceneTools._patch(monkeypatch, svc)
+        mgr = _make_mgr()
+        from app.tools import _register_scene_tools
+        _register_scene_tools(_deps(mgr))
+        tool = mgr.get_tool("local___scene_create")
+        ret = await tool.handler({"name": "观影", "actions": [{"domain": "light"}]},
+                                 SimpleNamespace(user_id="u1"))
+        svc.create_scene.assert_awaited_with("观影", [{"domain": "light"}], user_id="u1")
+        assert ret == {"success": True, "scene_id": "s9", "name": "观影", "actions_count": 1}
+        ret = await tool.handler({"name": "抓拍", "capture": True},
+                                 SimpleNamespace(user_id="u1"))
+        svc.capture_scene.assert_awaited_with("抓拍", user_id="u1")
+        assert ret["scene_id"] == "s8" and ret["actions_count"] == 2
+
+    @pytest.mark.asyncio
+    async def test_create_validation_errors(self, monkeypatch):
+        svc = TestSceneTools._svc()
+        TestSceneTools._patch(monkeypatch, svc)
+        mgr = _make_mgr()
+        from app.tools import _register_scene_tools
+        _register_scene_tools(_deps(mgr))
+        tool = mgr.get_tool("local___scene_create")
+        ret = await tool.handler({"name": ""}, None)
+        assert "name 不能为空" in ret["error"]
+        svc.create_scene = AsyncMock(side_effect=ValueError("actions 不能为空"))
+        ret = await tool.handler({"name": "x", "actions": []}, None)
+        assert "actions 不能为空" in ret["error"]
