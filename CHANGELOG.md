@@ -65,6 +65,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+#### 规则查询被变体隔离——「查一下有哪些规则」模型只能答"没有这工具"
+- 「查询一下现有的自动化规则」不含创建动词，`_pick_variant` 落入 **clean 变体**
+  （automation_rule_* 整族对模型不可见），模型面对查询只能如实回答"没有这工具"
+  并绕道定时任务/场景——glm-4-flash 与 agnes-3.0-flash 全部中招，且与
+  「工具检索幻觉」的初步判断混淆了数小时（模型列出的可用工具清单与注册表
+  差集完全吻合才定位到变体层）
+- 修复：新增 `pending_rules.wants_rule_query`（「规则」+查询类动词，与创建门控
+  同处维护），查询话术放行 full 变体——`automation_rule_list` 可见，创建误触
+  仍由工具层 wants_rule_creation 硬门兜底
+- 实测：agnes-3.0-flash 正确调用 automation_rule_list 并准确报出规则名、
+  触发类型与控制设备
+
+
 #### 自然语言改绑摄像头是静默 no-op
 - `rule_service.revise_rule` 喂给 LLM 的 `current_brief` 白名单（`name/condition/type/actions/action_descriptions/cooldown_seconds/summary`）**不含 `camera_id`**，且输出后 `parsed.setdefault("camera_id", current_rule.get("camera_id",""))` 把它钉回原值。用户说「改绑到门口摄像头」时 LLM 根本看不到这个字段，`change_summary` 照样回一句"已绑定门口"——弹窗显示「✅ 已绑定」而 `camera_id` 纹丝不动。飞书里事后改绑走的也是这条死路（创建时一句话带上"用门口摄像头"没事，那时模型能直接给 `automation_rule_create` 传 `camera_id`）
 - 白名单补上 `camera_id`，并新增 `_resolve_revised_camera`：LLM 没输出 → 保留原值；输出了但不是真实摄像头 → 重置回原值（幻觉 id 会让规则绑到不存在的那一路，`automation_service` 按 `camera_id` 过滤 → 永不触发，且界面上看不出问题，比不改更糟）；`type` 改成 `time`/`weather` → 清空绑定（`camera_id` 对非视觉规则没有意义，留着会被 `ruleMismatch` 标 orange）
