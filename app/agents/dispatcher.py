@@ -18,6 +18,7 @@ from ..services.pending_rules import (
     KIND_AUTOMATION_RULE,
     resolve_pending,
     wants_rule_creation,
+    wants_rule_query,
 )
 from ..services.session_store import SessionStore
 
@@ -435,9 +436,14 @@ class Dispatcher:
             return False
 
     def _pick_variant(self, session, query: str) -> str:
-        """回合变体选择：关键词命中 → full；有活草稿（确认/修改流）→ no_create；
-        其余 → clean（完全无规则概念）。"""
-        if wants_rule_creation(query):
+        """回合变体选择：创建/查询规则话术 → full；有活草稿（确认/修改流）→
+        no_create；其余 → clean（完全无规则概念）。
+
+        查询也要 full：clean 把 automation_rule_* 整族剔除后，模型面对
+        「查一下有哪些规则」只能如实回答"没有这工具"——查询场景需要
+        automation_rule_list 可见；创建误触由工具层 wants_rule_creation 硬门兜底。
+        """
+        if wants_rule_creation(query) or wants_rule_query(query):
             return "full"
         if self._live_rule_draft(session):
             return "no_create"

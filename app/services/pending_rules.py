@@ -149,6 +149,26 @@ _CREATE_VERBS = (
 )
 
 
+# 规则查询话术：消息里出现「规则」+ 查询类动词/疑问词。查询轮需要
+# automation_rule_list 可见（clean 变体整族剔除会让模型如实回答"没有这工具"）。
+_RULE_QUERY_WORDS = ("查", "列", "看", "哪些", "什么", "多少", "列表", "介绍", "说明")
+
+
+def wants_rule_query(text: str) -> bool:
+    """用户本轮是否在查询（而非创建）自动化规则。
+
+    与 wants_rule_creation 互补：创建意图优先级更高（同为 full 变体，语义上
+    分开写保持各自可调）。只认「规则」二字开头限定，避免"查看一下"这类无
+    「规则」的闲聊误放行。
+    """
+    t = str(text or "")
+    if "规则" not in t:
+        return False
+    if wants_rule_creation(t):
+        return False
+    return any(w in t for w in _RULE_QUERY_WORDS)
+
+
 def wants_rule_creation(text: str) -> bool:
     """用户本轮消息是否明确要求创建规则（关键词门控，确定性判断）。
 
