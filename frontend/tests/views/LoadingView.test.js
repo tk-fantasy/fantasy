@@ -37,6 +37,7 @@ global.fetch = vi.fn((url) => {
 describe('LoadingView', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    sessionStorage.clear()
     vi.useFakeTimers()
   })
 
@@ -78,5 +79,22 @@ describe('LoadingView', () => {
     mount(LoadingView)
     await vi.advanceTimersByTimeAsync(5000) // Wait for all checks
     expect(mockPush).toHaveBeenCalledWith('/chat')
+  })
+
+  it('本会话已开场：刷新不重演逐字动画，快速直达 /chat', async () => {
+    sessionStorage.setItem('aether_greeted', '1')
+    const wrapper = mount(LoadingView)
+    await vi.advanceTimersByTimeAsync(1500)
+    // 问候语静态呈现：有文字、没有逐字 span
+    expect(wrapper.find('.greeting').text()).not.toBe('')
+    expect(wrapper.findAll('.greeting-char').length).toBe(0)
+    expect(mockPush).toHaveBeenCalledWith('/chat')
+  })
+
+  it('首次进场：逐字动画播完后设置会话标记', async () => {
+    const wrapper = mount(LoadingView)
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(wrapper.findAll('.greeting-char').length).toBeGreaterThan(0)
+    expect(sessionStorage.getItem('aether_greeted')).toBe('1')
   })
 })

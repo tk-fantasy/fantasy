@@ -12,6 +12,9 @@ const statusText = ref('')
 const isReady = ref(false)
 const hasError = ref(false)
 const showRetry = ref(false)
+// 开场逐字问候动画每个浏览器会话只播一次；刷新/切回时静态呈现，直达检查
+const animateGreeting = ref(true)
+const GREETED_FLAG = 'aether_greeted'
 
 // 问候语
 function getGreeting(ownerName) {
@@ -159,13 +162,20 @@ async function checkServices() {
 async function retry() {
   const allOk = await checkServices()
   if (allOk) {
-    statusText.value = '一切就绪'
-    await new Promise(resolve => setTimeout(resolve, 800))
-    isReady.value = true
-    setTimeout(() => {
-      router.push('/chat')
-    }, 500)
+    await finish(false)
   }
+}
+
+// 收尾：full=首次进场完整谢幕；quick=会话内刷新，快速淡出
+async function finish(full) {
+  statusText.value = '一切就绪'
+  if (full) {
+    await new Promise(resolve => setTimeout(resolve, 800))
+  }
+  isReady.value = true
+  setTimeout(() => {
+    router.push('/chat')
+  }, full ? 500 : 400)
 }
 
 onMounted(async () => {
@@ -180,8 +190,21 @@ onMounted(async () => {
   } catch (e) {
     console.error('Failed to load home info:', e)
   }
-  
-  // 显示问候语（逐字）
+
+  const greeted = sessionStorage.getItem(GREETED_FLAG) === '1'
+  if (greeted) {
+    // 本会话已开过场（刷新/切页回来）：问候语静态呈现，跳过仪式性等待
+    animateGreeting.value = false
+    loadingText.value = getGreeting(ownerName)
+    const allOk = await checkServices()
+    if (allOk) {
+      await finish(false)
+    }
+    return
+  }
+
+  // 首次进场：完整开场动画
+  sessionStorage.setItem(GREETED_FLAG, '1')
   await typeText(getGreeting(ownerName), loadingText, 100)
   await new Promise(resolve => setTimeout(resolve, 500))
 
@@ -189,13 +212,7 @@ onMounted(async () => {
   const allOk = await checkServices()
 
   if (allOk) {
-    statusText.value = '一切就绪'
-    await new Promise(resolve => setTimeout(resolve, 800))
-    isReady.value = true
-    // 跳转到聊天页
-    setTimeout(() => {
-      router.push('/chat')
-    }, 500)
+    await finish(true)
   }
 })
 </script>
@@ -204,14 +221,17 @@ onMounted(async () => {
   <div class="loading-page" :class="{ ready: isReady }">
     <div class="loading-content">
       <div class="greeting">
-        <span
-          v-for="(char, index) in loadingText"
-          :key="index"
-          class="greeting-char"
-          :style="{ animationDelay: `${index * 0.1}s` }"
-        >
-          {{ char === ' ' ? '\u00A0' : char }}
-        </span>
+        <template v-if="animateGreeting">
+          <span
+            v-for="(char, index) in loadingText"
+            :key="index"
+            class="greeting-char"
+            :style="{ animationDelay: `${index * 0.1}s` }"
+          >
+            {{ char === ' ' ? '\u00A0' : char }}
+          </span>
+        </template>
+        <template v-else>{{ loadingText }}</template>
       </div>
 
       <div class="status">
