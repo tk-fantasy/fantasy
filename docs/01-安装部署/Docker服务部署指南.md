@@ -31,6 +31,17 @@ Aether 用官方镜像 `homeassistant/home-assistant:stable`，配置通过 `./h
 
 ## 启动服务
 
+### 首次部署前：准备 .env 与 config.json（缺一不可）
+
+```powershell
+Copy-Item .env.example .env
+Copy-Item config.example.json config.json
+```
+
+`.env` 里**必须设置 `MQTT_PASSWORD`（≥8 位强密码）**——mosquitto 初始化脚本检测到缺失会直接拒绝启动（这是防弱口令暴露设备控制面的硬门槛）。建议同时设置 `JWT_SECRET`：不设则每次重启随机生成，重启后所有登录会话失效。其余项按注释按需填写。
+
+### 启动
+
 在项目根目录运行：
 
 ```powershell

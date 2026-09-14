@@ -242,3 +242,43 @@ class TestRegisterRouteGating:
         with patch("app.routes.auth_routes.Database.get", return_value=db):
             result = await register(self._make_request(), Response(), payload)
         assert result.data["user"]["is_admin"] == 1
+
+    @pytest.mark.asyncio
+    async def test_first_registration_clears_setup_code_from_progress(self):
+        """户主注册完成即撤下 8011 进度页的安装码展示，不等重启。"""
+        from app.routes import auth_routes
+        from app.routes.auth_routes import register
+        from app.schema.api_schemas import AuthRegisterRequest
+
+        db = _mock_db(user_count=0)
+        code = await invite_service.get_setup_code(db)
+        db.user_get_by_username = AsyncMock(return_value=None)
+        db.user_create = AsyncMock(return_value={
+            "id": "owner-id", "username": "owner", "display_name": "owner",
+        })
+        db.user_setting_set = AsyncMock()
+        payload = AuthRegisterRequest(
+            username="owner", password="password123", code=code,
+        )
+
+        with patch("app.routes.auth_routes.Database.get", return_value=db), \
+             patch.object(auth_routes.startup_progress, "set_extra") as mock_set_extra:
+            await register(self._make_request(), Response(), payload)
+        mock_set_extra.assert_called_once_with({"setup_code": ""})
+
+
+class TestInviteRoutes:
+    @pytest.mark.asyncio
+    async def test_create_invite_route_passes_note(self):
+        """签发接口应接收并持久化备注（此前 body 被整个忽略）。"""
+        from app.routes.auth_routes import create_invite
+        from app.schema.api_schemas import AuthInviteCreateRequest
+
+        db = _mock_db(user_count=1)
+        with patch("app.routes.auth_routes.Database.get", return_value=db):
+            resp = await create_invite(
+                payload=AuthInviteCreateRequest(note="给妈妈"),
+                current_user={"username": "admin"},
+            )
+        assert resp.data["note"] == "给妈妈"
+        assert resp.data["expires_at"] > resp.data["created_at"]

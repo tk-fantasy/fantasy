@@ -25,8 +25,9 @@ from ..core.auth import (
 from ..core.database import Database
 from ..core.exceptions import AppException
 from ..core.rate_limit import RateLimiter
-from ..schema.api_schemas import AuthLoginRequest, AuthRegisterRequest
+from ..schema.api_schemas import AuthInviteCreateRequest, AuthLoginRequest, AuthRegisterRequest
 from ..services import invite_service
+from ..startup_progress import startup_progress
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +76,10 @@ async def register(request: Request, response: Response, payload: AuthRegisterRe
     await db.user_setting_set(user_id, "llm_keys", json.dumps([], ensure_ascii=False))
     await db.user_setting_set(user_id, "providers", json.dumps({}, ensure_ascii=False))
     logger.info("Initialized user_settings for new user: %s", username)
+
+    if is_admin:
+        # 户主已诞生：安装码使命终结，即时撤下 8011 进度页的展示（否则要等下次重启才消失）
+        startup_progress.set_extra({"setup_code": ""})
 
     # 自动生成 token 并设置 cookie
     access_token = create_access_token(user_id, username)
@@ -192,10 +197,13 @@ async def get_me(current_user: dict = Depends(get_current_user)) -> ApiResponse[
 
 @router.post("/auth/invites")
 async def create_invite(
+    payload: AuthInviteCreateRequest,
     current_user: dict = Depends(get_current_admin),
 ) -> ApiResponse[dict]:
     """生成一枚一次性注册邀请码（管理员）。"""
-    entry = await invite_service.create_invite(Database.get(), created_by=current_user["username"])
+    entry = await invite_service.create_invite(
+        Database.get(), created_by=current_user["username"], note=payload.note
+    )
     return ApiResponse(data=entry)
 
 

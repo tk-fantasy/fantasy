@@ -24,6 +24,11 @@ class AuthLoginRequest(BaseModel):
     password: str = Field(min_length=1)
 
 
+class AuthInviteCreateRequest(BaseModel):
+    """POST /auth/invites 请求体。"""
+    note: str = Field(default="", max_length=32)
+
+
 
 # --------------- Home Info ---------------
 
