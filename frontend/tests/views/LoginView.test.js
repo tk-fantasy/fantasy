@@ -1,12 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { mount, flushPromises } from '@vue/test-utils'
 import LoginView from '../../src/views/LoginView.vue'
 
 // Mock vue-router
 const mockPush = vi.fn()
+const mockRoute = { query: {} }
 vi.mock('vue-router', () => ({
   useRouter: () => ({ push: mockPush }),
-  useRoute: () => ({ query: {} })
+  useRoute: () => mockRoute
 }))
 
 // Mock useAuth
@@ -22,6 +23,16 @@ vi.mock('../../src/composables/useAuth', () => ({
 describe('LoginView', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockRoute.query = {}
+  })
+
+  it('深链 ?code= 自动切注册模式并填邀请码', async () => {
+    mockRoute.query = { mode: 'register', code: 'AB3D-EF7H' }
+    const wrapper = mount(LoginView)
+    await flushPromises() // onMounted 改 ref 后 DOM 更新在微任务里
+    expect(wrapper.find('.title').text()).toBe('创建账户')
+    const inputs = wrapper.findAll('input[type="text"]')
+    expect(inputs[2].element.value).toBe('AB3D-EF7H')
   })
 
   it('renders login form', () => {

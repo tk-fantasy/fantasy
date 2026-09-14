@@ -20,6 +20,12 @@ onMounted(() => {
   if (route.query.mode === 'register') {
     isRegister.value = true
   }
+  // 邀请码二维码深链（/login?mode=register&code=XXXX-XXXX）：落地即填好
+  const code = route.query.code
+  if (code) {
+    inviteCode.value = String(code).trim()
+    isRegister.value = true
+  }
 })
 
 async function handleSubmit() {
