@@ -1429,12 +1429,12 @@ class TestAuthMeRoute:
 # ===================== setup_routes =====================
 
 class TestSetupRoutes:
-    async def test_index_redirects_to_landing(self):
+    async def test_index_redirects_to_chat(self):
         from app.routes.setup_routes import index
 
         resp = await index()
         assert resp.status_code == 307
-        assert resp.headers["location"] == "/landing"
+        assert resp.headers["location"] == "/chat"
 
     async def test_favicon_serves_build_artifact(self):
         from pathlib import Path
