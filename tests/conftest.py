@@ -75,6 +75,21 @@ def _patch_config(monkeypatch, tmp_path, request):
         },
         "storage": {},
         "providers": {},
+        # 种一颗 dummy chat key：应用引导（agent 构建）要求存在可解析的 chat
+        # 模型配置，否则 _load_model_config_from_config 直接 RuntimeError。
+        # 不种的话，全量回归"本地能过、CI 挂"——前面测试文件往共享 CONFIG 里
+        # 残留的 key + 开发机 .env 的 env 兜底掩盖了这层依赖（CI 首跑即翻车）。
+        # smoke/middleware 类测试不真调 LLM，假凭证只用于让引导走通。
+        "llm_keys": [
+            {
+                "id": "test-chat-key",
+                "base_url": "https://dummy.invalid",
+                "model": "test-chat-model",
+                "type": "chat",
+                "chat_path": "/chat/completions",
+                "api_key": "sk-test-dummy-not-a-real-key",
+            },
+        ],
         "vision": {
             "rtsp_url": "rtsp://192.168.1.50:554/stream2",
             "rtsp_username": "admin",
