@@ -244,9 +244,9 @@ sequenceDiagram
 
 | 工具 | 作用 | 返回 |
 |---|---|---|
-| `automation_rule_create` | `rule_service.build_rule(text, user_id)` 解析自然语言→规则 JSON（内置设备校验+重试），**不落库**，写 pending 缓存 | `{"status":"pending_confirm","pending_id","rule":{...},"summary","expire_minutes":10}` |
+| `automation_rule_create` | `rule_service.build_rule(text, user_id)` 解析自然语言→规则 JSON（内置设备校验+重试），**不落库**，写 pending 缓存。**关键词门控**：`session.current_query` 未命中 `pending_rules.wants_rule_creation`（「规则」+创建类动词）直接拒绝——普通条件式话术按普通指令执行，只有用户明确说「创建规则」类字样才创建；命中时 prompt_service 会在系统提示注入「本轮必须走工具、别直接执行」 | `{"status":"pending_confirm","pending_id","rule":{...},"summary","expire_minutes":10}` |
 | `automation_rule_revise` | `rule_service.revise_rule(pending.rule, instruction)` 按用户反馈改 pending | 同上（新 pending JSON） |
-| `automation_rule_confirm` | pending 校验（存在/未过期）→ 轻量重校验 actions 实体存在 → `rule_registry` 落库（带 user_id） | `{"success":true,"rule_id","name","summary"}` |
+| `automation_rule_confirm` | pending 校验（存在/未过期；**pending_id 非必填**，缺省取该 session 最近一个未过期草稿）→ **摄像头绑定不变量**：`type=vision` 且未显式选过摄像头（`camera_chosen`）→ 拒绝 `camera_required`，附可选摄像头名单 → 重校验 actions 实体存在 → `rule_registry` 落库（带 user_id）。校验集中在共享的 `pending_rules.confirm_pending`，REST 路由与工具两条路都汇入，语音无法绕过 | `{"success":true,"rule_id","name","summary"}` |
 | `automation_rule_trigger` | 取规则 → `automation_service.trigger_rule(rule_id)` **跳过条件直接执行动作**（用户说"触发"就是要执行；虚拟摄像头演练 dry_run 门控保留） | `{"success","executed":[...]}` |
 | `automation_rule_list` | registry 列表（id/name/type/condition 摘要/enabled） | `{"rules":[...],"count"}` |
 | `automation_rule_delete` | 删 registry | `{"success","rule_id"}` |
@@ -258,10 +258,13 @@ sequenceDiagram
 ### 两段式确认状态机
 
 - **存储**：session 新字段 `pending_confirmations: dict[pending_id, {"kind":
-  "automation_rule", "rule": dict, "created_at": float}]`，随 `session_store` 现有
-  持久化走；**懒过期**——读取时 `created_at + 600s` 判过期，过期即删并返回
-  `tool_error("待确认规则已过期", hint="请重新描述需求，我会重新生成")`。
-- **pending_id**：`uuid4().hex[:12]`，同 session 可并存多个，LLM 用最近一个。
+  "automation_rule", "rule": dict, "created_at": float, "camera_chosen": bool}]`，
+  随 `session_store` 现有持久化走；**懒过期**——读取时 `created_at + 600s` 判过期，
+  过期即删并返回 `tool_error("待确认规则已过期", hint="请重新描述需求，我会重新生成")`。
+  `camera_chosen` 由 `pending_rules.set_pending_camera` 打标：`camera_id=""` 既可能是
+  显式选「全部摄像头（全局）」（合法）也可能是压根没选（要拦），光看 rule 区分不出。
+- **pending_id**：`uuid4().hex[:12]`，同 session 可并存多个；工具调用 **可不传**，
+  confirm/revise 取最近一个未过期草稿。
 - **评估交互**：create 返回的 JSON 由 LLM 转述为中文要点（条件/动作/设备/冷却）
   并明确问"确认创建吗？可以说『确认』或直接说要改哪里"。用户"确认"→ confirm；
   "改成…"→ revise；其他话题→ pending 自然过期，不阻塞对话。
