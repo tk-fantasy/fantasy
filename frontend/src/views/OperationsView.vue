@@ -8,6 +8,13 @@
  */
 import { ref, computed, onMounted } from 'vue'
 import { apiGet, apiPost, apiDelete } from '../utils/api'
+import QRCode from 'qrcode'
+import {
+  buildInviteRegisterLink,
+  isLoopbackHost,
+  inviteRemainMs,
+  formatRemainMs
+} from '../utils/inviteLink'
 
 const STATUS_META = {
   pass: { label: '✅ 通过', cls: 'pass' },
@@ -356,7 +363,37 @@ async function revokeInvite(code) {
 function inviteStatus(it) {
   if (it.revoked_at) return { text: '已吊销', cls: 'warn' }
   if (it.used_at) return { text: `已使用（${it.used_by || '?'}）`, cls: 'muted' }
+  const remain = inviteRemainMs(it)
+  if (remain !== null && remain <= 0) return { text: '已过期', cls: 'warn' }
+  if (remain !== null) return { text: `有效（剩 ${formatRemainMs(remain)}）`, cls: 'pass' }
   return { text: '有效', cls: 'pass' }
+}
+
+// 未用/未吊销/未过期的码才出二维码（与注册校验口径一致）
+function inviteUsable(it) {
+  const remain = inviteRemainMs(it)
+  return !it.used_at && !it.revoked_at && (remain === null || remain > 0)
+}
+
+// --------------- 邀请码二维码（扫码直达预填码的注册页） ---------------
+const qrShow = ref(false)
+const qrDataUrl = ref('')
+const qrLink = ref('')
+const qrCodeText = ref('')
+const qrLoopbackWarn = ref(false)
+
+async function showInviteQr(it) {
+  qrCodeText.value = it.code
+  qrLink.value = buildInviteRegisterLink(window.location.origin, it.code)
+  // localhost 二维码在手机上打不开（指向手机自身），提示换局域网 IP
+  qrLoopbackWarn.value = isLoopbackHost(window.location.hostname)
+  qrDataUrl.value = ''
+  try {
+    qrDataUrl.value = await QRCode.toDataURL(qrLink.value, { width: 560, margin: 2 })
+  } catch (e) {
+    qrDataUrl.value = ''
+  }
+  qrShow.value = true
 }
 
 function fmtMs(ms) {
@@ -526,6 +563,11 @@ function fmtMs(ms) {
               <td>{{ fmtMs(it.created_at) }}</td>
               <td>
                 <button
+                  v-if="inviteUsable(it)"
+                  class="btn-link"
+                  @click="showInviteQr(it)"
+                >二维码</button>
+                <button
                   v-if="!it.used_at && !it.revoked_at"
                   class="btn-link danger"
                   @click="revokeInvite(it.code)"
@@ -537,6 +579,20 @@ function fmtMs(ms) {
         <div v-else class="op-message">还没有邀请码。生成一枚，把码发给要注册的家庭成员。</div>
       </div>
     </section>
+
+    <!-- 邀请码二维码弹窗（挂在区块外，避免被表格溢出裁剪） -->
+    <div v-if="qrShow" class="modal-mask" @click.self="qrShow = false">
+      <div class="modal-card invite-qr-modal">
+        <h3 class="modal-title">扫码注册</h3>
+        <p class="invite-qr-code">{{ qrCodeText }}</p>
+        <img v-if="qrDataUrl" :src="qrDataUrl" alt="邀请码二维码" class="invite-qr-img" />
+        <p class="op-muted invite-qr-link">{{ qrLink }}</p>
+        <div v-if="qrLoopbackWarn" class="op-message error">
+          当前是 localhost 地址，手机扫码打不开。请用局域网 IP（如 http://192.168.x.x:8010）访问本页后重新打开。
+        </div>
+        <button class="btn-primary" @click="qrShow = false">关闭</button>
+      </div>
+    </div>
 
     <!-- 版本与升级 -->
     <section class="setting-section">
@@ -886,6 +942,49 @@ function fmtMs(ms) {
   height: 100%;
   background: var(--color-primary);
   transition: width 0.3s;
+}
+
+/* 邀请码二维码弹窗 */
+.modal-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.modal-card {
+  background: var(--color-surface, #fff);
+  border-radius: 12px;
+  padding: 24px;
+  text-align: center;
+  max-width: 90vw;
+}
+
+.modal-title {
+  margin: 0 0 12px;
+  font-size: var(--text-lg, 18px);
+}
+
+.invite-qr-code {
+  font-size: 1.4rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  margin: 0 0 16px;
+}
+
+.invite-qr-img {
+  width: 280px;
+  height: 280px;
+  max-width: 80vw;
+  max-height: 80vw;
+}
+
+.invite-qr-link {
+  word-break: break-all;
+  margin: 12px 0;
 }
 .upload-text { font-size: var(--text-xs); color: var(--color-text-secondary); }
 .diag-table-wrap { margin-top: var(--space-8); overflow-x: auto; }
