@@ -20,7 +20,13 @@ function handleSessionExpired() {
   window.dispatchEvent(new Event('aether:session-expired'))
   if (!loginRedirectPending) {
     loginRedirectPending = true
-    router.push('/login').finally(() => { loginRedirectPending = false })
+    // 已在登录页（含深链 /login?mode=register&code=X）时不重复跳转——
+    // 裸 push 会抹掉 query，毁掉扫码进来的邀请码/注册模式
+    if (router.currentRoute.value.path === '/login') {
+      loginRedirectPending = false
+    } else {
+      router.push('/login').finally(() => { loginRedirectPending = false })
+    }
   }
 }
 
