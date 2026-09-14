@@ -23,6 +23,7 @@ updates:
       - dependency-name: "opencv-python"
       - dependency-name: "aiosqlite"
       - dependency-name: "httpx"
+      - dependency-name: "websockets"
   - package-ecosystem: "npm"
     directory: "/frontend"
     schedule:

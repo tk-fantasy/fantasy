@@ -16,7 +16,9 @@ openai>=1.0.0,<3.0
 # （1.x→2.x 有破坏性变更）会在下次 rebuild 镜像时才爆，生产设备不可复现
 httpx==0.28.1
 markdownify>=0.13.1
-websockets>=12.0
+websockets>=12.0,<17.0
+# 上界随钉死的 uvicorn[standard]==0.34.3（其 websockets 约束 <17.0）；解除 uvicorn
+# 钉版时同步放开
 aiosqlite==0.22.1
 # 钉死：0.22.1 的 worker 线程非 daemon，tests/conftest.py 有对应回收逻辑；
 # aiosqlite 历史上小版本改线程模型，浮动约束对 7x24 设备是延迟雷
