@@ -10,6 +10,19 @@ updates:
       python-deps:
         patterns:
           - "*"
+    # 忽略 requirements.txt 里有注释说明的有意钉死项（数字栈兼容约束/
+    # 运行时语义锁定）。dependabot 不理解这些跨包约束，曾一次性把
+    # fastapi 0.115→0.141 + starlette 1.6 + numpy 2.5.3（需 py≥3.12，
+    # CI 3.11 直接装不上）打包成一个大版本迁移 PR。升级这些请走专项
+    # 分支 + 全量回归 + 镜像重建验证，不走 dependabot。
+    ignore:
+      - dependency-name: "fastapi"
+      - dependency-name: "starlette"
+      - dependency-name: "uvicorn"
+      - dependency-name: "numpy"
+      - dependency-name: "opencv-python"
+      - dependency-name: "aiosqlite"
+      - dependency-name: "httpx"
   - package-ecosystem: "npm"
     directory: "/frontend"
     schedule:
