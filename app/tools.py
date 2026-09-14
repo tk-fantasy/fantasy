@@ -14,7 +14,6 @@ from typing import Any
 from uuid import uuid4
 
 from .mcp.local_mcp_servers import (
-    create_verify_action_handler,
     register_local_tools,
 )
 from .mcp.mcp_client_manager import MCPClientManager, MCPTool
@@ -270,8 +269,7 @@ def register_all_tools(deps: ToolDeps) -> None:
     _register_ha_get_device_manual(deps)
     # 4. HA 服务调用
     _register_ha_call_service(deps)
-    # 5. 动作验证
-    _register_verify_action(deps)
+    # 动作正确性由 call_service 的「每控必核」回读在代码层保证，不再暴露 verify 工具
     # 7. 定时任务管理（让 agent 能对话建/查/删定时任务）
     _register_scheduled_task_tools(deps)
     # 8. 场景模式（一键切换一组设备到预设状态）
@@ -688,8 +686,7 @@ def _register_ha_call_service(deps: ToolDeps) -> None:
                     ret["verified"] = False
                     ret["note"] = (
                         f"指令已发送，但回读状态与预期不符（{detail}）。"
-                        "设备可能未生效或仍在响应中：不要谎报成功，如实告知用户当前实际状态，"
-                        "必要时可调 verify_action 复核。"
+                        "设备可能未生效或仍在响应中：不要谎报成功，如实告知用户当前实际状态。"
                     )
                     logger.info("call_service 回读校验不符: %s.%s → %s（%s）",
                                 domain, service, new_state.get("state"), detail)
@@ -753,43 +750,6 @@ def _register_ha_call_service(deps: ToolDeps) -> None:
                 "data": {"type": "object"},
             },
             "required": ["domain", "service", "entity_id"],
-        },
-        handler=handler,
-    ))
-
-
-def _register_verify_action(deps: ToolDeps) -> None:
-    handler = create_verify_action_handler(deps.ha_client_ref)
-    deps.mcp_client_manager.register_tool(MCPTool(
-        client_id="local",
-        tool_name="verify_action",
-        description=(
-            "只读校验工具：查询 Home Assistant 当前实时状态，对比某次 call_service 之后设备是否真的变了。"
-            "本工具只读，绝不执行任何控制操作，不能用来开/关/调节设备——执行控制必须用 call_service。"
-            "典型用法：先 call_service 设温度，再用本工具查证温度是否已变。"
-            "禁止用本工具去'设置'任何值：想改设备状态只能 call_service。"
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "entity_id": {
-                    "type": "string",
-                    "description": "要验证的设备 ID",
-                },
-                "service": {
-                    "type": "string",
-                    "description": "刚才调用的服务名",
-                },
-                "data": {
-                    "type": "object",
-                    "description": "传给服务的参数",
-                },
-                "action_description": {
-                    "type": "string",
-                    "description": "刚才执行的操作的简要描述",
-                },
-            },
-            "required": ["entity_id"],
         },
         handler=handler,
     ))
@@ -1024,27 +984,6 @@ def _register_scene_tools(deps: ToolDeps) -> None:
         return {"success": ok > 0,
                 "summary": f"场景「{result.get('scene')}」部分应用（{ok}/{total} 成功），失败: {', '.join(failed)}"}
 
-    async def create_handler(parameters: dict, session) -> dict:
-        svc = _svc()
-        if svc is None:
-            return tool_error("场景服务未就绪", hint="场景服务尚未初始化，请如实告知用户稍后再试。")
-        name = str(parameters.get("name", "")).strip()
-        if not name:
-            return tool_error("name 不能为空",
-                              hint="给场景起个名字，如「观影模式」「睡眠模式」。")
-        user_id = getattr(session, "user_id", "") or ""
-        try:
-            if parameters.get("capture"):
-                scene = await svc.capture_scene(name, user_id=user_id)
-            else:
-                actions = parameters.get("actions") or []
-                scene = await svc.create_scene(name, actions, user_id=user_id)
-        except (ValueError, RuntimeError) as e:
-            return tool_error(str(e), hint="capture 与 actions 二选一：capture=true 拍当前状态，"
-                                           "或传 [{domain,service,entity_id,data}] 动作列表。")
-        return {"success": True, "scene_id": scene["id"], "name": name,
-                "actions_count": len(scene.get("actions", []))}
-
     deps.mcp_client_manager.register_tool(MCPTool(
         client_id="local",
         tool_name="scene_list",
@@ -1068,30 +1007,10 @@ def _register_scene_tools(deps: ToolDeps) -> None:
         },
         handler=apply_handler,
     ))
-    deps.mcp_client_manager.register_tool(MCPTool(
-        client_id="local",
-        tool_name="scene_create",
-        description=(
-            "【创建场景】保存一组设备状态为场景。两种方式："
-            "① capture=true：把设备当前状态拍下来存成场景（用户说'把现在的灯光存成观影模式'时用）；"
-            "② 传 actions 列表（[{domain,service,entity_id,data}]，格式同 call_service 参数）。"
-            "用户只是要控制设备时不要用本工具，直接调 call_service。"
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "name": {"type": "string", "description": "场景名（如'观影模式'）"},
-                "capture": {"type": "boolean", "description": "true=捕获当前所有设备状态"},
-                "actions": {
-                    "type": "array",
-                    "description": "动作列表（capture=false 时必填）",
-                    "items": {"type": "object"},
-                },
-            },
-            "required": ["name"],
-        },
-        handler=create_handler,
-    ))
+
+# scene_create 聊天工具已下线：对话创建场景的使用率低且与设备控制意图混淆
+# （模型经常把"开灯"误路由成建场景），场景创建收敛到 REST /api/scenes 与规则页 UI；
+# scene_service.create_scene/capture_scene 保留供 REST 使用。
 
 
 # ---------------------------------------------------------------------------
@@ -1419,9 +1338,12 @@ def _register_automation_rule_tools(deps: ToolDeps) -> None:
         client_id="local",
         tool_name="automation_rule_list",
         description=(
-            "【自动化规则列表】列出所有自动化规则（名称/类型/条件/启停/动作）。"
+            "【自动化规则列表】用户查询「自动化规则/建过的规则/规则控制什么」时必须调用本工具。"
             "每条规则的 actions 里有控制的设备 entity_id、设备名和动作描述——"
             "用户问「这条规则控制哪个设备/id 是什么」时从这里如实回答。"
+            "注意：不要用 http_request 直连 HA 的 /api/automations（会被内网防护拦截，"
+            "且 HA 自动化与本工具的规则是两套系统）；定时任务也不是自动化规则，"
+            "别用定时任务工具代替本工具回答自动化规则问题。"
         ),
         parameters={"type": "object", "properties": {}},
         handler=list_handler,

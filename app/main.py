@@ -155,10 +155,17 @@ async def _rebuild_agent() -> None:
 
     调用方必须持有 _rebuild_lock。
     """
-    from .mcp.langchain_tools import convert_all_tools
+    from .mcp.langchain_tools import mcp_to_langchain_tool
     from .agents.langgraph_agent import build_chat_agent
 
-    langchain_tools = convert_all_tools(mcp_client_manager)
+    # 联网工具（web_search/fetch_webpage）按高级设置开关过滤：注册常驻 manager，
+    # 是否暴露给模型在每次重建时决定——高级设置保存开关后触发本函数即时生效。
+    from .core.config import get_config
+    web_enabled = bool(get_config("web_search.enabled", False))
+    web_tools = {"web_search", "fetch_webpage"}
+    visible = [t for t in mcp_client_manager.list_tools()
+               if web_enabled or t.tool_name not in web_tools]
+    langchain_tools = [mcp_to_langchain_tool(t) for t in visible]
     new_agent, new_clients = build_chat_agent(tools=langchain_tools)
     # 旧客户端的回收交给 dispatcher.set_agent（它内部 close_all_agent_clients）
     global langgraph_agent

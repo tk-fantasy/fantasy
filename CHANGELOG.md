@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### 对话工具瘦身——删 http_request/verify_action/scene_create，联网工具改开关控制
+- **为什么**：22 个工具对弱模型（glm-4-flash/agnes-3.0-flash 实测）选择精度压力过大——查询自动化规则时反复绕道 `http_request` 直连 HA 内网（被 net_guard 拦截）或误查定时任务列表，通用工具的宽泛描述会"吸走"意图
+- **删 http_request**：通用 HTTP 客户端对对话模型无不可替代场景（查天气/设备/规则都有专用工具），且是内网安全面；net_guard 防线与其相关测试一并清理
+- **verify_action 沉淀为代码层**：控制正确性由 call_service 的「每控必核」回读 + validator 的断言核查在代码层保证，不再依赖模型"记得"手动复核；工具与 handler 删除
+- **删 scene_create**：对话建场景使用率低且与设备控制意图混淆（"开灯"被误路由成建场景）；场景创建收敛到 REST /api/scenes 与规则页 UI
+- **联网工具改开关**：web_search/fetch_webpage 常驻 manager，`web_search.enabled`（默认关）在 agent 重建时决定是否暴露——高级设置「网页搜索（Exa）」面板新增「启用联网工具」开关，保存即时重建 agent 生效（免重启）；未传 enabled 的保存不覆盖已有配置
+- 工具数 22 → 17（联网关）/ 19（联网开）
+
+
 #### 幻觉设备自动匹配 + 模型信息面修正（"开大门"死局根治）
 - **问题**：用户说「有人就开大门」，glm-4-flash 幻觉出 `cover.front_door`（模拟器只有 media_player/light/switch，根本没有门类设备），`build_rule` 校验重试 3 轮耗尽后仍带病返回——草稿照常生成、弹窗照常弹出，confirm 实体校验每次 400，用户点两次都被拒，规则永远建不成
 - **确定性自动匹配**：重试耗尽后 `rule_service._auto_repair_actions` 代码层兜底——按动作描述 → summary/name 依次作 query 调 `match_devices`（主控 domain 优先，sensor/binary_sensor 排除），取第一替换，同步修正 domain/service（open→turn_on、close→turn_off；真有 cover 设备则保留 open_cover），幻觉设备的 data 重置；替换明细挂 `rule.auto_corrections`

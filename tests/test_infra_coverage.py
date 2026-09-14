@@ -1746,15 +1746,19 @@ class TestMainHelpers:
         import app.mcp.langchain_tools as lt
         import app.agents.langgraph_agent as la
 
-        monkeypatch.setattr(lt, "convert_all_tools", lambda m, full_name=False: ["toolA"])
+        # 联网开关默认关：manager 里的 web 工具在 rebuild 时被过滤，不进 agent
+        monkeypatch.setattr(main, "mcp_client_manager", SimpleNamespace(
+            list_tools=lambda: [SimpleNamespace(tool_name="web_search"),
+                                SimpleNamespace(tool_name="toolB")]))
+        monkeypatch.setattr(lt, "mcp_to_langchain_tool", lambda t: f"tool:{t.tool_name}")
         monkeypatch.setattr(la, "build_chat_agent",
-                            lambda tools: ("AGENT", ("c1", "c2")))
+                            lambda tools: ("AGENT", tuple(tools)))
         set_agent = AsyncMock()
         monkeypatch.setattr(main, "dispatcher", SimpleNamespace(set_agent=set_agent))
         monkeypatch.setattr(main, "langgraph_agent", None)
         await main._rebuild_agent()
         assert main.langgraph_agent == "AGENT"
-        set_agent.assert_awaited_once_with("AGENT", tools=["toolA"], clients=("c1", "c2"))
+        set_agent.assert_awaited_once_with("AGENT", tools=["tool:toolB"], clients=("tool:toolB",))
 
     async def test_sync_ha_runtime_refs_rewires_everything(self, monkeypatch):
         import app.main as main

@@ -1253,3 +1253,69 @@ class TestReportRoutesGaps:
         exc = await _expect_error(generate_weekly_report(container=cont), 500)
         assert "生成失败" in exc.message
         assert "llm down" in exc.message
+
+
+# ---------------------------------------------------------------------------
+# 联网工具开关（web_search.enabled）：保存即重建 agent，None 不覆盖
+# ---------------------------------------------------------------------------
+
+class TestWebToolsToggle:
+    @pytest.mark.asyncio
+    async def test_enabled_change_triggers_agent_rebuild(self, monkeypatch):
+        from app.routes import advanced_routes
+        from app.schema.api_schemas import AdvancedConfigRequest, WebSearchConfig
+
+        captured: dict = {}
+        monkeypatch.setattr(advanced_routes, "update_config_section",
+                            lambda section, values: captured.update({section: values}))
+        # 旧状态 False → 新值 True：开关变化必须触发 rebuild
+        monkeypatch.setattr(advanced_routes, "get_config",
+                            lambda path, default=None: False if path == "web_search.enabled" else default)
+        rebuilt = {"count": 0}
+
+        class _FakeLock:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+
+        import app.main as main_mod
+        async def fake_rebuild():
+            rebuilt["count"] += 1
+        monkeypatch.setattr(main_mod, "_rebuild_lock", _FakeLock())
+        monkeypatch.setattr(main_mod, "_rebuild_agent", fake_rebuild)
+
+        payload = AdvancedConfigRequest(
+            web_search=WebSearchConfig(enabled=True))
+        result = await advanced_routes.set_advanced_config(
+            payload, current_user={"user_id": "u1", "is_admin": 1})
+
+        assert result.data == {"saved": True}
+        assert captured["web_search"]["enabled"] is True
+        assert rebuilt["count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_enabled_none_does_not_touch_config(self, monkeypatch):
+        from app.routes import advanced_routes
+        from app.schema.api_schemas import AdvancedConfigRequest, WebSearchConfig
+
+        captured: dict = {}
+        monkeypatch.setattr(advanced_routes, "update_config_section",
+                            lambda section, values: captured.update({section: values}))
+        rebuilt = {"count": 0}
+
+        class _FakeLock:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+
+        import app.main as main_mod
+        async def fake_rebuild():
+            rebuilt["count"] += 1
+        monkeypatch.setattr(main_mod, "_rebuild_lock", _FakeLock())
+        monkeypatch.setattr(main_mod, "_rebuild_agent", fake_rebuild)
+
+        payload = AdvancedConfigRequest(
+            web_search=WebSearchConfig(enabled=None))  # 未传开关 → 不覆盖已有配置
+        await advanced_routes.set_advanced_config(
+            payload, current_user={"user_id": "u1", "is_admin": 1})
+
+        assert "enabled" not in captured["web_search"]
+        assert rebuilt["count"] == 0

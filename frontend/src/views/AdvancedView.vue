@@ -45,6 +45,8 @@ const weatherConfig = ref({
 const webSearchConfig = ref({
   exa: { api_key: '' },
 })
+// 联网工具开关：控制 web_search/fetch_webpage 是否暴露给对话 agent（保存后即时重建生效）
+const webToolsEnabled = ref(false)
 // exa key 是否已在服务端配置（GET 不回明文，只回 has_exa_key 标志）
 const exaKeyConfigured = ref(false)
 
@@ -170,6 +172,7 @@ async function loadAll() {
         webSearchConfig.value = { ...webSearchConfig.value, ...data.web_search }
         // 后端已脱敏不回 api_key 明文：单独记"是否已配置"标志供卡片状态与输入提示
         exaKeyConfigured.value = !!data.web_search.exa?.has_exa_key
+        webToolsEnabled.value = !!data.web_search?.enabled
       }
       if (data.vision) visionConfig.value = { ...visionConfig.value, ...data.vision }
     }
@@ -277,7 +280,9 @@ async function saveExa() {
   exaSaved.value = false
   exaProbeResult.value = null
   try {
-    const data = await apiPost('/api/advanced/config', { web_search: webSearchConfig.value })
+    const data = await apiPost('/api/advanced/config', {
+      web_search: { ...webSearchConfig.value, enabled: webToolsEnabled.value },
+    })
     if (data && data.saved === false) {
       exaProbeResult.value = { status: 'fail', reason: data.reason || 'error', detail: data.detail || '' }
       return
@@ -862,6 +867,13 @@ onUnmounted(() => {
               <template v-else>❌ 连接失败：{{ exaProbeResult.detail || '未知错误' }}</template>
             </span>
           </div>
+        </div>
+        <div class="setting-row">
+          <label class="setting-label">
+            <span class="label-text">启用联网工具</span>
+            <span class="label-desc">开启后对话助手才拥有「联网搜索 / 网页抓取」两个工具；保存立即生效</span>
+          </label>
+          <BaseToggle v-model="webToolsEnabled" />
         </div>
         <div class="modal-save-bar">
           <button class="btn-primary" :class="{ saved: exaSaved }" @click="saveExa" :disabled="exaSaving">

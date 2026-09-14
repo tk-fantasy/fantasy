@@ -39,7 +39,10 @@ async def get_advanced_config() -> ApiResponse[dict]:
     vision_cfg["has_rtsp_password"] = bool(pwd_env and os.getenv(pwd_env))
     exa_key = str(get_config("web_search.exa.api_key", "") or "")
     return ApiResponse(data={
-        "web_search": {"exa": {"api_key": "", "has_exa_key": bool(exa_key)}},
+        "web_search": {
+            "exa": {"api_key": "", "has_exa_key": bool(exa_key)},
+            "enabled": bool(get_config("web_search.enabled", False)),
+        },
         "vision": vision_cfg,
         "rag": get_config("rag", {}),
     })
@@ -60,6 +63,9 @@ async def set_advanced_config(
     # ---- Exa ----
     if payload.web_search is not None:
         exa_data = payload.web_search.model_dump()
+        # enabled=None 表示本次不修改：剔除后再落盘，未传时不能覆盖已有配置
+        new_enabled = exa_data.pop("enabled", None)
+        old_enabled = bool(get_config("web_search.enabled", False))
         new_api_key = (exa_data.get("exa", {}).get("api_key", "") or "").strip()
         # 只有用户填了新 key 才 probe（留空 = 不修改，跳过）
         if new_api_key:
@@ -76,8 +82,17 @@ async def set_advanced_config(
             old_key = str(get_config("web_search.exa.api_key", "") or "")
             if old_key:
                 exa_data.setdefault("exa", {})["api_key"] = old_key
+        if new_enabled is not None:
+            exa_data["enabled"] = new_enabled
         update_config_section("web_search", exa_data)
         logger.info("Web search config updated: api_key_set=%s", bool(new_api_key))
+
+        # 联网工具开关变化 → agent 工具集变化，重建 agent 即时生效（免重启）
+        if new_enabled is not None and new_enabled != old_enabled:
+            from ..main import _rebuild_agent, _rebuild_lock
+            async with _rebuild_lock:
+                await _rebuild_agent()
+            logger.info("Web tools toggled to %s, agent rebuilt", new_enabled)
 
     # ---- Vision ----
     # 注意:此处只存视觉处理参数(分辨率/压缩/运动检测等)。RTSP 源配置

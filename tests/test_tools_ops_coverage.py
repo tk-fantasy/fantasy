@@ -117,10 +117,9 @@ class TestRegisterAllTools:
         register_all_tools(deps)
         names = {"local___vision_chat", "ha_devices___get_entities",
                  "ha_devices___get_device_manual", "ha_devices___call_service",
-                 "local___verify_action",
                  "local___scheduled_task_create", "local___scheduled_task_list",
                  "local___scheduled_task_delete", "local___scene_list",
-                 "local___scene_apply", "local___scene_create"}
+                 "local___scene_apply"}
         for n in names:
             assert mgr.get_tool(n) is not None, n
 
@@ -662,45 +661,13 @@ class TestSceneTools:
         assert "场景不存在" in ret["error"]
 
     @pytest.mark.asyncio
-    async def test_create_with_actions_and_capture(self, monkeypatch):
-        svc = self._svc()
-        self._patch(monkeypatch, svc)
-        mgr = _make_mgr()
-        from app.tools import _register_scene_tools
-        _register_scene_tools(_deps(mgr))
-        tool = mgr.get_tool("local___scene_create")
-        ret = await tool.handler({"name": "观影", "actions": [{"domain": "light"}]},
-                                 SimpleNamespace(user_id="u1"))
-        svc.create_scene.assert_awaited_with("观影", [{"domain": "light"}], user_id="u1")
-        assert ret == {"success": True, "scene_id": "s9", "name": "观影", "actions_count": 1}
-        ret = await tool.handler({"name": "抓拍", "capture": True},
-                                 SimpleNamespace(user_id="u1"))
-        svc.capture_scene.assert_awaited_with("抓拍", user_id="u1")
-        assert ret["scene_id"] == "s8" and ret["actions_count"] == 2
-
-    @pytest.mark.asyncio
-    async def test_create_validation_errors(self, monkeypatch):
-        svc = self._svc()
-        self._patch(monkeypatch, svc)
-        mgr = _make_mgr()
-        from app.tools import _register_scene_tools
-        _register_scene_tools(_deps(mgr))
-        tool = mgr.get_tool("local___scene_create")
-        ret = await tool.handler({"name": ""}, None)
-        assert "name 不能为空" in ret["error"]
-        svc.create_scene = AsyncMock(side_effect=ValueError("actions 不能为空"))
-        ret = await tool.handler({"name": "x", "actions": []}, None)
-        assert "actions 不能为空" in ret["error"]
-
-    @pytest.mark.asyncio
     async def test_scene_service_not_ready(self, monkeypatch):
         import app.container as container_mod
         monkeypatch.setattr(container_mod, "get_container", lambda: object())
         mgr = _make_mgr()
         from app.tools import _register_scene_tools
         _register_scene_tools(_deps(mgr))
-        for name, params in (("local___scene_list", {}), ("local___scene_apply", {}),
-                             ("local___scene_create", {"name": "x"})):
+        for name, params in (("local___scene_list", {}), ("local___scene_apply", {})):
             ret = await mgr.get_tool(name).handler(params, None)
             assert "场景服务未就绪" in ret["error"]
 

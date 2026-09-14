@@ -14,7 +14,6 @@ from app.mcp.web_tools import (
     _extract_markdown,
     _convert,
     fetch_webpage_handler,
-    http_request_handler,
 )
 
 
@@ -296,37 +295,3 @@ class TestFetchWebpageFormat:
                 assert "image/png" in result["error"]
 
 
-class TestHttpRequestHandler:
-    @pytest.mark.asyncio
-    async def test_missing_url(self):
-        result = await http_request_handler({}, None)
-        assert "error" in result
-
-    @pytest.mark.asyncio
-    async def test_invalid_method(self):
-        with patch("app.mcp.web_tools._validate_url", return_value=None):
-            result = await http_request_handler({"url": "http://example.com", "method": "INVALID"}, None)
-            assert "error" in result
-            assert "不支持" in result["error"]
-
-    @pytest.mark.asyncio
-    async def test_ssrf_blocked(self):
-        with patch("app.mcp.web_tools._validate_url", return_value="出于安全考虑"):
-            result = await http_request_handler({"url": "http://internal.server"}, None)
-            assert "error" in result
-
-    @pytest.mark.asyncio
-    async def test_default_method_is_get(self):
-        with patch("app.mcp.web_tools._validate_url", return_value=None):
-            with patch("app.mcp.web_tools._get_http_client") as mock_client:
-                mock_response = MagicMock()
-                mock_response.status_code = 200
-                mock_response.content = b'{"key": "value"}'
-                mock_response.encoding = "utf-8"
-                mock_response.headers = {"Content-Type": "application/json"}
-                mock_response.raise_for_status = MagicMock()
-                mock_client.return_value.request = AsyncMock(return_value=mock_response)
-
-                result = await http_request_handler({"url": "http://api.example.com"}, None)
-                call_args = mock_client.return_value.request.call_args
-                assert call_args[0][0] == "GET"

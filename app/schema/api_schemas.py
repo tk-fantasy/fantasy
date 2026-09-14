@@ -148,6 +148,9 @@ class ExaConfig(BaseModel):
 class WebSearchConfig(BaseModel):
     """网页搜索配置段（对应 config.json 的 web_search）。"""
     exa: ExaConfig = ExaConfig()
+    # 联网工具（web_search/fetch_webpage）是否暴露给对话 agent。None=本次不修改，
+    # 路由层保存前剔除——未传时不能覆盖已有配置。
+    enabled: bool | None = None
 
 
 class VisionConfig(BaseModel):
