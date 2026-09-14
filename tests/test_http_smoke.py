@@ -29,9 +29,31 @@ def client():
     join 卡死。该问题已在 rag_service._embed_batch 内修复（投递前验循环活性
     + result 带超时），故这里可以安全使用上下文管理器。
     """
-    import app.main as m
-    with TestClient(m.app) as c:
-        yield c
+    import app.core.config as cfg
+
+    # 模块级 fixture 先于 conftest 的函数级 CONFIG 补丁执行，此时代码读到
+    # 的是未打补丁的全局 CONFIG：本地靠真实 config.json/.env 侥幸通过，
+    # CI 干净环境（两者都没有）在 lifespan 的 agent 构建处直接 RuntimeError。
+    # 补一颗 dummy chat key 让引导走通（smoke 测试不真调 LLM），退出恢复。
+    original = cfg.CONFIG
+    seeded = dict(original)
+    seeded["llm_keys"] = [
+        {
+            "id": "smoke-chat-key",
+            "base_url": "https://dummy.invalid",
+            "model": "test-chat-model",
+            "type": "chat",
+            "chat_path": "/chat/completions",
+            "api_key": "sk-test-dummy-not-a-real-key",
+        },
+    ]
+    cfg.CONFIG = seeded
+    try:
+        import app.main as m
+        with TestClient(m.app) as c:
+            yield c
+    finally:
+        cfg.CONFIG = original
 
 
 def _auth_header() -> dict[str, str]:
