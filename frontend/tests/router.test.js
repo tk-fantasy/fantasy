@@ -67,15 +67,15 @@ describe('Router Guards', () => {
     expect(mockNext).toHaveBeenCalledWith()
   })
 
-  it('redirects to landing when authenticated user visits login', async () => {
+  it('redirects to chat when authenticated user visits login', async () => {
     mockIsAuthenticated.value = true
     const loginTo = { name: 'Login', fullPath: '/login' }
-    
+
     await import('../src/router/index.js')
     const beforeEach = global.__routerBeforeEach
-    
+
     beforeEach(loginTo, mockFrom, mockNext)
-    
-    expect(mockNext).toHaveBeenCalledWith('/landing')
+
+    expect(mockNext).toHaveBeenCalledWith('/chat')
   })
 })

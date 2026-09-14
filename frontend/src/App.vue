@@ -6,10 +6,9 @@ import WeatherWidget from './components/WeatherWidget.vue'
 import { LS_THEME } from './utils/constants'
 
 const route = useRoute()
-const isLanding = computed(() => route.name === 'Landing')
-// 过渡页（landing/loading/login/setup）不挂载侧栏与天气组件，
+// 过渡页（loading/login/setup）不挂载侧栏与天气组件，
 // 避免它们在认证确认前就发起 /api/* 请求造成 401 风暴
-const CHROME_HIDDEN_ROUTES = ['Landing', 'Loading', 'Login', 'Setup']
+const CHROME_HIDDEN_ROUTES = ['Loading', 'Login', 'Setup']
 const showChrome = computed(() => !CHROME_HIDDEN_ROUTES.includes(route.name))
 const hideWeather = computed(() => !showChrome.value || route.name === 'KGraph')
 
@@ -20,7 +19,7 @@ if (saved === 'light') {
 </script>
 
 <template>
-  <div class="app-layout" :class="{ landing: isLanding }">
+  <div class="app-layout">
     <SidebarNav v-if="showChrome" />
     <main class="main-content">
       <WeatherWidget v-if="!hideWeather" />
@@ -187,20 +186,6 @@ if (saved === 'light') {
   66% {
     background-position: 20% 15%, 45% 55%, 70% 45%, 60% 35%, 20% 50%;
   }
-}
-
-.app-layout.landing {
-  background: var(--color-bg);
-}
-
-.app-layout.landing .main-content {
-  margin-left: 0;
-  background: var(--color-bg);
-}
-
-.app-layout.landing .main-content::before,
-.app-layout.landing .main-content::after {
-  display: none;
 }
 
 /* 页面切换过渡：淡入淡出 + 轻微上移 */

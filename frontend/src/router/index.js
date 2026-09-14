@@ -2,17 +2,12 @@ import { createRouter, createWebHistory } from 'vue-router'
 import { useAuth } from '../composables/useAuth'
 
 const routes = [
-  { path: '/', redirect: '/landing' },
+  { path: '/', redirect: '/chat' },
   {
     path: '/login',
     name: 'Login',
     component: () => import('../views/LoginView.vue'),
     meta: { public: true },
-  },
-  {
-    path: '/landing',
-    name: 'Landing',
-    component: () => import('../views/LandingView.vue'),
   },
   {
     path: '/loading',
@@ -133,7 +128,7 @@ router.beforeEach((to, from, next) => {
   if (publicRoutes.includes(to.name)) {
     // 已登录用户访问登录页，跳转到首页
     if (isAuthenticated.value && to.name === 'Login') {
-      return next('/landing')
+      return next('/chat')
     }
     return next()
   }
@@ -146,7 +141,7 @@ router.beforeEach((to, from, next) => {
   // 已登录但后端尚未就绪：强制走 Loading 轮询就绪后再放行，
   // 避免业务组件在后端 startup 空窗期发 /api/* 触发 502。
   // Loading 自身、Setup 等不需此后端就绪（Loading 就是来确认就绪的）。
-  if (!backendReady && !['Loading', 'Setup', 'Landing'].includes(to.name)) {
+  if (!backendReady && !['Loading', 'Setup'].includes(to.name)) {
     return next({ name: 'Loading', query: { redirect: to.fullPath } })
   }
 

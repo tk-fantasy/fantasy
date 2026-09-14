@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **邀请码 24h 过期**（`invite_service.py`）：签发后 24 小时未用自动失效，兜住码泄露长期潜伏；过期与无效同一句报错维持无侧信道；存量无 `expires_at` 的码视为永不过期。设计文档：`docs/superpowers/specs/2026-09-14-invite-qr-design.md`
 - **修复深链被会话过期裸跳抹除**（`main.js`）：启动期 401 刷新失败时原逻辑无条件 `router.push('/login')`，会把深链 query 整个抹掉——扫码深链的目标设备恰是无会话设备，必中。已在登录页时跳过该跳转，保住 `?mode=register&code=`
 
+### Removed
+
+#### Landing 落地页及其背景视频
+- 自用家庭系统无营销价值，且每次冷启动多一步「点击进入」；一并删除 `public/1_nowatermark_120fps.mp4`（4.4MB）减小产物体积。`/` 改为直达 `/chat`（未登录由守卫导到 `/login`），已登录访问 `/login` 的落点从 `/landing` 改为 `/chat`。
+
 ### Fixed
 
 #### 测试套件首次在 Linux CI 全绿（7 处 Windows 耦合 + CI 环境假设清除）
