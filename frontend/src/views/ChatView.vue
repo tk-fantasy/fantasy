@@ -2,17 +2,18 @@
 import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { getChatSessionId, setChatSessionId, clearChatSession } from '../utils/storage'
-import { toolIcon, summarizeToolCall, summarizeToolResult, parseToolResult } from '../utils/toolNames'
+import { toolIcon, summarizeToolCall, summarizeToolResult, parseToolResult, shortToolName } from '../utils/toolNames'
 import { useVoiceInput } from '../composables/useVoiceInput'
 import { useCamera } from '../composables/useCamera'
 import { useLlmStatus, ROLE_LABELS } from '../composables/useLlmStatus'
 import { usePtz } from '../composables/usePtz'
 import { useCameraPreview } from '../composables/useCameraPreview'
-import { useGreeting } from '../composables/useGreeting'
 import { useAuth } from '../composables/useAuth'
 import { apiGet } from '../utils/api'
 import PluginSlot from '../components/integration/PluginSlot.vue'
 import CameraSwitcher from '../components/CameraSwitcher.vue'
+import ReviseChatModal from '../components/ReviseChatModal.vue'
+import DeviceSelectModal from '../components/DeviceSelectModal.vue'
 
 const router = useRouter()
 
@@ -74,10 +75,24 @@ let currentStreamingMsg = null
 let ws = null
 let reconnectTimer = null
 
+// ============ 待确认规则弹窗 ============
+// automation_rule_create 只解析不落库，返回 pending_confirm 草稿。网页端在这里
+// 接住它，弹确认框让用户点一下直接落库 —— 否则草稿 10 分钟后过期，规则永远建不成。
+// pendingRuleDraft 先存着，等本轮 Dialog.Finish 才弹（见 openPendingRuleModal）。
+const pendingRuleDraft = ref(null)   // { pendingId, rule }
+const showRuleConfirm = ref(false)
+
+// ============ 设备消歧弹窗 ============
+// call_service 的消歧闸门判定目标设备有歧义（ambiguous）或设备不存在
+// （category_miss）时不执行、也不让模型猜，返回 status="need_selection" + 候选。
+// 这里接住它，弹框让用户勾选后直接执行（草稿里存着模型已解析好的动作）。
+// 同样等本轮 Dialog.Finish 才弹，理由见 openDeviceSelectModal 的注释。
+const pendingSelection = ref(null)   // { pendingId, query, reason, service, candidates }
+const showDeviceSelect = ref(false)
+
 const { user } = useAuth()
 // 当前用户名：聊天会话按用户命名空间隔离（见 utils/storage.js），组件生命周期内稳定
 const currentUsername = () => user.value?.username
-const { showGreeting, greetingText } = useGreeting()
 
 // Slash command autocomplete
 const showSlashMenu = ref(false)
@@ -221,6 +236,8 @@ function handleInstruction(inst) {
         response: payload.tool_response,
         error: payload.error_message,
       })
+      capturePendingRule(payload)
+      capturePendingSelection(payload)
       break
 
     case 'Template.ToastStream': {
@@ -261,8 +278,155 @@ function handleInstruction(inst) {
         scrollToBottom()
       }
       finalizeStreaming()
+      openPendingRuleModal()
+      openDeviceSelectModal()
       break
   }
+}
+
+// ============ 待确认规则弹窗 ============
+
+/**
+ * 从工具结果里认出 pending_confirm 草稿。
+ *
+ * tool_response.result 是 **JSON 字符串**（LangChain ToolMessage 只能是字符串），
+ * 所以必须走 parseToolResult，不能直接读 .status。
+ * revise 也返回 pending_confirm（同一个 pending_id、规则已更新），一并接住，
+ * 这样用户在聊天里改完，弹窗里的摘要不会停在旧版本。
+ */
+function capturePendingRule(payload) {
+  if (!payload?.success) return
+  const name = shortToolName(payload.tool_name)
+  if (name !== 'automation_rule_create' && name !== 'automation_rule_revise') return
+  const data = parseToolResult(payload.tool_response)
+  if (data?.status !== 'pending_confirm' || !data.pending_id) return
+  pendingRuleDraft.value = { pendingId: data.pending_id, rule: data.rule || {} }
+}
+
+/**
+ * 轮末才弹确认框 —— 这是硬约束，不是体验取舍。
+ *
+ * dispatcher 在**轮末**才把 user/assistant 消息 append 进 session.model_messages
+ * （app/agents/dispatcher.py）。而 REST 确认端点会往同一个列表追加一条
+ * 「（我已通过界面确认…）」，好让下一轮 LLM 知道规则已建。若在轮中就弹框、
+ * 用户手快点了确认，这条确认会排在原始请求**之前**，模型下一轮读到的是乱序历史。
+ * Dialog.Finish 在 append 之后才发，等到它就保证了顺序。
+ */
+function openPendingRuleModal() {
+  if (!pendingRuleDraft.value || showRuleConfirm.value) return
+  // 懒加载摄像头列表：ChatView 挂载时并不拉 /api/cameras（只有开摄像头预览才拉），
+  // 不补这一下，弹窗的选择器就只剩「全部摄像头」一项，视觉规则没法绑具体某路。
+  if (!cameras.value.length) loadCameras()
+  showRuleConfirm.value = true
+}
+
+function onRuleConfirmed(saved) {
+  showRuleConfirm.value = false
+  pendingRuleDraft.value = null
+  messages.value.push({
+    role: 'system',
+    content: `✅ 规则已创建：${saved?.name || ''}${saved?.summary ? ` — ${saved.summary}` : ''}`,
+  })
+  scrollToBottom()
+}
+
+function onRuleCancelled(name) {
+  showRuleConfirm.value = false
+  pendingRuleDraft.value = null
+  messages.value.push({ role: 'system', content: `已取消创建规则${name ? `：${name}` : ''}` })
+  scrollToBottom()
+}
+
+function onRuleExpired(message) {
+  showRuleConfirm.value = false
+  pendingRuleDraft.value = null
+  messages.value.push({
+    role: 'system',
+    content: `⚠️ ${message}，请重新说一遍需求。`,
+  })
+  scrollToBottom()
+}
+
+function onRuleModalClose() {
+  // 只关弹窗、不动后端草稿：TTL 内用户仍可在聊天里说「确认」走口头路径。
+  // 前端触发器一并清掉，避免下一轮又自动弹出来烦人。
+  showRuleConfirm.value = false
+  pendingRuleDraft.value = null
+}
+
+// ============ 设备消歧弹窗 ============
+
+/**
+ * 从工具结果里认出 need_selection（消歧闸门要求用户挑设备）。
+ *
+ * 与 capturePendingRule 同构：tool_response.result 是 **JSON 字符串**，必须走
+ * parseToolResult。工具短名是 `call_service`（全名 ha_devices___call_service，
+ * shortToolName 按 ___ 切分取后半）。
+ *
+ * need_selection 刻意是 **success 形状**（返回体不含 "error" 键）：带 error 会被
+ * langchain_tools 加 "Error:" 前缀 → langgraph 判 is_error → dispatcher 触发失败
+ * 重试轮，模型会被逼着自己再猜一个实体。所以这里同样要求 payload.success 为真。
+ */
+function capturePendingSelection(payload) {
+  if (!payload?.success) return
+  if (shortToolName(payload.tool_name) !== 'call_service') return
+  const data = parseToolResult(payload.tool_response)
+  if (data?.status !== 'need_selection' || !data.pending_id) return
+  pendingSelection.value = {
+    pendingId: data.pending_id,
+    query: data.query || '',
+    reason: data.reason || 'ambiguous',
+    service: data.action?.service || '',
+    candidates: data.candidates || [],
+  }
+}
+
+/**
+ * 轮末才弹 —— 与 openPendingRuleModal 是同一条硬约束，不是体验取舍：
+ * dispatcher 在**轮末**才把 user/assistant 消息 append 进 session.model_messages，
+ * 而 /api/ha/pending/{id}/select 会往同一个列表追加「（我已通过界面选择…）」。
+ * 轮中弹框、用户手快点了确认，这条会排在原始请求**之前**，模型下一轮读到乱序历史。
+ */
+function openDeviceSelectModal() {
+  if (!pendingSelection.value || showDeviceSelect.value) return
+  showDeviceSelect.value = true
+}
+
+function onSelectionConfirmed(data) {
+  showDeviceSelect.value = false
+  pendingSelection.value = null
+  const names = (data?.names || []).join('、')
+  messages.value.push({
+    role: 'system',
+    content: `✅ 已执行：${names || (data?.entity_ids || []).join('、')}`,
+  })
+  scrollToBottom()
+}
+
+function onSelectionCancelled() {
+  showDeviceSelect.value = false
+  pendingSelection.value = null
+  messages.value.push({ role: 'system', content: '已取消，没有操作任何设备' })
+  scrollToBottom()
+}
+
+function onSelectionExpired(message) {
+  showDeviceSelect.value = false
+  pendingSelection.value = null
+  // 后端 _SELECTION_GONE 自带「请重新说一遍指令」，去重避免同一句说两遍
+  const hint = '请重新说一遍指令'
+  const body = String(message || '').includes(hint)
+    ? `${message}。`
+    : `${message}，${hint}。`
+  messages.value.push({ role: 'system', content: `⚠️ ${body}` })
+  scrollToBottom()
+}
+
+function onSelectionModalClose() {
+  // 只关弹窗、不动后端草稿：TTL 内用户仍可在聊天里直接说设备名走口头路径
+  // （语音渠道就是这么用的）。前端触发器一并清掉，避免下一轮又自动弹出来烦人。
+  showDeviceSelect.value = false
+  pendingSelection.value = null
 }
 
 function addToolCall(tc) {
@@ -410,7 +574,9 @@ function sendMessage() {
 
   // Check slash commands
   if (text.startsWith('/')) {
-    const cmd = SLASH_COMMANDS.find(c => c.cmd === text)
+    // 与自动补全同源（availableSlashCommands）：/operations 仅管理员可见，
+    // 发送路径若查未过滤的原表，普通成员手输 /operations 仍会导航过去
+    const cmd = availableSlashCommands.value.find(c => c.cmd === text)
     if (cmd) {
       executeSlashCommand(cmd)
       inputText.value = ''
@@ -423,6 +589,9 @@ function sendMessage() {
   inputText.value = ''
   pendingToolCalls.value = []
   currentStreamingMsg = null
+  // 新一轮开始：丢掉上一轮没处理的草稿触发器，别让它在这轮末尾突然弹出来
+  pendingRuleDraft.value = null
+  pendingSelection.value = null
 
   // Send via WebSocket
   if (ws && ws.readyState === WebSocket.OPEN) {
@@ -658,13 +827,6 @@ onUnmounted(() => {
 
     <!-- Messages -->
     <div class="chat-messages">
-      <!-- Greeting Overlay -->
-      <Transition name="greeting-fade">
-        <div v-if="showGreeting" class="greeting-overlay">
-          <div class="greeting-text">{{ greetingText }}</div>
-        </div>
-      </Transition>
-
       <div v-if="!messages.length" class="empty-state">
         <div class="empty-icon">&#128172;</div>
         <p>开始对话吧</p>
@@ -911,6 +1073,37 @@ onUnmounted(() => {
         </div>
       </Transition>
     </Teleport>
+
+    <!-- 待确认规则弹窗：聊天里解析出的草稿，点确认直接落库（组件自带 Teleport）。
+         cameras 供视觉规则选绑定；弹窗自己按 rule.type 判断要不要显示选择器 -->
+    <ReviseChatModal
+      v-if="showRuleConfirm && pendingRuleDraft"
+      kind="rule"
+      :initial="pendingRuleDraft.rule"
+      :pending-id="pendingRuleDraft.pendingId"
+      :session-id="sessionId || ''"
+      :cameras="cameras"
+      @confirmed="onRuleConfirmed"
+      @cancelled="onRuleCancelled"
+      @expired="onRuleExpired"
+      @close="onRuleModalClose"
+    />
+
+    <!-- 设备消歧弹窗：指令匹配到多个设备（或设备名不存在）时让用户勾选。
+         确认走 REST 直接执行草稿里存好的动作，不再回模型 -->
+    <DeviceSelectModal
+      v-if="showDeviceSelect && pendingSelection"
+      :pending-id="pendingSelection.pendingId"
+      :session-id="sessionId || ''"
+      :query="pendingSelection.query"
+      :reason="pendingSelection.reason"
+      :service="pendingSelection.service"
+      :candidates="pendingSelection.candidates"
+      @confirmed="onSelectionConfirmed"
+      @cancelled="onSelectionCancelled"
+      @expired="onSelectionExpired"
+      @close="onSelectionModalClose"
+    />
   </div>
 </template>
 
@@ -979,51 +1172,6 @@ onUnmounted(() => {
   gap: var(--space-6);
   padding: var(--space-8) 0;
   position: relative;
-}
-
-/* Greeting Overlay */
-.greeting-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 1000;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--overlay-bg);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  pointer-events: none;
-}
-
-.greeting-text {
-  font-size: 48px;
-  font-weight: 600;
-  color: #fff;
-  text-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
-  white-space: nowrap;
-  animation: greetingPulse 1.5s ease-in-out;
-}
-
-@keyframes greetingPulse {
-  0% { transform: scale(0.8); opacity: 0; }
-  50% { transform: scale(1.05); opacity: 1; }
-  100% { transform: scale(1); opacity: 1; }
-}
-
-.greeting-fade-enter-active {
-  transition: opacity 0.4s ease-out;
-}
-
-.greeting-fade-leave-active {
-  transition: opacity 0.8s ease-out;
-}
-
-.greeting-fade-enter-from,
-.greeting-fade-leave-to {
-  opacity: 0;
 }
 
 .empty-icon {

@@ -13,6 +13,9 @@ class CapabilityType(str, Enum):
     # 进程内能力：宿主 import 插件的 adapters.py 注册行为（无子进程）。
     # 见 app/agents/model_family_adapters.py 的发现与加载逻辑。
     MODEL_ADAPTER = "model_adapter"
+    # 子进程插件向 LLM agent 注入工具（tools.list 拉定义 / tools.call 执行）。
+    # 见 plugin_base.ToolDefinition 与 main._sync_plugin_agent_tools 装配链路。
+    AGENT_TOOLS = "agent_tools"
 
 
 # 需要 Supervisor 子进程宿主的能力类型。
@@ -20,6 +23,7 @@ class CapabilityType(str, Enum):
 PROCESS_CAPABILITIES = frozenset({
     CapabilityType.OUTPUT_SINK,
     CapabilityType.INBOUND_ROUTER,
+    CapabilityType.AGENT_TOOLS,
 })
 
 
@@ -61,7 +65,8 @@ class Manifest(BaseModel):
     capabilities: list[Capability] = Field(default_factory=list)
     # 反向 RPC（方向 2）权限白名单：插件只能调声明了权限的宿主能力。
     # 支持值: "ha"（ha.call_service/get_states/get_devices_grouped）、
-    #         "llm"（llm.chat）、"broadcast"（sink.broadcast）。HostMethodRegistry 校验。
+    #         "llm"（llm.chat）、"broadcast"（sink.broadcast）、
+    #         "mode"（mode.set/mode.get）。HostMethodRegistry 校验。
     permissions: list[str] = Field(default_factory=list)
     resources: dict[str, Any] = Field(default_factory=dict)
     # 声明需要的凭证类型（宿主统一注入，解耦具体插件名）

@@ -9,7 +9,7 @@ from ..core.api_models import ApiResponse
 from ..core.config import get_config, update_config_section
 from ..schema.api_schemas import WeatherConfigRequest
 from ..services.config_probes import probe_weather
-from ..services.weather_service import get_weather, ip_locate, city_lookup, get_weather_indices
+from ..services.weather_service import get_weather, city_lookup, get_weather_indices
 
 logger = logging.getLogger(__name__)
 
@@ -22,13 +22,6 @@ async def weather(
 ) -> ApiResponse[dict]:
     """获取天气信息（后端代理，带 15 分钟缓存）。"""
     data = await get_weather(location)
-    return ApiResponse(data=data)
-
-
-@router.get("/weather/locate")
-async def weather_locate() -> ApiResponse[dict]:
-    """IP 自动定位。"""
-    data = await ip_locate()
     return ApiResponse(data=data)
 
 

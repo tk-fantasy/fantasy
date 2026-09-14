@@ -878,7 +878,7 @@ class TestDispatcherAgentClientLifecycle:
         cfg = {"base_url": "http://x", "model": "m", "api_key": "k"}
 
         async def racing_load(user_id):
-            dispatcher._user_agents[user_id] = prebuilt  # 模拟持锁前已被他协程构建
+            dispatcher._user_agents[(user_id, "full")] = prebuilt  # 模拟持锁前已被他协程构建（key 含回合变体）
             return cfg
 
         with patch("app.agents.dispatcher.load_model_config_for_user", side_effect=racing_load), \
@@ -897,7 +897,7 @@ class TestDispatcherAgentClientLifecycle:
                    side_effect=RuntimeError("no key")):
             result = await dispatcher._get_agent("u2")
         assert result is global_agent
-        assert "u2" not in dispatcher._user_agents
+        assert ("u2", "full") not in dispatcher._user_agents
 
 
 class TestDispatcherCameraAndHA:

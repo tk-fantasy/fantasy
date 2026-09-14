@@ -100,18 +100,13 @@ def _load_file_config() -> dict[str, Any]:
 
 
 def _load_env_override() -> dict[str, Any]:
-    override: dict[str, Any] = {"llm": {}, "rag": {}, "storage": {}, "logging": {}, "ha": {}}
+    override: dict[str, Any] = {"llm": {}, "ha": {}}
     if "LLM_ENABLED" in os.environ:
         override["llm"]["enabled"] = os.getenv("LLM_ENABLED", "0") == "1"
     if "LLM_BASE_URL" in os.environ:
         override["llm"]["base_url"] = os.getenv("LLM_BASE_URL")
     if "LLM_MODEL" in os.environ:
         override["llm"]["chat_model"] = os.getenv("LLM_MODEL")
-        override["llm"]["vision_model"] = os.getenv("LLM_MODEL")
-    if "LLM_EMBED_MODEL" in os.environ:
-        override["llm"]["embed_model"] = os.getenv("LLM_EMBED_MODEL")
-    if "LOG_LEVEL" in os.environ:
-        override["logging"]["level"] = os.getenv("LOG_LEVEL")
     # HA 连接：容器部署时用服务名（如 http://homeassistant:8123）覆盖 config.json 里的 localhost
     if "HA_URL" in os.environ:
         override["ha"]["url"] = os.getenv("HA_URL")
@@ -206,11 +201,39 @@ def update_memory_config(path: str, value: Any) -> None:
         current[parts[-1]] = value
 
 
+def _persist_llm_keys_to_disk(keys: list[dict[str, Any]]) -> None:
+    """把 llm_keys 数组写透 config.json（剥明文，密钥只存 .env 引用）。
+
+    与 save_global_llm_keys 的区别：只落盘，不回写内存 CONFIG——内存里的
+    api_key 明文是 key_resolver 运行时解析的兜底，剥掉会让刚保存的 key
+    立刻在当前进程解析失败。
+    """
+    sanitized: list[dict[str, Any]] = []
+    for k in keys:
+        item = dict(k)
+        item.pop("api_key", None)
+        env_name = str(item.get("api_key_env", "")).strip()
+        if not env_name and item.get("id"):
+            env_name = f"LLM_KEY_{str(item['id']).upper().replace('-', '_')}"
+            item["api_key_env"] = env_name
+        sanitized.append(item)
+    with _config_write_lock:
+        file_config = _load_file_config()
+        file_config["llm_keys"] = sanitized
+        _safe_backup_config()
+        atomic_write(
+            CONFIG_PATH,
+            json.dumps(file_config, ensure_ascii=False, indent=2) + "\n",
+        )
+
+
 def upsert_llm_key(entry: dict[str, Any], api_key_value: str | None = None) -> list[dict[str, Any]]:
     """新增或更新一个 llm_keys 条目（按 id 唯一）。
 
-    密钥值(api_key_value)写 .env(env 名取 entry['api_key_env']),
-    内存 CONFIG 更新，不写 config.json。返回更新后的 llm_keys 数组。
+    密钥值(api_key_value)写 .env(env 名取 entry['api_key_env'])，数组写透
+    config.json（剥明文，见 _persist_llm_keys_to_disk）——此前只更新内存、
+    依赖"config.json 为空才回填"的启动迁移，新增 key 重启即丢。
+    返回更新后的数组（含内存明文）。
     """
     key_id = str(entry.get("id", "")).strip()
     if not key_id:
@@ -223,7 +246,6 @@ def upsert_llm_key(entry: dict[str, Any], api_key_value: str | None = None) -> l
     if api_key_value:
         write_secrets({env_name: str(api_key_value).strip()})
 
-    # 只更新内存 CONFIG，不写 config.json
     keys = list(get_config("llm_keys", []) or [])
     # 按 id 替换或追加
     replaced = False
@@ -235,6 +257,7 @@ def upsert_llm_key(entry: dict[str, Any], api_key_value: str | None = None) -> l
     if not replaced:
         keys.append(entry)
     update_memory_config("llm_keys", keys)
+    _persist_llm_keys_to_disk(keys)
     return keys
 
 
@@ -242,6 +265,7 @@ def delete_llm_key(key_id: str) -> list[dict[str, Any]]:
     """删除一个 llm_keys 条目（.env 里的密钥保留，不主动删，避免误伤）。"""
     keys = [k for k in (get_config("llm_keys", []) or []) if k.get("id") != key_id]
     update_memory_config("llm_keys", keys)
+    _persist_llm_keys_to_disk(keys)
     return keys
 
 

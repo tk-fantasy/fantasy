@@ -102,6 +102,10 @@ class CameraStream:
         self._cap: cv2.VideoCapture | None = None
         self._latest_frame: np.ndarray | None = None
         self._latest_jpeg: bytes | None = None
+        # MJPEG 观众数（mjpeg_generator 生命周期内 +1/-1）。0 时 _process_frame
+        # 跳过显示帧准备(亮度)与 JPEG 编码——无人观看时这是每路 30fps 的纯浪费
+        # 常开开销；采集/dHash 运动/推理/环形缓冲不受影响。
+        self._viewers = 0
         self._latest_result = ActionResult("idle", "等待识别。", {"source": "vision", "enabled": self._recognizer.enabled, "camera_id": camera_id})
         self._infer_busy = False
         self._presence_count = 0
@@ -419,6 +423,18 @@ class CameraStream:
             return cls._OFFLINE_FRAME_HOLD_SECONDS
 
     def mjpeg_generator(self):
+        # 观众计数：生成器被迭代期间才算观众（StreamingResponse 在客户端断开时
+        # close 生成器 → finally 归位）。inc/dec 每连接只发生一次，短暂持锁；
+        # 帧循环本身零锁开销。
+        with self._lock:
+            self._viewers += 1
+        try:
+            yield from self._mjpeg_frames()
+        finally:
+            with self._lock:
+                self._viewers = max(0, self._viewers - 1)
+
+    def _mjpeg_frames(self):
         boundary = b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"
         last_jpeg = None
         keepalive_counter = 0
@@ -828,18 +844,26 @@ class CameraStream:
         self._maybe_schedule_inference(frame)
         with self._lock:
             result = self._latest_result
+            viewers = self._viewers
         display_result = self._resolve_display_result(result)
-        display_frame = self._prepare_display_frame(frame)
-        # 从 config 读取 JPEG 质量，默认 50（降低以提高帧率）
-        jpeg_quality = int(get_config("vision.jpeg_quality", 50))
-        encoded, jpeg = cv2.imencode(".jpg", display_frame, [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_quality])
-        if not encoded:
-            logger.warning("Failed to encode preview frame")
-            return
+        jpeg_bytes: bytes | None = None
+        if viewers > 0:
+            # 按需编码：亮度准备 + JPEG 编码是每帧最贵的两步，无人观看时跳过
+            # （_latest_jpeg 保持旧值，新观众接入后首个编码帧自然刷新）。
+            # 采集/dHash 运动/推理/环形缓冲/状态更新不受观众数影响。
+            display_frame = self._prepare_display_frame(frame)
+            # 从 config 读取 JPEG 质量，默认 50（降低以提高帧率）
+            jpeg_quality = int(get_config("vision.jpeg_quality", 50))
+            encoded, jpeg = cv2.imencode(".jpg", display_frame, [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_quality])
+            if not encoded:
+                logger.warning("Failed to encode preview frame")
+                return
+            jpeg_bytes = jpeg.tobytes()
 
         with self._lock:
             self._latest_frame = frame
-            self._latest_jpeg = jpeg.tobytes()
+            if jpeg_bytes is not None:
+                self._latest_jpeg = jpeg_bytes
             # 按 frame_interval_ms 间隔把帧存进环形缓冲(避免缓冲全是相邻同帧)
             now_ms = time.time() * 1000
             if not self._frame_timestamps or (now_ms - self._last_buffer_push) >= self._frame_interval_ms:

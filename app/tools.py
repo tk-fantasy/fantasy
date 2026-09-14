@@ -8,18 +8,37 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Any
+from uuid import uuid4
 
 from .mcp.local_mcp_servers import (
     create_verify_action_handler,
-    create_verify_condition_handler,
     register_local_tools,
 )
 from .mcp.mcp_client_manager import MCPClientManager, MCPTool
 from .services.entity_controls import resolve_controls, controls_to_text
 from .services.control_probe import call_with_probe
-from .utils.text_match import match_devices
+from .services.pending_rules import (
+    KIND_AUTOMATION_RULE,
+    PENDING_TTL_SECONDS,
+    confirm_pending,
+    locate_pending,
+    needs_camera,
+    pending_store,
+    wants_rule_creation,
+)
+from .services.pending_selections import create_selection_draft, drop_selection_drafts
+from .utils.text_match import (
+    TIER_ALL_MARKER,
+    TIER_AMBIGUOUS,
+    TIER_CATEGORY_MISS,
+    TIER_EXACT,
+    TIER_NONE,
+    classify_target,
+    match_devices,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +64,65 @@ def tool_error(reason: str, *, hint: str | None = None,
     return err
 
 
+def _need_selection(session, query: str, res: Any, domain: str, service: str,
+                    data: dict) -> dict:
+    """构造「转用户选择」的工具返回（消歧闸门用）。
+
+    **不得含 "error" 键** —— 这是硬约束，不是风格偏好：
+    langchain_tools 见到 "error" 就加 `Error:` 前缀 → langgraph_agent 据此判
+    is_error → dispatcher 把它塞进 failed_tools 触发失败重试轮，模型会被逼着
+    「修正」自己再猜一个实体，正好是本闸门要拦住的行为。
+
+    所以走 success 形状（与 automation_rule_create 的 pending_confirm 同构）：
+    前端在 Template.CallToolResult 里按 status 识别，并在 Dialog.Finish 后弹框。
+    草稿挂不上时也照样返回 need_selection（退化为纯口头确认），绝不放行执行 ——
+    歧义指令宁可不执行，也不能默默挑一个。
+    """
+    candidates = [
+        {
+            "entity_id": c.get("entity_id"),
+            "label": str(c.get("label") or c.get("name") or c.get("entity_id") or ""),
+            "domain": c.get("domain"),
+            "area_name": c.get("area_name"),
+            "state": c.get("state", ""),
+        }
+        for c in res.candidates
+    ]
+    labels = [c["label"] for c in candidates]
+    if res.tier == TIER_CATEGORY_MISS:
+        # 必须如实说设备不存在：用户说的是「月球的灯」，不能假装找到了它
+        notice = f"没有找到名为「{query}」的设备。"
+    else:
+        notice = f"用户说的是「{query}」，匹配到 {len(labels)} 个设备，无法确定是哪一个。"
+    try:
+        pending_id = create_selection_draft(
+            session, query=query, domain=domain, service=service, data=data,
+            candidates=candidates, reason=res.tier,
+        )
+    except Exception:  # noqa: BLE001 — 草稿挂不上也不能放行执行
+        logger.warning("call_service: 待选草稿创建失败，退化为口头确认", exc_info=True)
+        pending_id = ""
+    logger.info("call_service 转用户选择(%s): query=%r candidates=%s",
+                res.tier, query, labels)
+    return {
+        "success": False,
+        "status": "need_selection",
+        "pending_id": pending_id,
+        "reason": res.tier,
+        "query": query,
+        "notice": notice,
+        "candidates": candidates,
+        "action": {"domain": domain, "service": service, "data": data},
+        "hint": (
+            f"{notice}候选是：{'、'.join(labels)}。已请用户选择（网页端会弹框勾选，"
+            "语音端请你口头列举让用户挑）。本轮到此为止：不要再调用任何设备工具，"
+            "不要自己挑一个，不要重试，也不要声称已执行，只需等用户选定；"
+            "向用户说明需要确认是哪个设备即可。之后的轮次不受此限制："
+            "再遇到控制指令仍正常调用 call_service，模糊目标交给系统处理。"
+        ),
+    }
+
+
 # ---------------------------------------------------------------------------
 # call_service 回读校验（「每控必核」）
 # ---------------------------------------------------------------------------
@@ -56,6 +134,55 @@ _ON_STATES = {"on", "open"}
 _OFF_STATES = {"off", "closed"}
 # 不可信状态：回读落到这些值上视为"未生效"而非"符合预期"
 _UNRELIABLE_STATES = {"unavailable", "unknown", "none"}
+
+
+async def _states_for_existence_check(ha_service: Any, ha_client: Any) -> list:
+    """entity_id 存在性校验取全量 states：优先 ha_service 的 5s TTL 缓存，
+    没有缓存访问器（旧测试桩/异构装配）时退回直拉——实体不会在 5 秒内
+    出现/消失，校验不值得绕过缓存多付一次全量拉取。"""
+    try:
+        states = await ha_service.get_states_snapshot()
+        if isinstance(states, list):
+            return states
+    except (AttributeError, TypeError):
+        pass
+    return await ha_client.get_states()
+
+
+def _enabled_cameras(deps: "ToolDeps") -> list[dict]:
+    """启用的摄像头 [{"id","name"}]，供拒绝落库时给模型候选名字。
+
+    取不到（camera_manager 未装配 / 抛错）返回空表——校验本身不依赖这份列表，
+    它只影响提示语里能不能列出可选项。
+    """
+    manager = getattr(deps, "camera_manager", None)
+    if manager is None:
+        return []
+    try:
+        cameras = manager.list_cameras()
+    except Exception:  # noqa: BLE001
+        return []
+    return [{"id": str(c.get("id", "")), "name": str(c.get("name") or c.get("id") or "")}
+            for c in (cameras or [])
+            if isinstance(c, dict) and c.get("enabled") is not False and c.get("id")]
+
+
+async def _readback_entity_state(ha_client: Any, eid_list: list[str]) -> tuple[dict | None, str | None]:
+    """「每控必核」回读：逐实体 GET /api/states/{id}，只取第一个命中实体；
+    客户端无单实体能力（旧测试桩）时退化全量拉取。返回 (state|None, entity_id|None)。"""
+    try:
+        for e in eid_list:
+            s = await ha_client.get_state(e)
+            if s is not None:
+                return s, e
+        return None, None
+    except (AttributeError, TypeError):
+        states = await ha_client.get_states()
+        by_id = {s.get("entity_id"): s for s in states}
+        for e in eid_list:
+            if e in by_id:
+                return by_id[e], e
+        return None, None
 
 
 def _verify_readback(service: str, data: dict, new_state: dict | None) -> tuple[bool | None, str]:
@@ -125,6 +252,10 @@ class ToolDeps:
     camera_manager: Any = None
     # 可变引用：scheduler_service 在 lifespan 后段才创建
     scheduler_service_ref: list = field(default_factory=lambda: [None])
+    # 自动化规则三件套：lifespan 前已建好，直接引用（chat 建规则 / 落库 / 手动触发）
+    rule_service: Any = None
+    rule_registry_service: Any = None
+    automation_service: Any = None
 
 
 def register_all_tools(deps: ToolDeps) -> None:
@@ -139,14 +270,14 @@ def register_all_tools(deps: ToolDeps) -> None:
     _register_ha_get_device_manual(deps)
     # 4. HA 服务调用
     _register_ha_call_service(deps)
-    # 5. 条件验证
-    _register_verify_condition(deps)
-    # 6. 动作验证
+    # 5. 动作验证
     _register_verify_action(deps)
     # 7. 定时任务管理（让 agent 能对话建/查/删定时任务）
     _register_scheduled_task_tools(deps)
     # 8. 场景模式（一键切换一组设备到预设状态）
     _register_scene_tools(deps)
+    # 9. 自动化规则管理（对话建规则=两段式确认，查询/删除/手动触发直达）
+    _register_automation_rule_tools(deps)
 
 
 # ---------------------------------------------------------------------------
@@ -356,10 +487,10 @@ def _register_ha_call_service(deps: ToolDeps) -> None:
             ha_client = deps.ha_client_ref[0]  # 动态读取当前实例
             # entity_id 真实性校验：HA 对不存在的 entity_id 静默返回 200（不报错），
             # 不校验的话 LLM 编造的 entity_id 会被当成"成功"，谎报已执行。
-            # 支持逗号分隔的批量 entity_id，逐个校验。
+            # 支持逗号分隔的批量 entity_id，逐个校验（优先走 5s TTL 缓存）。
             if entity_id:
                 try:
-                    states = await ha_client.get_states()
+                    states = await _states_for_existence_check(deps.ha_service, ha_client)
                     real_ids = {s.get("entity_id") for s in states}
                     eid_list = [e.strip() for e in str(entity_id).split(",") if e.strip()]
                     missing = [e for e in eid_list if e not in real_ids]
@@ -416,33 +547,84 @@ def _register_ha_call_service(deps: ToolDeps) -> None:
                         }
                 except Exception:
                     logger.warning("call_service: 授权校验失败，放行", exc_info=True)
-            # query→entity 语义校验：复用 match_devices 判断用户指令命中的设备，
-            # 若命中设备但目标 entity_id 不在命中范围内 → 拒绝（防止语义近邻顶替，
-            # 如「打开加湿器」却操作带除湿模式的空调）。
-            # matched 为空时放行（无法区分"设备不在列表"与"泛指无设备名"，
-            # 避免误伤"太热了→开空调"这类合理推断；该场景靠 system prompt 注入兜底软约束）。
+            # query→entity 消歧闸门：按 classify_target 的分层决定「直接执行 /
+            # 整组执行 / 转用户选择 / 放行」。
+            # - exact / all_marker：用户说得够明确（精确同名，或明说「所有/全部/都」），
+            #   把模型只挑了一个的 entity_id 补全成整组，避免「开B灯」只开了一半。
+            # - ambiguous / category_miss：不猜、不执行，挂草稿转用户选择（网页弹框 /
+            #   语音口头列举）。「月球的灯」把全屋灯开掉的根因就在这里——旧逻辑
+            #   matched 为空即放行，模型只能从全量目录里随便抓一个。
+            # - unique：目标不在候选内才拒（防语义近邻顶替，如「打开加湿器」却操作
+            #   带除湿模式的空调）。
+            # - none：放行（无法区分"设备不在列表"与"泛指无设备名"，避免误伤
+            #   "太热了→开空调"这类合理推断；该场景靠 system prompt 注入兜底软约束）。
             query = getattr(session, "current_query", "") or ""
+            executed_labels: dict = {}
             if query and entity_id:
                 try:
-                    devices = await deps.ha_service.get_all_devices()
-                    matched = match_devices(query, devices)
-                    if matched:
-                        matched_ids = {d.get("entity_id") for d in matched}
-                        eid_list = [e.strip() for e in str(entity_id).split(",") if e.strip()]
-                        if not any(e in matched_ids for e in eid_list):
-                            names = "、".join(d.get("name", d.get("entity_id", "")) for d in matched)
-                            logger.info(
-                                "call_service 拒绝语义错配: query=%r matched=%s target=%s",
-                                query, matched_ids, eid_list,
-                            )
-                            return {
-                                "success": False,
-                                **tool_error(
-                                    f"用户说的是「{query}」，匹配到的设备是「{names}」，与目标 {entity_id} 不符。",
-                                    hint="不要用语义相近的实体顶替；若用户提到的设备确实不存在，请如实告知。",
-                                    candidates=[d.get("name", d.get("entity_id", "")) for d in matched],
-                                ),
-                            }
+                    # 延迟导入：device_registry 依赖 ha_service，模块级导入会成环
+                    from .services.device_registry import build_match_index
+                    index = await build_match_index(deps.ha_service)
+                    # 禁止项对 AI 不可见：候选与扩展集都必须滤掉黑名单实体，
+                    # 否则被禁设备名会出现在回给模型的 candidates / 弹框候选里。
+                    try:
+                        from .core.database import Database as _Database
+                        _disabled = await _Database.get().prefs_get_by_scope("entity_operable")
+                        index = [e for e in index if e.get("entity_id") not in _disabled]
+                    except Exception:
+                        logger.warning("call_service: 禁控过滤失败，放行", exc_info=True)
+                    # 记录 entity_id → 人读名，供结果摘要展示全部已执行设备
+                    # （设备级 exact/all_marker 扩展后，真实下发集可能大于模型给的
+                    # 单个实体，如双键墙壁开关「开B灯」实际开两个键）。
+                    executed_labels = {
+                        str(c.get("entity_id")): str(c.get("label") or c.get("name") or "")
+                        for c in index
+                    }
+                    res = classify_target(query, index)
+                    gate_eids = [e.strip() for e in str(entity_id).split(",") if e.strip()]
+                    cand_ids = {str(c.get("entity_id", "")) for c in res.candidates}
+                    if res.tier in (TIER_AMBIGUOUS, TIER_CATEGORY_MISS):
+                        return _need_selection(session, query, res, domain, service, data)
+                    # effective = 本轮真正要下发的目标集。默认按模型给的；exact/all_marker
+                    # 扩展成功后以扩展集为准（它是候选的子集，天然不算错配）。
+                    effective = gate_eids
+                    if res.tier in (TIER_EXACT, TIER_ALL_MARKER):
+                        # 只在模型所选 domain 内扩展：设备「大门」下同时有 switch 和
+                        # lock 时，「开大门」不得顺手把门锁一起开了。
+                        target_domain = gate_eids[0].split(".", 1)[0] if gate_eids else domain
+                        expanded = [str(c["entity_id"]) for c in res.candidates
+                                    if str(c.get("domain") or "") == target_domain]
+                        if expanded:
+                            effective = expanded
+                            if set(expanded) != set(gate_eids):
+                                logger.info("call_service 消歧扩展(%s): query=%r %s → %s",
+                                            res.tier, query, gate_eids, expanded)
+                                entity_id = ",".join(expanded)
+                        # expanded 为空 = 模型选的 domain 与用户点名的设备完全不同类
+                        # （「打开加湿器」却去开 switch），落到下面的错配拒绝
+                    if res.tier != TIER_NONE and not any(e in cand_ids for e in effective):
+                        labels = [str(c.get("label") or c.get("name") or c.get("entity_id", ""))
+                                  for c in res.candidates]
+                        logger.info(
+                            "call_service 拒绝语义错配: query=%r tier=%s matched=%s target=%s",
+                            query, res.tier, cand_ids, gate_eids,
+                        )
+                        return {
+                            "success": False,
+                            **tool_error(
+                                f"用户说的是「{query}」，匹配到的设备是「{'、'.join(labels)}」，"
+                                f"与目标 {entity_id} 不符。",
+                                hint="不要用语义相近的实体顶替；若用户提到的设备确实不存在，请如实告知。",
+                                candidates=labels,
+                            ),
+                        }
+                    if res.tier != TIER_NONE:
+                        # 干净解决一轮指令 → 清掉遗留草稿（语音用户被问「要开哪个」后
+                        # 直接说设备名，走的就是这条路）。本轮 query 的草稿要留着：
+                        # 同轮第二次工具调用不能把弹框刚拿到的 pending_id 抹掉。
+                        dropped = drop_selection_drafts(session, except_query=query)
+                        if dropped:
+                            logger.info("call_service 清理遗留待选草稿 %d 份", dropped)
                 except Exception:
                     logger.warning("call_service: 语义校验失败，放行", exc_info=True)
             # 语义映射过滤：无条件替换 service（不依赖意图判断，避免双重错误）。
@@ -476,24 +658,25 @@ def _register_ha_call_service(deps: ToolDeps) -> None:
             new_state_eid = None
             state_check_failed = False
             if eid_list:
-                # 等状态传播后再回读，紧贴调用读会拿到旧值
+                # 等状态传播后再回读，紧贴调用读会拿到旧值。
+                # 逐实体 GET /api/states/{id}：回读只为取第一个可控实体的状态，
+                # 不值得为它全量拉 /api/states（实体多时一次数百 KB）。
                 await asyncio.sleep(_CALL_SERVICE_READBACK_DELAY)
                 try:
-                    states = await ha_client.get_states()
-                    states_by_id = {s.get("entity_id"): s for s in states}
-                    # 批量时取第一个有状态的实体作代表
-                    for e in eid_list:
-                        if e in states_by_id:
-                            s = states_by_id[e]
-                            new_state = {"state": s.get("state"), "attributes": s.get("attributes", {})}
-                            new_state_eid = e
-                            break
+                    new_state, new_state_eid = await _readback_entity_state(ha_client, eid_list)
+                    if new_state is not None:
+                        new_state = {"state": new_state.get("state"),
+                                     "attributes": new_state.get("attributes", {})}
                 except Exception:
                     # 指令已执行但状态未经核实：必须显式告知 AI，不能静默当作
                     # 有状态反馈（此前 except-pass → AI 在状态未知时照常确认成功）
                     logger.warning("call_service: 状态回查失败，标记状态未知", exc_info=True)
                     state_check_failed = True
             ret: dict = {"success": True, "result": result, "new_state": new_state}
+            if executed_labels:
+                names = [executed_labels.get(e, e) for e in eid_list]
+                if any(names):
+                    ret["names"] = names
             # 「每控必核」：代码级回读校验，不依赖模型记得提示词里的三步走。
             # 比对不符不标 error（不触发失败重试回路对设备重复下发指令），
             # 只附 verified=False + note，让模型如实汇报当前实际状态。
@@ -556,7 +739,11 @@ def _register_ha_call_service(deps: ToolDeps) -> None:
     deps.mcp_client_manager.register_tool(MCPTool(
         client_id="ha_devices",
         tool_name="call_service",
-        description="调用 Home Assistant 服务来控制设备",
+        description=(
+            "调用 Home Assistant 服务来控制设备。设备与可控项以系统提示词中的清单为准；"
+            "目标模糊（如用户只说「开灯」）也照常调用——把原话里的设备词或最接近的 "
+            "entity_id 传入即可，系统会让用户挑选，不会误执行。"
+        ),
         parameters={
             "type": "object",
             "properties": {
@@ -571,39 +758,8 @@ def _register_ha_call_service(deps: ToolDeps) -> None:
     ))
 
 
-def _register_verify_condition(deps: ToolDeps) -> None:
-    handler = create_verify_condition_handler(
-        deps.vision_client, deps.ha_client_ref[0],
-        camera_manager=deps.camera_manager,
-    )
-    deps.mcp_client_manager.register_tool(MCPTool(
-        client_id="local",
-        tool_name="verify_condition",
-        description=(
-            "验证某个条件当前是否成立。在执行任何条件性操作（'如果...就...'）之前必须先调用此工具。"
-            "根据 condition_type 自动路由到正确的验证源，返回实时状态数据。"
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "condition": {
-                    "type": "string",
-                    "description": "要验证的条件，用自然语言描述",
-                },
-                "condition_type": {
-                    "type": "string",
-                    "enum": ["auto", "time", "weather", "vision", "device"],
-                    "description": "条件类型：auto=自动识别, time=时间, weather=天气, vision=视觉, device=设备状态",
-                },
-            },
-            "required": ["condition"],
-        },
-        handler=handler,
-    ))
-
-
 def _register_verify_action(deps: ToolDeps) -> None:
-    handler = create_verify_action_handler(deps.ha_client_ref[0])
+    handler = create_verify_action_handler(deps.ha_client_ref)
     deps.mcp_client_manager.register_tool(MCPTool(
         client_id="local",
         tool_name="verify_action",
@@ -627,10 +783,6 @@ def _register_verify_action(deps: ToolDeps) -> None:
                 "data": {
                     "type": "object",
                     "description": "传给服务的参数",
-                },
-                "expected_state": {
-                    "type": "string",
-                    "description": "期望的状态值（旧版，建议用 service+data 替代）",
                 },
                 "action_description": {
                     "type": "string",
@@ -702,7 +854,7 @@ def _register_scheduled_task_tools(deps: ToolDeps) -> None:
             '{"kind":"every","every_seconds":3600}（固定间隔）、'
             '{"kind":"cron","expr":"0 8 * * *"}（cron 表达式，5 字段：分 时 日 月 周）。'
             "\n\npayload 指定到点执行的内容："
-            '{"kind":"tool","tool_name":"ha_devices___call_service","tool_input":{"domain":"light","service":"turn_off","entity_id":"light.bedroom"}}（调工具，如控制设备）'
+            '{"kind":"tool","tool_name":"ha_devices___call_service","tool_input":{"domain":"light","service":"turn_off","entity_id":"<从设备清单取 entity_id>"}}（调工具，如控制设备；entity_id 是占位符，必须取设备清单里的真实值，照抄示例会被拒绝）'
             ' 或 {"kind":"reminder","intent":"下班提醒","original":"在18点27分提醒我下班"}（提醒场景：存用户原始意图，到点由 AI 主动组织语言提醒，不要预设固定话术）'
             ' 或 {"kind":"message","message":"该起床了"}（发固定文本，仅当内容完全确定时用）。'
             "\n\n例1：'11点20分开厨房灯' -> schedule={kind:at, at:'2026-07-07T11:20:00'}, "
@@ -940,3 +1092,349 @@ def _register_scene_tools(deps: ToolDeps) -> None:
         },
         handler=create_handler,
     ))
+
+
+# ---------------------------------------------------------------------------
+# 自动化规则工具 — 对话建规则（两段式确认）/ 查 / 删 / 手动触发
+#
+# 草稿的存取/TTL/落库口径都在 services.pending_rules（网页确认弹窗的 REST 端点
+# 与这里的工具 handler 共用），本文件只负责工具层的入参校验与 hint 措辞。
+# ---------------------------------------------------------------------------
+
+
+def _register_automation_rule_tools(deps: ToolDeps) -> None:
+    """注册自动化规则聊天工具。
+
+    建规则走两段式：automation_rule_create 只解析不落库（返回 pending_confirm
+    JSON 给用户评估），用户确认后才写 rule_registry——网页端由确认弹窗直接调
+    REST 落库，语音/飞书等渠道由用户口头确认后调 automation_rule_confirm。
+    规则落库后会被周期评估并真实执行设备动作，误建是持续性风险，与定时任务
+    （一次性、payload 明确、直接创建）误建成本不对称，故多一道确认。
+    """
+
+    async def create_handler(parameters: dict, session) -> dict:
+        svc = deps.rule_service
+        if svc is None:
+            return tool_error("规则服务未就绪", hint="规则服务尚未初始化，请如实告知用户稍后再试。")
+        text = str(parameters.get("text", "")).strip()
+        if not text:
+            return tool_error("text 不能为空",
+                              hint="传用户描述规则的原话，如「温度高于30度就开空调」。")
+        # 硬门控：只有用户本轮原话明确出现「创建规则」类字样才允许创建。
+        # glm-4-flash 对「如果…就…」条件式话术经常误触本工具（甚至零工具调用
+        # 幻觉"已创建"），提示词引导不住，所以按 session.current_query 判定；
+        # 命中时的"强制考虑"软推在 prompt_service（两层共用 wants_rule_creation）。
+        current_query = str(getattr(session, "current_query", "") or "")
+        if not wants_rule_creation(current_query):
+            return tool_error(
+                "这条消息没有明确要求创建规则，已拒绝创建",
+                hint="只有用户消息里出现『创建规则』『新建一条规则』这类字样才创建。"
+                     "普通条件式描述（如『如果有人就开灯』）请按普通指令执行设备动作即可，"
+                     "不要重试本工具；用户确实想建规则时，请其用『创建规则：…』的说法。",
+            )
+        camera_id = str(parameters.get("camera_id", "") or "").strip()
+        user_id = getattr(session, "user_id", "") or ""
+        try:
+            rule = await svc.build_rule(text, user_id=user_id, camera_id=camera_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("automation_rule_create 解析失败")
+            return tool_error(str(exc), hint="规则解析失败，请如实告知用户，或请其换种说法重试。")
+        if not rule.get("actions"):
+            return tool_error(
+                "解析出的规则没有可执行动作",
+                hint="不要凭空创建；请用户说清要对哪台设备做什么，再重新创建。",
+            )
+        # 零匹配拦截：自动修复也救不回来的动作（用户说的设备家里根本没有，
+        # 如没有门类设备时说"开大门"）不出草稿——硬塞不相干设备比确认不了更危险。
+        # 附主控设备候选让模型如实告知用户重新选择。
+        if rule.pop("validation_errors", None):
+            candidates: list[str] = []
+            try:
+                devices = await deps.ha_service.get_all_devices()
+                candidates = [str(d.get("name") or d.get("entity_id", "")) for d in devices or []
+                              if str(d.get("entity_id", "")).split(".")[0]
+                              not in ("sensor", "binary_sensor")][:8]
+            except Exception:  # noqa: BLE001 — 候选拉不到就只报错，不阻塞拒绝路径
+                candidates = []
+            return tool_error(
+                "规则动作引用的设备不存在，且找不到可自动替换的近似设备",
+                hint="不要凭空创建，也不要强行替换不相干的设备；把候选设备念给用户，"
+                     "请其明确要对哪台设备做什么后重建。",
+                candidates=candidates,
+            )
+        pending_id = uuid4().hex[:12]
+        pending_store(session)[pending_id] = {
+            "kind": KIND_AUTOMATION_RULE, "rule": rule, "created_at": time.time(),
+        }
+        missing_camera = needs_camera(rule)
+        note = ("规则尚未创建。简要复述条件/动作要点，并明确告知用户「确认后才生效」。"
+                "网页端会自动弹出确认框，无需用户再打字；语音等渠道请引导用户口头确认。"
+                "用户说「确认」调 automation_rule_confirm；要改调 automation_rule_revise。"
+                "不要说成已经创建好了。")
+        if rule.get("auto_corrections"):
+            # 透明化：用户说的设备不存在但找到了近似真实设备，已强制替换——
+            # 复述必须点明替换，否则用户核对的只是系统的猜测，二次核对就失效了
+            fixes = "、".join(
+                f"「{c.get('from')}」→「{c.get('to_name')}」" for c in rule["auto_corrections"])
+            note += (f"注意：用户说的设备不存在，系统已自动替换为最接近的真实设备：{fixes}。"
+                     "复述时必须明确告知这一替换，提醒用户在弹窗中核对，不对可改。")
+        if missing_camera:
+            # 刻意不在这里给摄像头清单：网页端弹窗自带选择器，模型再念一遍名单
+            # 只会和界面重复；语音端的问答由渠道插件自己管（见 integrations/）。
+            note += ("这条规则还需要绑定一路摄像头才能生效（needs_camera=true）："
+                     "有图形界面时用户会在选择器里选，你不必追问、也不要逐个念摄像头名字，"
+                     "更不要替用户猜一路。未绑定前不要说规则已创建。")
+        return {
+            "status": "pending_confirm",
+            "pending_id": pending_id,
+            "rule": rule,
+            "summary": str(rule.get("summary") or text),
+            "expire_minutes": PENDING_TTL_SECONDS // 60,
+            "needs_camera": missing_camera,
+            "note": note,
+        }
+
+    async def revise_handler(parameters: dict, session) -> dict:
+        svc = deps.rule_service
+        if svc is None:
+            return tool_error("规则服务未就绪", hint="规则服务尚未初始化，请如实告知用户稍后再试。")
+        instruction = str(parameters.get("instruction", "")).strip()
+        if not instruction:
+            return tool_error("instruction 不能为空",
+                              hint="传用户的修改要求原话，如「改成35度」。")
+        pending_id, entry, err = locate_pending(
+            session, str(parameters.get("pending_id", "")).strip(), KIND_AUTOMATION_RULE)
+        if entry is None or pending_id is None:
+            return tool_error(err,
+                              hint="待确认规则 10 分钟有效；请用户重新描述需求，调 automation_rule_create 重建。")
+        user_id = getattr(session, "user_id", "") or ""
+        try:
+            result = await svc.revise_rule(entry["rule"], instruction, user_id=user_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("automation_rule_revise 失败")
+            return tool_error(str(exc), hint="修改失败，请如实告知用户。")
+        new_rule = result.get("rule") or entry["rule"]
+        entry["rule"] = new_rule
+        entry["created_at"] = time.time()  # 改完重新计时，给用户完整评估窗口
+        # camera_id 的清空/校验在 rule_service._resolve_revised_camera 里做（三个
+        # 调用方共用一处），这里只把结果如实报给模型
+        still_needs_camera = needs_camera(new_rule)
+        note = "仍是待确认状态（未落库）；把改动复述给用户并继续等待确认。"
+        if still_needs_camera:
+            note += ("改完仍缺摄像头绑定：有图形界面时用户会在选择器里选，你不必追问、"
+                     "也不要念摄像头名单或替用户猜一路。")
+        return {"status": "pending_confirm", "pending_id": pending_id,
+                "rule": new_rule, "change_summary": str(result.get("summary", "")),
+                "expire_minutes": PENDING_TTL_SECONDS // 60,
+                "needs_camera": still_needs_camera,
+                "note": note}
+
+    async def confirm_handler(parameters: dict, session) -> dict:
+        registry = deps.rule_registry_service
+        if registry is None:
+            return tool_error("规则注册表未就绪", hint="请如实告知用户稍后再试。")
+        user_id = getattr(session, "user_id", "") or ""
+        result = await confirm_pending(
+            session,
+            str(parameters.get("pending_id", "")).strip(),
+            registry,
+            deps.ha_service,
+            deps.ha_client_ref,
+            user_id=user_id,
+            known_cameras=_enabled_cameras(deps),
+        )
+        if not result.get("ok"):
+            hints = {
+                "camera_required": "不要替用户挑一路，也不要说规则已创建。把 error 里列出的"
+                                   "可选摄像头报给用户，请其指定看哪一路；用户在网页端则由"
+                                   "选择器完成。指定后由渠道侧写入绑定，再重新确认。",
+                "missing_entities": "不要强行创建；调 automation_rule_revise 换设备，或如实告知用户。",
+                "save_failed": "草稿仍在，不要重复创建；如实告知用户保存失败，可稍后再确认一次。",
+            }
+            return tool_error(str(result.get("error", "确认失败")),
+                              hint=hints.get(str(result.get("reason")),
+                                             "待确认规则 10 分钟有效；请用户重新描述需求，"
+                                             "调 automation_rule_create 重建。"))
+        return {"success": True, "rule_id": result.get("rule_id"),
+                "name": result.get("name", ""), "summary": str(result.get("summary", "")),
+                "note": "规则已创建并启用，自动化评估会周期执行（受冷却约束）。"}
+
+    async def trigger_handler(parameters: dict, session) -> dict:
+        automation = deps.automation_service
+        registry = deps.rule_registry_service
+        if automation is None or registry is None:
+            return tool_error("自动化服务未就绪", hint="请如实告知用户稍后再试。")
+        rule_id = str(parameters.get("rule_id", "")).strip()
+        name = str(parameters.get("name", "")).strip()
+        if not rule_id and not name:
+            return tool_error("rule_id 或 name 必填一个",
+                              hint="不确定有哪些规则时先调 automation_rule_list。")
+        if not rule_id:
+            rules = registry.list_rules()
+            match = next((r for r in rules if r.get("name") == name), None)
+            if match is None:
+                return tool_error(f"没有叫「{name}」的规则",
+                                  hint="从候选里选最接近的一条，或如实告知规则不存在。",
+                                  candidates=[r.get("name", "") for r in rules][:8])
+            rule_id = match["id"]
+        try:
+            result = await automation.trigger_rule(rule_id)
+        except ValueError as exc:
+            return tool_error(str(exc), hint="先调 automation_rule_list 确认规则存在。")
+        executed = result.get("results", []) or []
+        ret = {"success": True, "rule": result.get("rule"), "executed": len(executed)}
+        if not executed:
+            ret["note"] = "没有任何动作执行成功（可能全部失败或规则无可执行动作），请如实告知用户。"
+        return ret
+
+    async def list_handler(parameters: dict, session) -> dict:
+        registry = deps.rule_registry_service
+        if registry is None:
+            return tool_error("规则注册表未就绪", hint="请如实告知用户稍后再试。")
+        rules = registry.list_rules()
+        # 设备友好名映射：此前列表只有 actions_count，用户问"这条规则控制的
+        # 设备/id 是哪个"时模型没有任何依据可答。附上 entity_id + 友好名 +
+        # 动作描述，模型才能如实回答（映射拉不到时降级为只有 entity_id）。
+        name_map: dict = {}
+        try:
+            if deps.ha_service is not None:
+                name_map = await deps.ha_service.get_entity_name_map()
+        except Exception:  # noqa: BLE001
+            name_map = {}
+
+        def _brief_actions(rule: dict) -> list[dict]:
+            actions = rule.get("actions") or []
+            descriptions = rule.get("action_descriptions") or []
+            briefs = []
+            for i, action in enumerate(actions):
+                tool_input = action.get("mcp_tool_input") or {}
+                entity_id = str(tool_input.get("entity_id", "") or "")
+                briefs.append({
+                    "entity_id": entity_id,
+                    "device_name": name_map.get(entity_id, ""),
+                    "description": str(descriptions[i]) if i < len(descriptions) else "",
+                })
+            return briefs
+
+        return {"rules": [
+            {"id": r.get("id"), "name": r.get("name", ""), "type": r.get("type", ""),
+             "condition": r.get("condition", ""), "enabled": bool(r.get("enabled", True)),
+             "actions_count": len(r.get("actions") or []),
+             "actions": _brief_actions(r)}
+            for r in rules
+        ], "count": len(rules)}
+
+    async def delete_handler(parameters: dict, session) -> dict:
+        registry = deps.rule_registry_service
+        if registry is None:
+            return tool_error("规则注册表未就绪", hint="请如实告知用户稍后再试。")
+        rule_id = str(parameters.get("rule_id", "")).strip()
+        if not rule_id:
+            return tool_error("rule_id 不能为空", hint="先调 automation_rule_list 获取规则 ID。")
+        try:
+            registry.delete_rule(rule_id)
+        except Exception as exc:  # noqa: BLE001 — AppException（404）统一转工具错误
+            return tool_error(str(exc), hint="先调 automation_rule_list 确认规则存在。")
+        return {"success": True, "rule_id": rule_id}
+
+    deps.mcp_client_manager.register_tool(MCPTool(
+        client_id="local",
+        tool_name="automation_rule_create",
+        description=(
+            "【创建自动化规则-第一步】只在用户消息明确出现「创建规则」「新建一条规则」"
+            "等字样时调用（如'创建一条规则：温度高于30度就开空调'）。普通条件式描述"
+            "（如'温度高于30度就开空调''有人经过就开灯'，没有创建字样）不要调本工具，"
+            "按普通指令执行即可——未命中关键词时本工具会直接拒绝。"
+            "本工具只解析不创建：返回 pending_confirm JSON（含条件/动作/设备），"
+            "必须先向用户复述要点并说清「确认后才生效」——此时规则还没建好，"
+            "不要说成已经创建。确认由用户完成（网页端自动弹确认框，语音渠道口头说"
+            "\"确认\"），确认落到系统后规则才生效；用户要改则调 automation_rule_revise。"
+            "与定时任务的区别：定时用 scheduled_task_create，条件式自动化才用本工具。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "用户描述规则的原话"},
+                "camera_id": {"type": "string", "description": "可选，绑定摄像头的规则传摄像头 ID"},
+            },
+            "required": ["text"],
+        },
+        handler=create_handler,
+    ))
+    deps.mcp_client_manager.register_tool(MCPTool(
+        client_id="local",
+        tool_name="automation_rule_revise",
+        description=(
+            "【修改待确认规则】用户对刚解析出的规则说\"不对，改成…\"时调用，"
+            "返回修改后的待确认 JSON，仍需用户确认后才落库。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                # 非必填：会话历史不保留工具返回值，跨轮后模型可能已丢失该 ID；
+                # 缺了就由 handler 回退到会话内唯一的待确认草稿。
+                "pending_id": {"type": "string", "description": "create 返回的待确认 ID（记得就传）"},
+                "instruction": {"type": "string", "description": "用户的修改要求"},
+            },
+            "required": ["instruction"],
+        },
+        handler=revise_handler,
+    ))
+    deps.mcp_client_manager.register_tool(MCPTool(
+        client_id="local",
+        tool_name="automation_rule_confirm",
+        description=(
+            "【确认创建自动化规则-第二步】用户明确确认（说\"确认/可以/就这么建\"）后调用，"
+            "把待确认规则写入系统开始生效。只报结果要点，不重复规则全文。"
+            "若返回\"不存在或已过期\"，可能是用户已在网页确认框里点过了，"
+            "此时如实说明即可，不要重复创建。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                # 非必填：同 revise——跨轮丢失 ID 时回退到会话内唯一草稿。
+                "pending_id": {"type": "string", "description": "create 返回的待确认 ID（记得就传）"},
+            },
+            "required": [],
+        },
+        handler=confirm_handler,
+    ))
+    deps.mcp_client_manager.register_tool(MCPTool(
+        client_id="local",
+        tool_name="automation_rule_trigger",
+        description=(
+            "【立即触发自动化规则】用户说\"执行一下xx规则/现在就跑xx自动化\"时调用。"
+            "跳过条件判断直接执行规则动作（用户说触发就是要执行）。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "rule_id": {"type": "string", "description": "规则 ID（与 name 二选一）"},
+                "name": {"type": "string", "description": "规则名（与 rule_id 二选一）"},
+            },
+        },
+        handler=trigger_handler,
+    ))
+    deps.mcp_client_manager.register_tool(MCPTool(
+        client_id="local",
+        tool_name="automation_rule_list",
+        description=(
+            "【自动化规则列表】列出所有自动化规则（名称/类型/条件/启停/动作）。"
+            "每条规则的 actions 里有控制的设备 entity_id、设备名和动作描述——"
+            "用户问「这条规则控制哪个设备/id 是什么」时从这里如实回答。"
+        ),
+        parameters={"type": "object", "properties": {}},
+        handler=list_handler,
+    ))
+    deps.mcp_client_manager.register_tool(MCPTool(
+        client_id="local",
+        tool_name="automation_rule_delete",
+        description="【删除自动化规则】用户要求删除某条自动化规则时调用。",
+        parameters={
+            "type": "object",
+            "properties": {"rule_id": {"type": "string", "description": "规则 ID"}},
+            "required": ["rule_id"],
+        },
+        handler=delete_handler,
+    ))
+    

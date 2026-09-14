@@ -199,47 +199,50 @@ class TestScanPorts:
 
 
 class TestFindCamera:
-    """find_camera: 两段式扫描整合 —— 端口探测 + ONVIF probe + MAC 匹配。"""
+    """find_camera: 两段式扫描整合 —— 端口探测 + ONVIF probe + MAC 匹配。
+
+    per-camera：配置从 cameras 行注入（fake DB）。
+    """
+
+    @staticmethod
+    def _fake_db(row):
+        from types import SimpleNamespace
+        return SimpleNamespace(cameras_get=AsyncMock(return_value=row))
+
+    _ROW = {"id": "cam1", "discovery_enabled": 1, "device_mac": "aabbccddeeff",
+            "discovery_subnet": "192.168.1.0/24", "ptz_ip": "", "rtsp_url": "",
+            "ptz_port": 80, "ptz_username": "u", "ptz_password": "p"}
 
     @pytest.mark.asyncio
     async def test_finds_matching_mac(self):
         """192.168.1.50 端口开放且 MAC 匹配 → 返回该 IP。"""
         svc = CameraDiscoveryService()
+        svc._db = self._fake_db(dict(self._ROW))
         # 子网扫描返回两个端口开放的候选,只有 .50 的 MAC 匹配
-        with patch.object(svc, "_scan_ports", AsyncMock(return_value=["192.168.1.49", "192.168.1.50"])), \
-             patch.object(svc, "_probe_candidate", AsyncMock(side_effect=lambda ip: "aabbccddeeff" if ip == "192.168.1.50" else "")):
-            found_ip = await svc.find_camera(target_mac="aabbccddeeff", subnet="192.168.1.0/24")
+        with patch.object(svc, "_scan_ports", AsyncMock(return_value=["192.168.1.49", "192.168.1.50"])),              patch.object(svc, "_probe_candidate", AsyncMock(side_effect=lambda ip: "aabbccddeeff" if ip == "192.168.1.50" else "")):
+            found_ip = await svc.find_camera("cam1")
         assert found_ip == "192.168.1.50"
 
     @pytest.mark.asyncio
     async def test_no_match_returns_none(self):
         """扫描到的候选 MAC 都不匹配 → 返回 None。
 
-        用短 timeout + mock sleep 避免真睡(否则会跑满 config 默认 30s)。
+        用短 timeout + mock sleep 避免真睡(否则会跑满默认 30s)。
         """
         svc = CameraDiscoveryService()
-        with patch.object(svc, "_scan_ports", AsyncMock(return_value=["192.168.1.49"])), \
-             patch.object(svc, "_probe_candidate", AsyncMock(return_value="112233445566")), \
-             patch("app.services.camera_discovery_service.asyncio.sleep", AsyncMock()):
-            found_ip = await svc.find_camera(
-                target_mac="aabbccddeeff",
-                subnet="192.168.1.0/24",
-                timeout=0.01,
-            )
+        svc._db = self._fake_db(dict(self._ROW))
+        with patch.object(svc, "_scan_ports", AsyncMock(return_value=["192.168.1.49"])),              patch.object(svc, "_probe_candidate", AsyncMock(return_value="112233445566")),              patch("app.services.camera_discovery_service.asyncio.sleep", AsyncMock()):
+            found_ip = await svc.find_camera("cam1", timeout=0.01)
         assert found_ip is None
 
     @pytest.mark.asyncio
     async def test_timeout_returns_none(self):
         """超时未命中 → 返回 None,status=not_found。"""
         svc = CameraDiscoveryService()
+        svc._db = self._fake_db(dict(self._ROW))
         # 每轮扫描都不命中,且 _RESCAN_INTERVAL=5s 会拖过 1s 超时
-        with patch.object(svc, "_scan_ports", AsyncMock(return_value=[])), \
-             patch("app.services.camera_discovery_service.asyncio.sleep", AsyncMock()):
-            found_ip = await svc.find_camera(
-                target_mac="aabbccddeeff",
-                subnet="192.168.1.0/24",
-                timeout=0.01,
-            )
+        with patch.object(svc, "_scan_ports", AsyncMock(return_value=[])),              patch("app.services.camera_discovery_service.asyncio.sleep", AsyncMock()):
+            found_ip = await svc.find_camera("cam1", timeout=0.01)
         assert found_ip is None
         assert svc._status == "not_found"
 
@@ -248,24 +251,20 @@ class TestFindCamera:
         """锁已被占用时,find_camera 直接返回 None,不重复启动扫描。
 
         场景:worker 掉线触发 + 用户手动点发现按钮并发,或连点按钮。
-        第二次发现应在锁忙时跳过,避免重复扫描 + 并发写 config。
         """
         svc = CameraDiscoveryService()
+        svc._db = self._fake_db(dict(self._ROW))
         # 手动占住锁,模拟另一路 find_camera 正在扫描
         await svc._discovery_lock.acquire()
         try:
-            with patch.object(svc, "_scan_locked", AsyncMock()) as mock_scan, \
-                 patch.object(svc, "_scan_ports", AsyncMock()) as mock_ports:
-                result = await svc.find_camera(
-                    target_mac="aabbccddeeff", subnet="192.168.1.0/24",
-                )
+            with patch.object(svc, "_scan_locked", AsyncMock()) as mock_scan,                  patch.object(svc, "_scan_ports", AsyncMock()) as mock_ports:
+                result = await svc.find_camera("cam1")
             # 锁忙 → 直接返回 None,扫描逻辑根本没启动
             assert result is None
             mock_scan.assert_not_called()
             mock_ports.assert_not_called()
         finally:
             svc._discovery_lock.release()
-
 
 class TestApplyFoundIpLegacyGuard:
     """旧全局分支已移除：空 camera_id 一律跳过（PTZ 全部 per-camera）。"""
@@ -302,58 +301,59 @@ class TestReplaceUrlHost:
 
 
 class TestCaptureMacOnStartup:
-    """首次 MAC 捕获:有 IP 无 MAC 时用现有 IP 读 MAC 写回 config。"""
+    """首次 MAC 捕获:有 IP 无 MAC 时用现有 IP 读 MAC 写回该路 cameras 行。"""
+
+    @staticmethod
+    def _fake_db(row):
+        from types import SimpleNamespace
+        return SimpleNamespace(cameras_get=AsyncMock(return_value=row),
+                               cameras_update=AsyncMock())
 
     @pytest.mark.asyncio
-    async def test_captures_when_no_mac(self, monkeypatch):
-        from app.core import config as cfg
-        cfg.CONFIG["vision"]["device_mac"] = ""
-        cfg.CONFIG["ptz"]["ip"] = "192.168.1.50"
-        # 凭证经 ptz.password_env 读 env（默认 PTZ_PASSWORD）。测试环境无 .env，
-        # 不注入则 capture_mac_on_startup 在"无 ONVIF 凭证"处提前 return，
-        # 触不到 update_config_section —— 这正是该用例在容器里 historical 失败的原因。
-        monkeypatch.setenv("PTZ_PASSWORD", "test-pwd")
+    async def test_captures_when_no_mac(self):
+        db = self._fake_db({"id": "cam1", "discovery_enabled": 1, "device_mac": "",
+                            "ptz_ip": "192.168.1.50", "rtsp_url": "",
+                            "ptz_port": 80, "ptz_username": "u", "ptz_password": "p"})
         svc = CameraDiscoveryService()
-        with patch.object(svc, "read_device_hardware_id", AsyncMock(return_value="aabbccddeeff")), \
-             patch("app.services.camera_discovery_service.update_config_section") as uc:
-            await svc.capture_mac_on_startup()
-        uc.assert_called_once_with("vision", {"device_mac": "aabbccddeeff"})
+        svc._db = db
+        with patch.object(svc, "read_device_hardware_id", AsyncMock(return_value="aabbccddeeff")):
+            await svc.capture_mac_on_startup("cam1")
+        db.cameras_update.assert_awaited_once_with("cam1", {"device_mac": "aabbccddeeff"})
 
     @pytest.mark.asyncio
     async def test_skips_when_mac_already_set(self):
-        from app.core import config as cfg
-        cfg.CONFIG["vision"]["device_mac"] = "aabbccddeeff"
-        cfg.CONFIG["ptz"]["ip"] = "192.168.1.50"
+        db = self._fake_db({"id": "cam1", "discovery_enabled": 1, "device_mac": "aabbccddeeff",
+                            "ptz_ip": "192.168.1.50", "rtsp_url": "",
+                            "ptz_port": 80, "ptz_username": "u", "ptz_password": "p"})
         svc = CameraDiscoveryService()
-        with patch.object(svc, "read_device_hardware_id", AsyncMock()) as rd, \
-             patch("app.services.camera_discovery_service.update_config_section") as uc:
-            await svc.capture_mac_on_startup()
+        svc._db = db
+        with patch.object(svc, "read_device_hardware_id", AsyncMock()) as rd:
+            await svc.capture_mac_on_startup("cam1")
         rd.assert_not_called()
-        uc.assert_not_called()
+        db.cameras_update.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_skips_when_no_ip(self):
-        from app.core import config as cfg
-        cfg.CONFIG["vision"]["device_mac"] = ""
-        cfg.CONFIG["ptz"]["ip"] = ""
-        # rtsp_url 也需清空:capture 会从 rtsp_url 兜底提 IP
-        cfg.CONFIG["vision"]["rtsp_url"] = ""
+        db = self._fake_db({"id": "cam1", "discovery_enabled": 1, "device_mac": "",
+                            "ptz_ip": "", "rtsp_url": "",
+                            "ptz_port": 80, "ptz_username": "u", "ptz_password": "p"})
         svc = CameraDiscoveryService()
+        svc._db = db
         with patch.object(svc, "read_device_hardware_id", AsyncMock()) as rd:
-            await svc.capture_mac_on_startup()
+            await svc.capture_mac_on_startup("cam1")
         rd.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_capture_failure_does_not_raise(self):
         """读取失败(设备离线)不影响启动。"""
-        from app.core import config as cfg
-        cfg.CONFIG["vision"]["device_mac"] = ""
-        cfg.CONFIG["ptz"]["ip"] = "192.168.1.50"
+        db = self._fake_db({"id": "cam1", "discovery_enabled": 1, "device_mac": "",
+                            "ptz_ip": "192.168.1.50", "rtsp_url": "",
+                            "ptz_port": 80, "ptz_username": "u", "ptz_password": "p"})
         svc = CameraDiscoveryService()
+        svc._db = db
         with patch.object(svc, "read_device_hardware_id", AsyncMock(side_effect=Exception("offline"))):
             # 不抛异常
-            await svc.capture_mac_on_startup()
-
+            await svc.capture_mac_on_startup("cam1")
 
 class TestDisabledAndEdgeCases:
     """discovery 关闭/无凭证等边界场景。"""

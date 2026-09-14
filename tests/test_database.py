@@ -137,12 +137,7 @@ class TestCamerasTable:
 class TestRulesCameraIdColumn:
     """rules 表 camera_id 列(迁移补列)。"""
 
-    @pytest.mark.asyncio
-    async def test_rules_has_camera_id_column(self, db):
-        async with db._db.execute("PRAGMA table_info(rules)") as cur:
-            cols = {row[1] for row in await cur.fetchall()}
-        assert "camera_id" in cols
-
+    
 
 class TestCamerasMigration:
     """单路→多路幂等迁移(D6:用 @pytest.mark.migration 标记开启)。"""

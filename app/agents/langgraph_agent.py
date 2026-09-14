@@ -256,8 +256,8 @@ async def run_agent_streaming(
     """
     # ReAct 步数预算：langgraph 的 recursion_limit 按 super-step 计，本图带
     # post_model_hook，每个工具轮消耗 3 步（model → hook → tools），最终总结
-    # 再耗 2 步。16 ≈ 4 个工具轮 + 总结，恰好覆盖 GUIDELINES 的三步走
-    # （verify_condition → call_service → verify_action）外加一次 get_entities；
+    # 再耗 2 步。16 ≈ 4 个工具轮 + 总结，覆盖「get_entities → call_service
+    # （verified=false 时补一次 verify_action）」的典型链路；
     # 默认 25 太宽——模型卡死循环时会一直烧 token 直到 120s 超时。
     config = {
         "recursion_limit": int(get_config("agent.recursion_limit", 16)),

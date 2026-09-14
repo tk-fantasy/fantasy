@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import TaskView from '../../src/views/TaskView.vue'
+import CameraBindModal from '../../src/components/CameraBindModal.vue'
 
 // Mock fetch
 global.fetch = vi.fn(() =>
@@ -112,5 +113,195 @@ describe('TaskView 规则错配徽标', () => {
     await flushPromises()
     expect(wrapper.find('.rule-mismatch-badge').exists()).toBe(false)
     expect(wrapper.find('.rule-card').classes()).not.toContain('rule-card--orange')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 两段式创建：preview 只解析 → 视觉规则弹摄像头选择框 → 选完才落库
+//
+// header 的「当前作用范围」是打字**之前**定的，而规则是不是视觉类型要等 LLM 解析
+// 完才知道。不拦这一道，在「全局」范围下输入「有人就开灯」就会落库成
+// ruleMismatch 标红的危险规则（automation_service 对未绑定规则每一路都评估）。
+// ---------------------------------------------------------------------------
+
+const CAMERAS = [
+  { id: 'cam_1', name: '研发部', enabled: true },
+  { id: 'cam_2', name: '门口', enabled: true },
+]
+
+const VISION_PREVIEW = {
+  rule: {
+    name: '有人开研发部灯', condition: '画面里有人', type: 'vision', camera_id: '',
+    actions: [{ mcp_tool_input: { entity_id: 'light.rd' } }],
+    action_descriptions: ['打开研发部灯'], summary: '有人就打开研发部灯',
+  },
+  needs_camera: true,
+}
+
+const TIME_PREVIEW = {
+  rule: {
+    name: '日落开灯', condition: '日落时', type: 'time', camera_id: '',
+    actions: [], action_descriptions: [], summary: '日落时开灯',
+  },
+  needs_camera: false,
+}
+
+/** 按 URL+method 路由的 fetch 桩，记录 POST body 供断言。 */
+function mockCreateFlow(preview, rules = []) {
+  const posts = []
+  global.fetch = vi.fn((url, opts = {}) => {
+    const method = (opts.method || 'GET').toUpperCase()
+    if (method === 'POST' && String(url).endsWith('/api/rules/preview')) {
+      posts.push({ url: String(url), body: JSON.parse(opts.body) })
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ data: preview }) })
+    }
+    if (method === 'POST' && String(url).endsWith('/api/rules')) {
+      posts.push({ url: String(url), body: JSON.parse(opts.body) })
+      const saved = { id: 'r-new', enabled: true, ...JSON.parse(opts.body) }
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ data: saved }) })
+    }
+    if (String(url) === '/api/cameras') {
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ data: CAMERAS }) })
+    }
+    if (String(url) === '/api/rules') {
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ data: rules }) })
+    }
+    return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ data: [] }) })
+  })
+  return posts
+}
+
+async function openCreateFormAndType(wrapper, text) {
+  await wrapper.find('.btn-add').trigger('click')
+  await flushPromises()
+  await wrapper.find('.create-input').setValue(text)
+  await wrapper.find('.btn-create').trigger('click')
+  await flushPromises()
+  await flushPromises()
+}
+
+describe('TaskView 两段式创建', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.stubGlobal('alert', vi.fn())
+    console.error = vi.fn()
+    console.warn = vi.fn()
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('视觉规则：preview 后弹选择框，且此时还没落库', async () => {
+    const posts = mockCreateFlow(VISION_PREVIEW)
+    const wrapper = mount(TaskView)
+    await flushPromises()
+
+    await openCreateFormAndType(wrapper, '有人就打开研发部灯')
+
+    expect(wrapper.findComponent(CameraBindModal).exists()).toBe(true)
+    expect(posts.map(p => p.url)).toEqual(['/api/rules/preview'])
+    // preview 刻意不带 camera_id，否则 needs_camera 永远为假、拦不住
+    expect(posts[0].body).toEqual({ text: '有人就打开研发部灯' })
+  })
+
+  it('选择框确认 → POST /api/rules 带上选中的 camera_id', async () => {
+    const posts = mockCreateFlow(VISION_PREVIEW)
+    const wrapper = mount(TaskView)
+    await flushPromises()
+    await openCreateFormAndType(wrapper, '有人就打开研发部灯')
+
+    wrapper.findComponent(CameraBindModal).vm.$emit('confirm', 'cam_2')
+    await flushPromises()
+
+    const save = posts.find(p => p.url.endsWith('/api/rules'))
+    expect(save.body.camera_id).toBe('cam_2')
+    expect(save.body.name).toBe('有人开研发部灯')
+    expect(save.body.type).toBe('vision')
+    expect(wrapper.findComponent(CameraBindModal).exists()).toBe(false)
+  })
+
+  it('选择框可以显式选全局（camera_id 空串）', async () => {
+    const posts = mockCreateFlow(VISION_PREVIEW)
+    const wrapper = mount(TaskView)
+    await flushPromises()
+    await openCreateFormAndType(wrapper, '有人就开灯')
+
+    wrapper.findComponent(CameraBindModal).vm.$emit('confirm', '')
+    await flushPromises()
+
+    const save = posts.find(p => p.url.endsWith('/api/rules'))
+    expect(save.body.camera_id).toBe('')
+  })
+
+  it('选择框取消 → 不落库，输入框内容留着让用户改措辞', async () => {
+    const posts = mockCreateFlow(VISION_PREVIEW)
+    const wrapper = mount(TaskView)
+    await flushPromises()
+    await openCreateFormAndType(wrapper, '有人就打开研发部灯')
+
+    wrapper.findComponent(CameraBindModal).vm.$emit('close')
+    await flushPromises()
+
+    expect(posts.map(p => p.url)).toEqual(['/api/rules/preview'])
+    expect(wrapper.findComponent(CameraBindModal).exists()).toBe(false)
+    expect(wrapper.find('.create-input').element.value).toBe('有人就打开研发部灯')
+  })
+
+  it('非视觉规则：不弹框，直接落库并沿用 header 的作用范围', async () => {
+    const posts = mockCreateFlow(TIME_PREVIEW)
+    const wrapper = mount(TaskView)
+    await flushPromises()
+    await openCreateFormAndType(wrapper, '日落时打开客厅灯')
+
+    expect(wrapper.findComponent(CameraBindModal).exists()).toBe(false)
+    const save = posts.find(p => p.url.endsWith('/api/rules'))
+    expect(save).toBeTruthy()
+    // header 默认「全局(定时/天气)」→ camera_id 空串，保持原有按房间归类的用法
+    expect(save.body.camera_id).toBe('')
+  })
+
+  it('header 作用范围指着某路摄像头时，非视觉规则沿用该绑定', async () => {
+    const posts = mockCreateFlow(TIME_PREVIEW)
+    const wrapper = mount(TaskView)
+    await flushPromises()
+    wrapper.vm.selectedCameraId = 'cam_1'
+    await flushPromises()
+
+    await openCreateFormAndType(wrapper, '日落时打开客厅灯')
+
+    expect(posts.find(p => p.url.endsWith('/api/rules')).body.camera_id).toBe('cam_1')
+  })
+
+  it('作用范围是全局但解析出视觉规则 → 选择框收到 scopeCameraId="" 以便警告', async () => {
+    mockCreateFlow(VISION_PREVIEW)
+    const wrapper = mount(TaskView)
+    await flushPromises()
+    await openCreateFormAndType(wrapper, '有人就开灯')
+
+    expect(wrapper.findComponent(CameraBindModal).props('scopeCameraId')).toBe('')
+    expect(wrapper.findComponent(CameraBindModal).props('cameras')).toEqual(CAMERAS)
+  })
+
+  it('preview 失败时 alert 出后端 message，不弹选择框', async () => {
+    global.fetch = vi.fn((url, opts = {}) => {
+      if (String(url).endsWith('/api/rules/preview')) {
+        return Promise.resolve({
+          ok: false, status: 400,
+          json: () => Promise.resolve({ message: '无法从输入中解析出有效的视觉条件' }),
+        })
+      }
+      if (String(url) === '/api/cameras') {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: CAMERAS }) })
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: [] }) })
+    })
+    const wrapper = mount(TaskView)
+    await flushPromises()
+
+    await openCreateFormAndType(wrapper, '乱写')
+
+    expect(alert).toHaveBeenCalledWith(expect.stringContaining('无法从输入中解析出'))
+    expect(wrapper.findComponent(CameraBindModal).exists()).toBe(false)
   })
 })

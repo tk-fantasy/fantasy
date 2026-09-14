@@ -33,15 +33,3 @@ class TestWeatherRoute:
             mock_get.assert_called_once_with("北京")
 
 
-class TestWeatherLocateRoute:
-    @pytest.mark.asyncio
-    async def test_locate(self):
-        """测试 IP 定位路由。"""
-        from app.routes.weather_routes import weather_locate
-
-        mock_data = {"name": "宝山", "adm1": "上海", "lat": "31.40", "lon": "121.49"}
-        with patch("app.routes.weather_routes.ip_locate", new_callable=AsyncMock) as mock_locate:
-            mock_locate.return_value = mock_data
-            result = await weather_locate()
-            assert result.code == "ok"
-            assert result.data["name"] == "宝山"

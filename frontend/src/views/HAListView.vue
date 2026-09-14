@@ -3,13 +3,12 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import BaseToggle from '../components/BaseToggle.vue'
 import EmojiPicker from '../components/EmojiPicker.vue'
 import SensorChart from '../components/SensorChart.vue'
-import { adaptControls, formatSliderValue, toActualValue } from '../utils/deviceCapabilities.js'
+import { adaptControls, formatSliderValue } from '../utils/deviceCapabilities.js'
 import SceneBar from '../components/SceneBar.vue'
 import { apiGet } from '../utils/api'
 import { useEmojiPref } from '../composables/useEmojiPref'
 import { useEntityMeta } from '../composables/useEntityMeta'
 
-const entities = ref([])        // 扁平实体列表（兼容，也供 modal 内按 id 查找）
 const devices = ref([])         // 设备分组（主数据源）
 const services = ref({})
 const loading = ref(true)
@@ -25,10 +24,10 @@ const { emojiPrefs, showEmojiPicker, loadEmojiPrefs, openEmojiPicker, onEmojiSel
 
 // 实体别名 + 备注（composable 统一封装，依赖弹窗选中的实体/设备）
 const {
-  entityAliases, editingName, nameInput,
+  editingName, nameInput,
   entityNotes, noteInput, editingNote,
   entityOperable,
-  loadEntityAliases, startEditName, saveName, resetName,
+  startEditName, saveName, resetName,
   loadEntityNotes, startEditNote, saveNote, resetNote,
   loadEntityOperable, toggleOperable,
 } = useEntityMeta(selectedEntity, selectedDevice)
@@ -436,7 +435,6 @@ async function loadEntities() {
       apiGet('/api/ha/entities'),
       apiGet('/api/ha/services'),
     ])
-    entities.value = entitiesData.entities || entitiesData || []
     devices.value = entitiesData.devices || []
     services.value = servicesData || {}
   } catch (e) {
@@ -454,7 +452,6 @@ async function refreshEntitiesQuiet() {
       apiGet('/api/ha/services'),
     ])
     const freshEntities = entitiesData.entities || entitiesData || []
-    entities.value = freshEntities
     devices.value = entitiesData.devices || []
     services.value = servicesData || {}
     if (selectedEntity.value) {
@@ -566,7 +563,7 @@ const capabilities = computed(() => {
 
 async function handleCapability(cap, value) {
   if (!selectedEntity.value) return
-  const actualValue = cap.type === 'slider' ? toActualValue(cap, value) : value
+  const actualValue = value
   const data = { [cap.param]: actualValue }
 
   // 乐观更新：先改本地状态，UI 立即响应
@@ -608,8 +605,6 @@ async function refreshSelectedEntity() {
       apiGet('/api/ha/services'),
     ])
     const freshEntities = entitiesData.entities || []
-    // 同步扁平 entities（卡片计数等依赖）
-    entities.value = freshEntities
     devices.value = entitiesData.devices || []
     const fresh = freshEntities.find(e => e.entity_id === entityId)
     if (fresh) {
@@ -703,7 +698,6 @@ let entityPollTimer = null
 onMounted(() => {
   loadEntities()
   loadEmojiPrefs()
-  loadEntityAliases()
   loadEntityNotes()
   loadEntityOperable()
   entityPollTimer = setInterval(() => {

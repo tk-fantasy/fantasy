@@ -11,6 +11,9 @@
 """
 from __future__ import annotations
 
+import time
+from types import SimpleNamespace
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -129,6 +132,10 @@ class TestRouteRegistration:
         ("/api/auth/login", "POST"),
         ("/api/scheduled-tasks", "GET"),
         ("/api/sg/status", "GET"),
+        ("/api/rules/pending/pd1/explain", "POST"),
+        ("/api/rules/pending/pd1/revise", "POST"),
+        ("/api/rules/pending/pd1/confirm", "POST"),
+        ("/api/rules/pending/pd1/cancel", "POST"),
     ])
     def test_route_registered(self, client: TestClient, path: str, method: str):
         """这些路由应该存在（不是 404）。未认证会 401，但不是 404。"""
@@ -143,3 +150,186 @@ class TestRouteRegistration:
         """
         assert client.get("/api/state", headers=_auth_header()).status_code == 404
         assert client.get("/api/video_feed", headers=_auth_header()).status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# 待确认规则端点 — 真 HTTP 链路（路由冲突 / 认证中间件 / 校验 / 错误体形状）
+#
+# 函数级测试（tests/test_rule_routes.py）已覆盖业务分支，这里只补它摸不到的部分：
+# 4 段路径没被 /rules/{rule_id}/xxx 吞掉、api_token_guard 覆盖到新端点、
+# AppException 真的映射成前端 _unwrap 依赖的 {code, message} + 对应状态码。
+# 用 dependency_overrides 换掉容器，避免 confirm 往真实规则表/会话表写数据。
+# ---------------------------------------------------------------------------
+
+DRAFT_RULE = {
+    "name": "有人开研发部灯",
+    "condition": "画面里有人",
+    # 已绑定摄像头的视觉规则（用户在弹窗里选过之后的状态）；缺 type 会被兜底成
+    # vision，再缺 camera_id 就撞上 confirm 的强校验
+    "type": "vision",
+    "camera_id": "cam_1",
+    "actions": [{"mcp_tool_name": "ha_devices___call_service",
+                 "mcp_tool_input": {"domain": "light", "service": "turn_on",
+                                    "entity_id": "light.rd"}}],
+    "summary": "有人就打开研发部灯",
+}
+
+
+@pytest.fixture
+def pending_env(client: TestClient):
+    """假容器：真 SessionState + 真 pending_rules 逻辑，桩掉落库与 LLM。"""
+    import app.main as m
+    from app.container import get_container
+    from app.services.session_store import SessionState
+
+    session = SessionState(session_id="s-http", request_id="r-http", user_id="test-user")
+    session.model_messages = [{"role": "user", "content": "如果有人就打开研发部灯"}]
+    session.pending_confirmations["pd1"] = {
+        "kind": "automation_rule", "rule": dict(DRAFT_RULE), "created_at": time.time(),
+    }
+
+    saved: list[dict] = []
+    stored: list = []
+
+    class _Registry:
+        def add_rule(self, rule, user_id=""):
+            row = {**rule, "id": "rule-http-1", "user_id": user_id, "enabled": True}
+            saved.append(row)
+            return row
+
+        def get_rule(self, rule_id):
+            return None
+
+    class _Store:
+        async def get_session(self, session_id):
+            return session if session_id == session.session_id else None
+
+        async def store_session(self, s):
+            stored.append(s)
+
+    class _RuleService:
+        async def explain_rule(self, rule, question, user_id=""):
+            return f"答：{question}"
+
+        async def revise_rule(self, rule, instruction, user_id=""):
+            return {"rule": {**rule, "condition": "画面里有两个人"}, "summary": "改成两个人"}
+
+    class _HA:
+        async def get_states_snapshot(self):
+            return [{"entity_id": "light.rd"}]
+
+    container = SimpleNamespace(
+        session_store=_Store(),
+        rule_registry_service=_Registry(),
+        rule_service=_RuleService(),
+        ha_service=_HA(),
+        ha_client_ref=[object()],
+    )
+    m.app.dependency_overrides[get_container] = lambda: container
+    try:
+        yield SimpleNamespace(session=session, saved=saved, stored=stored)
+    finally:
+        m.app.dependency_overrides.pop(get_container, None)
+
+
+def _post(client, path, body, auth=True):
+    headers = _auth_header() if auth else {}
+    return client.post(path, json=body, headers=headers)
+
+
+class TestPendingRuleHttp:
+    """POST /api/rules/pending/{id}/* 的 HTTP 层行为。"""
+
+    def test_unauthenticated_is_401(self, client: TestClient, pending_env):
+        """新端点必须落在 api_token_guard 覆盖范围内。"""
+        resp = _post(client, "/api/rules/pending/pd1/confirm",
+                     {"session_id": "s-http"}, auth=False)
+        assert resp.status_code == 401
+        assert resp.json()["code"] == "unauthorized"
+
+    def test_confirm_ok_body_shape(self, client: TestClient, pending_env):
+        resp = _post(client, "/api/rules/pending/pd1/confirm", {"session_id": "s-http"})
+
+        assert resp.status_code == 200
+        body = resp.json()
+        # 前端 apiPost 只认 code=="ok" 时解包 data，形状必须是 ApiResponse
+        assert body["code"] == "ok"
+        assert body["data"] == {"rule_id": "rule-http-1", "name": "有人开研发部灯",
+                                "summary": "有人就打开研发部灯"}
+        assert pending_env.saved[0]["user_id"] == "test-user"
+        assert pending_env.session.pending_confirmations == {}
+        assert pending_env.stored == [pending_env.session]
+        assert pending_env.session.model_messages[-1]["content"] == (
+            "（我已通过界面确认，规则「有人开研发部灯」已创建生效）")
+
+    def test_confirm_foreign_session_is_403_with_message(self, client: TestClient, pending_env):
+        pending_env.session.user_id = "someone-else"
+
+        resp = _post(client, "/api/rules/pending/pd1/confirm", {"session_id": "s-http"})
+
+        assert resp.status_code == 403
+        body = resp.json()
+        assert body["code"] == "forbidden"
+        assert body["message"]  # 前端 _unwrap 靠 message 报错
+        assert pending_env.saved == []
+
+    def test_confirm_expired_draft_is_404(self, client: TestClient, pending_env):
+        """进程重启后草稿必丢（不持久化）——前端据 404 提示重说需求。"""
+        pending_env.session.pending_confirmations["pd1"]["created_at"] = time.time() - 601
+
+        resp = _post(client, "/api/rules/pending/pd1/confirm", {"session_id": "s-http"})
+
+        assert resp.status_code == 404
+        assert resp.json()["code"] == "pending_rule_not_found"
+        assert "重新描述需求" in resp.json()["message"]
+        assert pending_env.saved == []
+
+    def test_confirm_unknown_session_is_404(self, client: TestClient, pending_env):
+        resp = _post(client, "/api/rules/pending/pd1/confirm", {"session_id": "nope"})
+
+        assert resp.status_code == 404
+        assert resp.json()["code"] == "session_not_found"
+
+    def test_missing_session_id_is_422(self, client: TestClient, pending_env):
+        """草稿按会话存，session_id 缺失必须被 Pydantic 挡在路由外。"""
+        resp = _post(client, "/api/rules/pending/pd1/confirm", {})
+
+        assert resp.status_code == 422
+
+    def test_explain_ok(self, client: TestClient, pending_env):
+        resp = _post(client, "/api/rules/pending/pd1/explain",
+                     {"session_id": "s-http", "question": "啥时候触发？"})
+
+        assert resp.status_code == 200
+        assert resp.json()["data"] == {"answer": "答：啥时候触发？"}
+
+    def test_revise_updates_draft_in_place(self, client: TestClient, pending_env):
+        resp = _post(client, "/api/rules/pending/pd1/revise",
+                     {"session_id": "s-http", "instruction": "要两个人才开"})
+
+        assert resp.status_code == 200
+        assert resp.json()["data"]["summary"] == "改成两个人"
+        assert pending_env.session.pending_confirmations["pd1"]["rule"]["condition"] == "画面里有两个人"
+        # 草稿不持久化，revise 不该触发会话落库
+        assert pending_env.stored == []
+
+    def test_cancel_ok(self, client: TestClient, pending_env):
+        resp = _post(client, "/api/rules/pending/pd1/cancel", {"session_id": "s-http"})
+
+        assert resp.status_code == 200
+        assert resp.json()["data"] == {"cancelled": True, "name": "有人开研发部灯"}
+        assert pending_env.session.pending_confirmations == {}
+        assert pending_env.saved == []
+
+    def test_three_segment_path_still_hits_legacy_rule_endpoint(self, client: TestClient,
+                                                               pending_env):
+        """路径不冲突：3 段的 /rules/{rule_id}/explain 仍走旧端点，不被 pending 抢。
+
+        旧端点查不到规则 → 404 rule_not_found（而不是 pending_rule_not_found），
+        证明命中的是 explain_rule 而非 explain_pending_rule。
+        """
+        resp = _post(client, "/api/rules/pd1/explain",
+                     {"session_id": "s-http", "question": "？", "current": {}})
+
+        assert resp.status_code == 404
+        assert resp.json()["code"] == "rule_not_found"

@@ -1,4 +1,9 @@
-"""定时任务路由 — CRUD + 手动触发。"""
+"""定时任务路由 — CRUD + 手动触发。
+
+错误一律 raise AppException，不要 return ApiResponse(success=False, ...)：
+ApiResponse 没有 success 字段，Pydantic 默认 extra='ignore' 会把它静默丢掉，
+发出去的是 code='ok' + HTTP 200，前端 _unwrap 当成功解包 —— 失败被渲染成成功。
+"""
 from __future__ import annotations
 
 import logging
@@ -8,6 +13,7 @@ from fastapi import APIRouter, Depends
 from ..container import AppContainer, get_container
 from ..core.api_models import ApiResponse
 from ..core.auth import get_current_user
+from ..core.exceptions import AppException
 from ..schema.api_schemas import (
     ScheduledTaskCreateRequest,
     ScheduledTaskEnabledRequest,
@@ -30,8 +36,12 @@ async def parse_schedule(payload: ScheduleParseRequest) -> ApiResponse[dict]:
     try:
         result = await _parse(payload.phrase)
         return ApiResponse(data=result)
-    except (ValueError, RuntimeError) as e:
-        return ApiResponse(success=False, message=str(e), data=None)
+    except ValueError as e:
+        # 用户措辞/LLM 输出的 schedule 不合法 —— 换个说法就能成，属客户端问题
+        raise AppException(str(e), code="schedule_parse_failed", http_status=400)
+    except RuntimeError as e:
+        # schedule_parser_service 文档口径：LLM 未配置或调用失败
+        raise AppException(str(e), code="schedule_parse_unavailable", http_status=502)
 
 
 @router.get("/scheduled-tasks")
@@ -40,7 +50,7 @@ async def list_scheduled_tasks(
 ) -> ApiResponse[list[dict]]:
     svc = container.scheduler_service
     if svc is None:
-        return ApiResponse(success=False, message="调度器未就绪", data=None)
+        raise AppException("调度器未就绪", code="scheduler_unavailable", http_status=503)
     return ApiResponse(data=await svc.list_tasks())
 
 
@@ -52,7 +62,7 @@ async def create_scheduled_task(
 ) -> ApiResponse[dict]:
     svc = container.scheduler_service
     if svc is None:
-        return ApiResponse(success=False, message="调度器未就绪", data=None)
+        raise AppException("调度器未就绪", code="scheduler_unavailable", http_status=503)
 
     # name 为空时自动生成：schedule 摘要 + payload 摘要
     name = payload.name.strip()
@@ -89,10 +99,10 @@ async def set_scheduled_task_enabled(
 ) -> ApiResponse[dict]:
     svc = container.scheduler_service
     if svc is None:
-        return ApiResponse(success=False, message="调度器未就绪", data=None)
+        raise AppException("调度器未就绪", code="scheduler_unavailable", http_status=503)
     task = await svc.set_enabled(task_id, payload.enabled)
     if task is None:
-        return ApiResponse(success=False, message="任务不存在", data=None)
+        raise AppException("任务不存在", code="task_not_found", http_status=404)
     return ApiResponse(data=task)
 
 
@@ -109,10 +119,10 @@ async def run_scheduled_task_now(
     """
     svc = container.scheduler_service
     if svc is None:
-        return ApiResponse(success=False, message="调度器未就绪", data=None)
+        raise AppException("调度器未就绪", code="scheduler_unavailable", http_status=503)
     task = await svc.run_now(task_id, wait=wait)
     if task is None:
-        return ApiResponse(success=False, message="任务不存在", data=None)
+        raise AppException("任务不存在", code="task_not_found", http_status=404)
     return ApiResponse(data=task)
 
 
@@ -123,7 +133,7 @@ async def delete_scheduled_task(
 ) -> ApiResponse[dict]:
     svc = container.scheduler_service
     if svc is None:
-        return ApiResponse(success=False, message="调度器未就绪", data=None)
+        raise AppException("调度器未就绪", code="scheduler_unavailable", http_status=503)
     await svc.delete_task(task_id)
     return ApiResponse(data={"id": task_id})
 
@@ -140,7 +150,7 @@ async def revise_scheduled_task(
     """
     svc = container.scheduler_service
     if svc is None:
-        return ApiResponse(success=False, message="调度器未就绪", data=None)
+        raise AppException("调度器未就绪", code="scheduler_unavailable", http_status=503)
 
     current = payload.current or {}
     if not current:
@@ -148,13 +158,15 @@ async def revise_scheduled_task(
         tasks = await svc.list_tasks()
         current = next((t for t in tasks if t.get("id") == task_id), None) or {}
         if not current:
-            return ApiResponse(success=False, message="任务不存在", data=None)
+            raise AppException("任务不存在", code="task_not_found", http_status=404)
 
     from ..services.task_revise_service import revise_task as _revise
     try:
         result = await _revise(current, payload.instruction)
-    except (ValueError, RuntimeError) as e:
-        return ApiResponse(success=False, message=str(e), data=None)
+    except ValueError as e:
+        raise AppException(str(e), code="task_revise_invalid", http_status=400)
+    except RuntimeError as e:
+        raise AppException(str(e), code="task_revise_failed", http_status=502)
     return ApiResponse(data=result)
 
 
@@ -170,7 +182,7 @@ async def update_scheduled_task(
     """
     svc = container.scheduler_service
     if svc is None:
-        return ApiResponse(success=False, message="调度器未就绪", data=None)
+        raise AppException("调度器未就绪", code="scheduler_unavailable", http_status=503)
     task = payload.task or {}
     # update_task 是 patch 合并：传 schedule + payload + name 即可
     patch = {}
@@ -179,7 +191,7 @@ async def update_scheduled_task(
             patch[k] = task[k]
     updated = await svc.update_task(task_id, patch)
     if updated is None:
-        return ApiResponse(success=False, message="任务不存在", data=None)
+        raise AppException("任务不存在", code="task_not_found", http_status=404)
     return ApiResponse(data=updated)
 
 
@@ -192,18 +204,20 @@ async def explain_scheduled_task(
     """plan 模式：用自然语言回答关于当前定时任务的提问（只读，不修改）。"""
     svc = container.scheduler_service
     if svc is None:
-        return ApiResponse(success=False, message="调度器未就绪", data=None)
+        raise AppException("调度器未就绪", code="scheduler_unavailable", http_status=503)
 
     current = payload.current or {}
     if not current:
         tasks = await svc.list_tasks()
         current = next((t for t in tasks if t.get("id") == task_id), None) or {}
         if not current:
-            return ApiResponse(success=False, message="任务不存在", data=None)
+            raise AppException("任务不存在", code="task_not_found", http_status=404)
 
     from ..services.task_revise_service import explain_task as _explain
     try:
         answer = await _explain(current, payload.question)
-    except (ValueError, RuntimeError) as e:
-        return ApiResponse(success=False, message=str(e), data=None)
+    except ValueError as e:
+        raise AppException(str(e), code="task_explain_invalid", http_status=400)
+    except RuntimeError as e:
+        raise AppException(str(e), code="task_explain_failed", http_status=502)
     return ApiResponse(data={"answer": answer})

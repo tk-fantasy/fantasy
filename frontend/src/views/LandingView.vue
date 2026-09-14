@@ -5,7 +5,6 @@ import { useRouter } from 'vue-router'
 const router = useRouter()
 const showContent = ref(false)
 const isTransitioning = ref(false)
-const videoRef = ref(null)
 
 onMounted(() => {
   setTimeout(() => {
@@ -29,7 +28,6 @@ function enterApp() {
   <div class="landing">
     <div class="video-wrapper">
       <video
-        ref="videoRef"
         class="bg-video"
         autoplay
         muted

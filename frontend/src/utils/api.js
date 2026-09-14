@@ -10,7 +10,8 @@
  *
  * @param {Response} res
  * @returns {Promise<any>} 解包后的 data
- * @throws {Error} message 取自后端 json.message，无 JSON 时带 status
+ * @throws {Error} message 取自后端 json.message，无 JSON 时带 status；
+ *   额外挂 err.status（HTTP 状态码），供调用方区分「资源已失效」等可恢复语义
  */
 async function _unwrap(res) {
   let json = null
@@ -18,10 +19,13 @@ async function _unwrap(res) {
   try {
     json = await res.json()
   } catch {
-    throw new Error(`请求失败：HTTP ${res.status}`)
+    throw Object.assign(new Error(`请求失败：HTTP ${res.status}`), { status: res.status })
   }
   if (!res.ok) {
-    throw new Error(json?.message || `请求失败：HTTP ${res.status}`)
+    throw Object.assign(
+      new Error(json?.message || `请求失败：HTTP ${res.status}`),
+      { status: res.status },
+    )
   }
   return json.data ?? json
 }

@@ -34,43 +34,8 @@ class TestUserRoutes:
             assert len(result.data) == 2
             assert result.data[0]["username"] == "admin"
 
-    @pytest.mark.asyncio
-    async def test_get_current_user_info(self):
-        """测试获取当前用户信息。"""
-        from app.routes.user_routes import get_current_user_info
-
-        mock_user = {
-            "id": "1",
-            "username": "admin",
-            "display_name": "Admin",
-            "created_at": 1000
-        }
-
-        mock_db = AsyncMock()
-        mock_db.user_get_by_id = AsyncMock(return_value=mock_user)
-
-        current_user = {"user_id": "1", "username": "admin"}
-
-        with patch("app.routes.user_routes.Database.get", return_value=mock_db):
-            result = await get_current_user_info(current_user)
-            assert result.data["username"] == "admin"
-
-    @pytest.mark.asyncio
-    async def test_get_current_user_info_not_found(self):
-        """测试获取不存在的用户信息。"""
-        from app.routes.user_routes import get_current_user_info
-        from app.core.exceptions import AppException
-
-        mock_db = AsyncMock()
-        mock_db.user_get_by_id = AsyncMock(return_value=None)
-
-        current_user = {"user_id": "999", "username": "ghost"}
-
-        with patch("app.routes.user_routes.Database.get", return_value=mock_db):
-            with pytest.raises(AppException) as exc_info:
-                await get_current_user_info(current_user)
-            assert exc_info.value.code == "user_not_found"
-
+    
+    
     @pytest.mark.asyncio
     async def test_switch_user_success(self):
         """测试切换用户成功。"""
@@ -98,11 +63,37 @@ class TestUserRoutes:
         payload = UserSwitchRequest(username="user2", password="pass123")
 
         with patch("app.routes.user_routes.Database.get", return_value=mock_db):
-            with patch("app.routes.user_routes.update_memory_config"):
-                with patch("app.routes.user_routes.write_secrets"):
-                    with patch("app.routes.user_routes.logger"):
-                        result = await switch_user(mock_request, payload, mock_response, current_user, mock_container)
-                        assert result.data["switched_to"] == "user2"
+            with patch("app.routes.user_routes.logger"):
+                result = await switch_user(mock_request, payload, mock_response, current_user, mock_container)
+                assert result.data["switched_to"] == "user2"
+
+    @pytest.mark.asyncio
+    async def test_save_own_llm_keys_writes_db_only(self):
+        """回归护栏：保存自己的 keys 只写 per-user DB。
+
+        此前恒真死条件 `if user["id"] == current_user["user_id"]` 使每次保存都
+        覆盖全局内存 CONFIG + 写全局 .env + reload 全局客户端，多用户下"最后
+        保存的人"劫持所有后台任务的全局解析。修复后本路由不得再引入
+        update_memory_config / write_secrets。
+        """
+        import app.routes.user_routes as ur
+        assert not hasattr(ur, "update_memory_config")
+        assert not hasattr(ur, "write_secrets")
+
+        from app.routes.user_routes import save_user_llm_keys
+        from app.schema.api_schemas import UserLLMKeysRequest
+
+        user = {"id": "1", "username": "admin", "password_hash": "x", "created_at": 1}
+        mock_db = AsyncMock()
+        mock_db.user_get_by_username = AsyncMock(return_value=user)
+        mock_db.user_setting_set = AsyncMock()
+
+        payload = UserLLMKeysRequest(keys=[{"id": "k1", "type": "chat"}])
+        with patch("app.routes.user_routes.Database.get", return_value=mock_db):
+            result = await save_user_llm_keys("admin", payload, {"user_id": "1", "username": "admin"})
+
+        assert result.data == {"saved": True, "count": 1}
+        mock_db.user_setting_set.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_switch_user_not_found(self):
@@ -167,76 +158,4 @@ class TestUserRoutes:
             assert exc_info.value.http_status == 401
 
 
-class TestGetUserLlmKeysIdor:
-    """GET /users/{username}/llm_keys 归属校验（审查 #7a：防 IDOR）。
 
-    原代码写接口有归属校验、读接口没有 → 任意登录用户可读他人 key 元数据。
-    """
-
-    @pytest.mark.asyncio
-    async def test_reading_other_users_keys_forbidden(self):
-        """用户 A 读用户 B 的 keys → 403。"""
-        from app.routes.user_routes import get_user_llm_keys
-        from app.core.exceptions import AppException
-
-        other_user = {"id": "2", "username": "userB"}
-        mock_db = AsyncMock()
-        mock_db.user_get_by_username = AsyncMock(return_value=other_user)
-        current_user = {"user_id": "1", "username": "admin"}  # A
-
-        with patch("app.routes.user_routes.Database.get", return_value=mock_db):
-            with pytest.raises(AppException) as exc_info:
-                await get_user_llm_keys("userB", current_user)
-            assert exc_info.value.code == "forbidden"
-            assert exc_info.value.http_status == 403
-
-    @pytest.mark.asyncio
-    async def test_reading_own_keys_allowed(self):
-        """用户读自己的 keys → 200。"""
-        from app.routes.user_routes import get_user_llm_keys
-
-        me = {"id": "1", "username": "admin"}
-        mock_db = AsyncMock()
-        mock_db.user_get_by_username = AsyncMock(return_value=me)
-        mock_db.user_setting_get = AsyncMock(return_value='[{"id":"k1","model":"gpt"}]')
-        current_user = {"user_id": "1", "username": "admin"}
-
-        with patch("app.routes.user_routes.Database.get", return_value=mock_db):
-            result = await get_user_llm_keys("admin", current_user)
-        assert result.data[0]["id"] == "k1"
-
-
-class TestGetUserProvidersIdor:
-    """GET /users/{username}/providers 归属校验（审查 #7a：防 IDOR）。"""
-
-    @pytest.mark.asyncio
-    async def test_reading_other_users_providers_forbidden(self):
-        """用户 A 读用户 B 的 providers → 403。"""
-        from app.routes.user_routes import get_user_providers
-        from app.core.exceptions import AppException
-
-        other_user = {"id": "2", "username": "userB"}
-        mock_db = AsyncMock()
-        mock_db.user_get_by_username = AsyncMock(return_value=other_user)
-        current_user = {"user_id": "1", "username": "admin"}
-
-        with patch("app.routes.user_routes.Database.get", return_value=mock_db):
-            with pytest.raises(AppException) as exc_info:
-                await get_user_providers("userB", current_user)
-            assert exc_info.value.code == "forbidden"
-            assert exc_info.value.http_status == 403
-
-    @pytest.mark.asyncio
-    async def test_reading_own_providers_allowed(self):
-        """用户读自己的 providers → 200。"""
-        from app.routes.user_routes import get_user_providers
-
-        me = {"id": "1", "username": "admin"}
-        mock_db = AsyncMock()
-        mock_db.user_get_by_username = AsyncMock(return_value=me)
-        mock_db.user_setting_get = AsyncMock(return_value='{"openai":{}}')
-        current_user = {"user_id": "1", "username": "admin"}
-
-        with patch("app.routes.user_routes.Database.get", return_value=mock_db):
-            result = await get_user_providers("admin", current_user)
-        assert result.data == {"openai": {}}

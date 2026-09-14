@@ -371,12 +371,22 @@ class RuleCreateRequest(BaseModel):
 
 
 class RulePayloadRequest(BaseModel):
-    """POST /rules 请求体。"""
+    """POST /rules 请求体 —— 把一条完整规则落库。
+
+    后四个字段是 /rules/preview 的产物落库时要带上的（TaskView 两段式创建：
+    先预览拿到解析结果，视觉规则弹框让用户选摄像头，再落库）。默认 None 且
+    create_rule 会把 None 过滤掉，所以直接手建规则的旧调用方行为不变。
+    """
     condition: str = ""
     actions: list[dict[str, Any]] = Field(default_factory=list)
     enabled: bool = True
     cooldown_seconds: int = 5
     type: str = "vision"  # 规则类型 time/weather/vision；决定评估走 chat 还是 VL
+    name: str | None = None
+    summary: str | None = None
+    action_descriptions: list[str] | None = None
+    # "" = 显式选择「全部摄像头（全局）」；None = 未提供（视觉规则会被 create_rule 挡下）
+    camera_id: str | None = None
 
 
 class RuleEnabledRequest(BaseModel):
@@ -480,6 +490,59 @@ class ExplainRequest(BaseModel):
     """
     current: dict[str, Any]
     question: str = Field(min_length=1)
+
+
+# --------------- Pending Rules (网页确认弹窗：待落库的草稿) ---------------
+#
+# 草稿存在 SessionState.pending_confirmations（内存、10 分钟 TTL），不在规则表里，
+# 所以这三个端点都要 session_id 才能定位——与已落库规则的 /rules/{rule_id}/xxx 不同，
+# 后端从草稿取 rule，前端不传 current。
+
+class PendingExplainRequest(BaseModel):
+    """POST /rules/pending/{pending_id}/explain 请求体。"""
+    session_id: str = Field(min_length=1)
+    question: str = Field(min_length=1)
+
+
+class PendingReviseRequest(BaseModel):
+    """POST /rules/pending/{pending_id}/revise 请求体。改动直接写回草稿。"""
+    session_id: str = Field(min_length=1)
+    instruction: str = Field(min_length=1)
+
+
+class PendingConfirmRequest(BaseModel):
+    """POST /rules/pending/{pending_id}/confirm 与 /cancel 请求体。
+
+    也复用于 POST /ha/pending/{pending_id}/cancel（设备消歧草稿的放弃，只用
+    session_id，camera_id 忽略）。
+
+    camera_id 三态（confirm 用，cancel 忽略）：
+      None = 用户没选 → 视觉规则拒绝落库（服务端兜底，不只靠前端禁用按钮）
+      ""   = 显式选择「全部摄像头（全局）」→ 放行，规则在所有摄像头上评估
+      非空 = 绑定到该路摄像头
+    """
+    session_id: str = Field(min_length=1)
+    camera_id: str | None = None
+
+
+class PendingSelectRequest(BaseModel):
+    """POST /ha/pending/{pending_id}/select 请求体（设备消歧弹框提交勾选）。
+
+    entity_ids 只允许是草稿 candidates 里的成员——服务端逐个校验。弹框若能提交
+    任意 entity_id，就等于开了一条绕过消歧闸门与 entity_operable 黑名单的后门。
+    """
+    session_id: str = Field(min_length=1)
+    entity_ids: list[str] = Field(min_length=1)
+
+
+class PendingCameraRequest(BaseModel):
+    """POST /rules/pending/{pending_id}/camera 请求体 —— 给草稿改绑摄像头。
+
+    渠道无关的通用能力：网页弹窗走 confirm 顺带带上 camera_id；飞书等无界面渠道
+    的问答流程（以及未来的交互卡片按钮）调这个端点。camera_id="" 表示全局。
+    """
+    session_id: str = Field(min_length=1)
+    camera_id: str = ""
 
 
 # --------------- Unique Settings ---------------

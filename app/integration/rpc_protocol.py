@@ -17,6 +17,8 @@ METHOD_HANDSHAKE = "handshake"
 METHOD_SPEAK = "sink.speak"
 METHOD_INTERRUPT = "sink.interrupt"
 METHOD_ROUTE = "router.handle"
+METHOD_TOOLS_LIST = "tools.list"    # 拉取插件声明的 agent 工具定义（agent_tools 能力）
+METHOD_TOOLS_CALL = "tools.call"    # 宿主调用插件的 agent 工具（agent_tools 能力）
 METHOD_SHUTDOWN = "shutdown"  # 停止通知：plugin_process.stop 发送；插件侧无内置
 # handler（可经 register_method("shutdown", ...) 自定义），实际停止靠关 stdin。
 
@@ -26,6 +28,8 @@ METHOD_HOST_HA_STATES = "ha.get_states"
 METHOD_HOST_HA_DEVICES = "ha.get_devices_grouped"
 METHOD_HOST_LLM_CHAT = "llm.chat"
 METHOD_HOST_BROADCAST = "sink.broadcast"
+METHOD_HOST_MODE_SET = "mode.set"   # 切换全局聊天模式（如小爱直通），需 permissions=["mode"]
+METHOD_HOST_MODE_GET = "mode.get"   # 读取全局聊天模式
 METHOD_HOST_CAM_REGISTER = "camera.register"
 METHOD_HOST_CAM_PUSH = "camera.push_frame"
 METHOD_HOST_CAM_UNREGISTER = "camera.unregister"

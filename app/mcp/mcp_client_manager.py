@@ -32,6 +32,17 @@ class MCPClientManager:
         key = f"{tool.client_id}___{tool.tool_name}"
         self._tools[key] = tool
 
+    def unregister_client(self, client_id: str) -> int:
+        """按 client_id 批量移除其注册的全部工具（插件停止时清场用）。
+
+        返回移除的工具数。只影响该 client_id，内置/外部 server 工具不受影响。
+        """
+        prefix = f"{client_id}___"
+        removed = [k for k in self._tools if k.startswith(prefix)]
+        for k in removed:
+            del self._tools[k]
+        return len(removed)
+
     def list_tools(self) -> list[MCPTool]:
         return list(self._tools.values())
 

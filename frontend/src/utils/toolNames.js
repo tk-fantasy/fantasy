@@ -7,7 +7,7 @@
  */
 
 // 工具名 → 图标 + 中文标签
-export const TOOL_META = {
+const TOOL_META = {
   call_service:     { icon: '🔧', label: '控制设备' },
   get_entities:     { icon: '📋', label: '查询设备' },
   web_search:       { icon: '🔍', label: '搜索' },
@@ -122,7 +122,23 @@ export function summarizeToolResult(toolName, success, response, error) {
   switch (name) {
     case 'call_service': {
       if (!data) return '已执行'
+      // 消歧闸门拦下了：一个设备都没动，绝不能显示「已执行」
+      if (data.status === 'need_selection') {
+        const n = (data.candidates || []).length
+        return data.reason === 'category_miss'
+          ? `没找到该设备，待确认（${n} 个同类候选）`
+          : `目标不明确，待用户选择（${n} 个候选）`
+      }
       const newState = data.new_state
+      // 设备级 exact / 全量词扩展后一次可能操作多个实体（如双键墙壁开关），
+      // 后端在 names 里回传全部已执行设备的人读名，必须展示完整，不能只显示
+      // 模型传入的那个（会让人以为只开了一盏灯）。
+      const names = Array.isArray(data.names) ? data.names.filter(Boolean) : []
+      if (names.length > 3) return `已生效：共 ${names.length} 个设备`
+      if (names.length > 1) {
+        const stateStr = newState && newState.state ? `，当前: ${newState.state}` : ''
+        return `已生效：${names.join('、')}${stateStr}`
+      }
       if (newState && newState.state) return `已生效，当前: ${newState.state}`
       return '已执行'
     }

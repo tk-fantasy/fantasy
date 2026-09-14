@@ -662,25 +662,22 @@ class TestLoadEnvOverride:
         monkeypatch.setenv("LLM_ENABLED", "1")
         monkeypatch.setenv("LLM_BASE_URL", "http://env:8080/v1")
         monkeypatch.setenv("LLM_MODEL", "env-model")
-        monkeypatch.setenv("LLM_EMBED_MODEL", "env-embed")
-        monkeypatch.setenv("LOG_LEVEL", "DEBUG")
         monkeypatch.setenv("HA_URL", "http://ha:8123")
         monkeypatch.setenv("HA_TOKEN", "tok")
         ov = cfg_mod._load_env_override()
         assert ov["llm"]["enabled"] is True
         assert ov["llm"]["base_url"] == "http://env:8080/v1"
         assert ov["llm"]["chat_model"] == "env-model"
-        assert ov["llm"]["vision_model"] == "env-model"
-        assert ov["llm"]["embed_model"] == "env-embed"
-        assert ov["logging"]["level"] == "DEBUG"
         assert ov["ha"] == {"url": "http://ha:8123", "token": "tok"}
+        # 死键的 env 覆盖已删：LOG_LEVEL 由 main 直接读 os.getenv；
+        # LLM_EMBED_MODEL 不再映射（embed_model 键已清理）
 
     def test_absent_env_vars_yield_empty_sections(self, monkeypatch):
         for name in ("LLM_ENABLED", "LLM_BASE_URL", "LLM_MODEL", "LLM_EMBED_MODEL",
                      "LOG_LEVEL", "HA_URL", "HA_TOKEN"):
             monkeypatch.delenv(name, raising=False)
         ov = cfg_mod._load_env_override()
-        assert ov == {"llm": {}, "rag": {}, "storage": {}, "logging": {}, "ha": {}}
+        assert ov == {"llm": {}, "ha": {}}
 
 
 class TestSafeBackup:

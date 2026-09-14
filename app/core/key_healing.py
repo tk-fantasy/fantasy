@@ -101,7 +101,7 @@ async def heal_global_keys_from_user_db() -> dict[str, str]:
         if role not in healed:
             continue
         api_key = healed[role]
-        k["api_key"] = api_key  # 内存 CONFIG 直接补明文（resolve_api_key 会优先读 api_key 字段）
+        k["api_key"] = api_key  # 内存 CONFIG 补明文（resolve 顺序实为 env 优先：api_key_env 有值且 env 可读时先于本字段，见 key_resolver.resolve_api_key）
         env_name = k.get("api_key_env", "")
         if env_name:
             env_updates[env_name] = api_key

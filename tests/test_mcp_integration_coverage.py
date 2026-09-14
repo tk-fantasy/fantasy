@@ -46,7 +46,6 @@ from app.mcp.external_mcp_server import ExternalMCPServer
 from app.mcp.langchain_tools import mcp_to_langchain_tool
 from app.mcp.local_mcp_servers import (
     create_verify_action_handler,
-    create_verify_condition_handler,
     current_time_handler,
     describe_state_handler,
     register_local_tools,
@@ -515,96 +514,6 @@ def _vision_mocks():
     cam._active_display_id = ""
     cam.list_cameras.return_value = []
     return vision, ha, cam
-
-
-async def test_verify_condition_auto_detects_time(monkeypatch):
-    vision, ha, cam = _vision_mocks()
-    handler = create_verify_condition_handler(vision, ha, cam)
-    result = await handler({"condition": "现在几点了"}, None)
-    assert result["type"] == "time"
-    assert result["condition_met"] is None
-    assert "instruction" in result
-
-
-async def test_verify_condition_auto_detects_weather(monkeypatch):
-    vision, ha, cam = _vision_mocks()
-    monkeypatch.setattr("app.mcp.local_mcp_servers.get_weather_handler",
-                        AsyncMock(return_value={"temp": "20"}))
-    handler = create_verify_condition_handler(vision, ha, cam)
-    result = await handler({"condition": "今天会下雨吗"}, None)
-    assert result["type"] == "weather"
-    assert result["current_weather"] == {"temp": "20"}
-
-
-async def test_verify_condition_vision_no_camera():
-    vision, ha, cam = _vision_mocks()
-    handler = create_verify_condition_handler(vision, ha, cam)
-    result = await handler({"condition": "画面里有人吗"}, None)
-    assert result == {"condition_met": None, "type": "vision",
-                      "camera_connected": False,
-                      "data": "摄像头当前没有画面（未连接或无法打开）",
-                      "instruction": "摄像头未连接，请根据条件内容判断是否满足"}
-    vision.ask_about_frame.assert_not_awaited()
-
-
-async def test_verify_condition_vision_with_frame_and_camera_id():
-    vision, ha, cam = _vision_mocks()
-    cam._active_display_id = ""
-    cam.list_cameras.return_value = [{"id": "cam9"}]
-    cam.get_frame.return_value = b"jpeg-bytes"
-    handler = create_verify_condition_handler(vision, ha, cam)
-    result = await handler({"condition": "画面里有人吗"}, None)
-    assert result["camera_connected"] is True
-    assert result["vision_judgment"] == "是"
-    cam.get_frame.assert_called_with("cam9")  # 从第一个 enabled 相机取
-    vision.ask_about_frame.assert_awaited_once()
-
-
-async def test_verify_condition_vision_uses_active_display():
-    vision, ha, cam = _vision_mocks()
-    cam._active_display_id = "cam1"
-    cam.get_frame.return_value = b"jpeg"
-    handler = create_verify_condition_handler(vision, ha, cam)
-    result = await handler({"condition": "画面", "camera_id": ""}, None)
-    assert result["camera_connected"] is True
-    cam.get_frame.assert_called_with("cam1")
-
-
-async def test_verify_condition_auto_fallback_to_time():
-    vision, ha, cam = _vision_mocks()
-    handler = create_verify_condition_handler(vision, ha, cam)
-    # 不含任何分类关键词 → 回退 time
-    result = await handler({"condition": "随便什么条件"}, None)
-    assert result["type"] == "time"
-
-
-async def test_verify_condition_device_states():
-    vision, ha, cam = _vision_mocks()
-    ha.get_states = AsyncMock(return_value=[
-        {"entity_id": "light.bed", "state": "on",
-         "attributes": {"friendly_name": "Bed"}},
-        {"entity_id": "sun.sun", "state": "up", "attributes": {}},
-    ])
-    handler = create_verify_condition_handler(vision, ha, cam)
-    result = await handler({"condition": "客厅的设备状态"}, None)
-    assert result["type"] == "device"
-    assert [d["entity_id"] for d in result["devices"]] == ["light.bed"]
-
-
-async def test_verify_condition_device_error():
-    vision, ha, cam = _vision_mocks()
-    ha.get_states = AsyncMock(side_effect=RuntimeError("ha down"))
-    handler = create_verify_condition_handler(vision, ha, cam)
-    result = await handler({"condition": "设备状态如何"}, None)
-    assert result["type"] == "device"
-    assert "ha down" in result["error"]
-
-
-async def test_verify_condition_unknown_type_falls_back_to_time():
-    vision, ha, cam = _vision_mocks()
-    handler = create_verify_condition_handler(vision, ha, cam)
-    result = await handler({"condition": "x", "condition_type": "weird"}, None)
-    assert result["type"] == "time"
 
 
 async def test_verify_action_exact_entity_and_data_checks():

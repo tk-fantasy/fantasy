@@ -24,6 +24,7 @@ def _make_stream(camera_opened: bool, hold: float) -> CameraStream:
     s._running = True
     s._lock = threading.Lock()
     s._latest_jpeg = b"stale-cached-frame"
+    s._viewers = 0  # __init__ 里的观众计数（__new__ 绕过，手工补齐）
     s._state = SimpleNamespace(camera_opened=camera_opened)
     # 覆盖宽限期读取（默认走 vision.offline_hold_seconds 配置）
     s._offline_hold_seconds = lambda: hold

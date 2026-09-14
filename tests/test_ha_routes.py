@@ -290,3 +290,269 @@ class TestEntityOperableRoute:
         )
         disabled = await Database.get().prefs_get_by_scope("entity_operable")
         assert disabled == {}
+
+
+class TestPendingDeviceSelection:
+    """POST /api/ha/pending/{id}/select|cancel —— 消歧弹框的确认路径。"""
+
+    CANDIDATES = [
+        {"entity_id": "light.a", "label": "床头灯", "domain": "light",
+         "area_name": "卧室", "state": "off"},
+        {"entity_id": "light.b", "label": "客厅吊灯", "domain": "light",
+         "area_name": "客厅", "state": "off"},
+    ]
+
+    def _session(self, user_id="u1"):
+        session = MagicMock()
+        session.user_id = user_id
+        session.model_messages = []
+        session.pending_confirmations = {}
+        return session
+
+    def _container(self, session):
+        c = _mock_container()
+        c.session_store.get_session = AsyncMock(return_value=session)
+        c.session_store.store_session = AsyncMock()
+        c.ha_service.invalidate_states_cache = MagicMock()
+        return c
+
+    def _draft(self, session):
+        from app.services.pending_selections import create_selection_draft
+        return create_selection_draft(
+            session, query="开灯", domain="light", service="turn_on", data={},
+            candidates=self.CANDIDATES, reason="ambiguous")
+
+    @pytest.fixture(autouse=True)
+    def _db(self, tmp_path, monkeypatch):
+        from app.core.database import Database
+        Database._instance = None
+        Database._db = None
+        monkeypatch.setattr("app.core.database.DB_PATH", tmp_path / "t.db")
+
+    @pytest.mark.asyncio
+    async def test_select_executes_with_draft_action_and_appends_history(self):
+        """下发的 domain/service/data 取自草稿（模型已解析好的动作），不是前端传的。"""
+        from app.core.database import Database
+        from app.routes.ha_routes import select_pending_devices
+        from app.schema.api_schemas import PendingSelectRequest
+        await Database.init()
+        session = self._session()
+        pid = self._draft(session)
+        container = self._container(session)
+        probe = AsyncMock(return_value={"ok": 1})
+        with patch("app.routes.ha_routes.call_with_probe", new=probe):
+            result = await select_pending_devices(
+                pid, PendingSelectRequest(session_id="s1", entity_ids=["light.b"]),
+                container=container, current_user={"user_id": "u1"})
+        assert result.code == "ok"
+        assert result.data["entity_ids"] == ["light.b"]
+        assert result.data["names"] == ["客厅吊灯"]
+        assert probe.await_args.args[1:4] == ("light", "turn_on", "light.b")
+        # 草稿摘除 + 合成消息 + 落盘 + 清状态缓存
+        assert pid not in session.pending_confirmations
+        assert session.model_messages[-1]["role"] == "user"
+        assert "客厅吊灯" in session.model_messages[-1]["content"]
+        container.session_store.store_session.assert_awaited_once_with(session)
+        container.ha_service.invalidate_states_cache.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_select_multiple_entities_joined(self):
+        from app.core.database import Database
+        from app.routes.ha_routes import select_pending_devices
+        from app.schema.api_schemas import PendingSelectRequest
+        await Database.init()
+        session = self._session()
+        pid = self._draft(session)
+        probe = AsyncMock(return_value={})
+        with patch("app.routes.ha_routes.call_with_probe", new=probe):
+            result = await select_pending_devices(
+                pid, PendingSelectRequest(session_id="s1", entity_ids=["light.a", "light.b"]),
+                container=self._container(session), current_user={"user_id": "u1"})
+        assert probe.await_args.args[3] == "light.a,light.b"
+        assert result.data["names"] == ["床头灯", "客厅吊灯"]
+
+    # 2026-09-13 事故回归：「打开灯」的候选里混着 light.* 与墙壁开关 switch.*，
+    # 草稿 domain 是模型对歧义原话猜的 light；用户勾选 switch 键后按草稿域下发
+    # light/turn_on，HA 静默忽略（200 + 内部 warning），灯毫无反应。
+    SWITCH_CANDIDATES = [
+        {"entity_id": "switch.hkt_zuo", "label": "A灯 会客厅灯 左键", "domain": "switch",
+         "area_name": "会客厅", "state": "off"},
+        {"entity_id": "light.chuang_tou_deng", "label": "床头灯", "domain": "light",
+         "area_name": "卧室", "state": "off"},
+    ]
+
+    @pytest.mark.asyncio
+    async def test_select_switch_candidate_uses_entity_domain(self):
+        """勾选的实体在别的域时，按 entity_id 前缀的域下发，不用草稿域。"""
+        from app.core.database import Database
+        from app.routes.ha_routes import select_pending_devices
+        from app.schema.api_schemas import PendingSelectRequest
+        from app.services.pending_selections import create_selection_draft
+        await Database.init()
+        session = self._session()
+        pid = create_selection_draft(
+            session, query="打开灯", domain="light", service="turn_on", data={},
+            candidates=self.SWITCH_CANDIDATES, reason="ambiguous")
+        probe = AsyncMock(return_value={})
+        with patch("app.routes.ha_routes.call_with_probe", new=probe):
+            result = await select_pending_devices(
+                pid, PendingSelectRequest(session_id="s1", entity_ids=["switch.hkt_zuo"]),
+                container=self._container(session), current_user={"user_id": "u1"})
+        assert probe.await_args.args[1:4] == ("switch", "turn_on", "switch.hkt_zuo")
+        assert result.data["names"] == ["A灯 会客厅灯 左键"]
+
+    @pytest.mark.asyncio
+    async def test_select_mixed_domains_groups_calls_per_domain(self):
+        """一次勾选跨 light+switch 时按域分组下发，每组一次调用。"""
+        from app.core.database import Database
+        from app.routes.ha_routes import select_pending_devices
+        from app.schema.api_schemas import PendingSelectRequest
+        from app.services.pending_selections import create_selection_draft
+        await Database.init()
+        session = self._session()
+        pid = create_selection_draft(
+            session, query="打开灯", domain="light", service="turn_on", data={},
+            candidates=self.SWITCH_CANDIDATES, reason="ambiguous")
+        probe = AsyncMock(return_value={})
+        with patch("app.routes.ha_routes.call_with_probe", new=probe):
+            await select_pending_devices(
+                pid, PendingSelectRequest(
+                    session_id="s1", entity_ids=["switch.hkt_zuo", "light.chuang_tou_deng"]),
+                container=self._container(session), current_user={"user_id": "u1"})
+        assert probe.await_count == 2
+        assert probe.await_args_list[0].args[1:4] == ("switch", "turn_on", "switch.hkt_zuo")
+        assert probe.await_args_list[1].args[1:4] == ("light", "turn_on", "light.chuang_tou_deng")
+
+    @pytest.mark.asyncio
+    async def test_select_rejects_entity_outside_candidates(self):
+        """弹框若能提交任意 entity_id，就等于开了绕过闸门和黑名单的后门。"""
+        from app.core.database import Database
+        from app.core.exceptions import AppException
+        from app.routes.ha_routes import select_pending_devices
+        from app.schema.api_schemas import PendingSelectRequest
+        await Database.init()
+        session = self._session()
+        pid = self._draft(session)
+        probe = AsyncMock()
+        with patch("app.routes.ha_routes.call_with_probe", new=probe):
+            with pytest.raises(AppException) as ei:
+                await select_pending_devices(
+                    pid, PendingSelectRequest(session_id="s1", entity_ids=["switch.evil"]),
+                    container=self._container(session), current_user={"user_id": "u1"})
+        assert ei.value.http_status == 400
+        probe.assert_not_awaited()
+        assert pid in session.pending_confirmations      # 草稿保留，用户可重选
+
+    @pytest.mark.asyncio
+    async def test_select_blocked_entity_returns_403(self):
+        """会话中途被禁的设备不能因为弹框里还留着就执行；403 不被压成 502。"""
+        from app.core.database import Database
+        from app.core.exceptions import AppException
+        from app.routes.ha_routes import select_pending_devices
+        from app.schema.api_schemas import PendingSelectRequest
+        await Database.init()
+        await Database.get().emoji_pref_upsert("entity_operable", "light.b", "0")
+        session = self._session()
+        pid = self._draft(session)
+        probe = AsyncMock()
+        with patch("app.routes.ha_routes.call_with_probe", new=probe):
+            with pytest.raises(AppException) as ei:
+                await select_pending_devices(
+                    pid, PendingSelectRequest(session_id="s1", entity_ids=["light.b"]),
+                    container=self._container(session), current_user={"user_id": "u1"})
+        assert ei.value.http_status == 403
+        probe.assert_not_awaited()
+        assert pid in session.pending_confirmations      # 解除限制后可直接重试
+
+    @pytest.mark.asyncio
+    async def test_select_unknown_pending_returns_404(self):
+        from app.core.database import Database
+        from app.core.exceptions import AppException
+        from app.routes.ha_routes import select_pending_devices
+        from app.schema.api_schemas import PendingSelectRequest
+        await Database.init()
+        session = self._session()
+        with patch("app.routes.ha_routes.call_with_probe", new=AsyncMock()):
+            with pytest.raises(AppException) as ei:
+                await select_pending_devices(
+                    "sel-gone", PendingSelectRequest(session_id="s1", entity_ids=["light.a"]),
+                    container=self._container(session), current_user={"user_id": "u1"})
+        assert ei.value.http_status == 404
+
+    @pytest.mark.asyncio
+    async def test_select_foreign_session_forbidden(self):
+        from app.core.database import Database
+        from app.core.exceptions import AppException
+        from app.routes.ha_routes import select_pending_devices
+        from app.schema.api_schemas import PendingSelectRequest
+        await Database.init()
+        session = self._session(user_id="someone_else")
+        pid = self._draft(session)
+        with pytest.raises(AppException) as ei:
+            await select_pending_devices(
+                pid, PendingSelectRequest(session_id="s1", entity_ids=["light.a"]),
+                container=self._container(session), current_user={"user_id": "u1"})
+        assert ei.value.http_status == 403
+
+    @pytest.mark.asyncio
+    async def test_select_missing_session_not_found(self):
+        from app.core.database import Database
+        from app.core.exceptions import AppException
+        from app.routes.ha_routes import select_pending_devices
+        from app.schema.api_schemas import PendingSelectRequest
+        await Database.init()
+        container = self._container(self._session())
+        container.session_store.get_session = AsyncMock(return_value=None)
+        with pytest.raises(AppException) as ei:
+            await select_pending_devices(
+                "sel-x", PendingSelectRequest(session_id="nope", entity_ids=["light.a"]),
+                container=container, current_user={"user_id": "u1"})
+        assert ei.value.http_status == 404
+
+    @pytest.mark.asyncio
+    async def test_cancel_removes_draft_without_executing(self):
+        from app.core.database import Database
+        from app.routes.ha_routes import cancel_pending_selection
+        from app.schema.api_schemas import PendingConfirmRequest
+        await Database.init()
+        session = self._session()
+        pid = self._draft(session)
+        probe = AsyncMock()
+        with patch("app.routes.ha_routes.call_with_probe", new=probe):
+            result = await cancel_pending_selection(
+                pid, PendingConfirmRequest(session_id="s1"),
+                container=self._container(session), current_user={"user_id": "u1"})
+        assert result.data["cancelled"] is True
+        assert pid not in session.pending_confirmations
+        probe.assert_not_awaited()
+        assert session.model_messages == []          # 取消不污染会话历史
+
+    @pytest.mark.asyncio
+    async def test_cancel_unknown_returns_404(self):
+        from app.core.database import Database
+        from app.core.exceptions import AppException
+        from app.routes.ha_routes import cancel_pending_selection
+        from app.schema.api_schemas import PendingConfirmRequest
+        await Database.init()
+        with pytest.raises(AppException) as ei:
+            await cancel_pending_selection(
+                "sel-gone", PendingConfirmRequest(session_id="s1"),
+                container=self._container(self._session()), current_user={"user_id": "u1"})
+        assert ei.value.http_status == 404
+
+    def test_both_endpoints_require_auth(self):
+        """两个端点都挂路由级 get_current_user。
+
+        全局 api_token_guard 中间件（app/main.py）只保证「调用方登录了」，给不出
+        user_id；而这两个端点要 require_owned_session 校验会话归属，必须有当前
+        用户身份。中间件还放行 APP_TOKEN（X-API-Token，无 JWT 身份）这条向后兼容
+        路径，所以身份只能靠路由依赖拿。
+        """
+        import inspect
+
+        from app.core.auth import get_current_user
+        from app.routes import ha_routes
+        for fn in (ha_routes.select_pending_devices, ha_routes.cancel_pending_selection):
+            defaults = [p.default for p in inspect.signature(fn).parameters.values()]
+            assert any(getattr(d, "dependency", None) is get_current_user for d in defaults), \
+                f"{fn.__name__} 缺少 get_current_user 依赖"

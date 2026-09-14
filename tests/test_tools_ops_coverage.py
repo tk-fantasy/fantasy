@@ -117,7 +117,7 @@ class TestRegisterAllTools:
         register_all_tools(deps)
         names = {"local___vision_chat", "ha_devices___get_entities",
                  "ha_devices___get_device_manual", "ha_devices___call_service",
-                 "local___verify_condition", "local___verify_action",
+                 "local___verify_action",
                  "local___scheduled_task_create", "local___scheduled_task_list",
                  "local___scheduled_task_delete", "local___scene_list",
                  "local___scene_apply", "local___scene_create"}
@@ -978,20 +978,10 @@ def _onvif_module(cam_factory):
 
 
 class TestPtzGaps:
-    def test_enabled_global_config_path(self, monkeypatch):
-        import app.services.ptz_service as ps
-        from app.services.ptz_service import PtzService
-        monkeypatch.setattr(ps, "get_config",
-                            lambda key, default=None: True if key == "ptz.enabled" else default)
-        assert PtzService()._enabled() is True
-        monkeypatch.setattr(ps, "get_config",
-                            lambda key, default=None: False if key == "ptz.enabled" else default)
-        assert PtzService()._enabled() is False
-
     @pytest.mark.asyncio
     async def test_ensure_connected_fast_path_when_healthy(self):
         from app.services.ptz_service import PtzService
-        svc = PtzService()
+        svc = PtzService("cam1", {"ptz_enabled": 1, "ptz_ip": "10.0.0.1"})
         svc._cam = MagicMock()
         svc._broken = False
         assert await svc._ensure_connected() is True
@@ -1007,14 +997,14 @@ class TestPtzGaps:
 
     def test_speed_per_camera_clamped(self):
         from app.services.ptz_service import PtzService
-        assert PtzService(config={"ptz_speed": 2.0})._speed() == 1.0
-        assert PtzService(config={"ptz_speed": 0.01})._speed() == 0.1
+        assert PtzService("cam1", {"ptz_speed": 2.0})._speed() == 1.0
+        assert PtzService("cam1", {"ptz_speed": 0.01})._speed() == 0.1
 
     @pytest.mark.asyncio
     async def test_stop_error_ignored(self):
         """Stop 在已停止时报错属正常：忽略并继续返回成功。"""
         from app.services.ptz_service import PtzService
-        svc = PtzService()
+        svc = PtzService("cam1", {"ptz_enabled": 1})
         svc._ptz = MagicMock()
         svc._ptz.Stop = AsyncMock(side_effect=RuntimeError("already stopped"))
         svc._profile_token = "tok"
@@ -1026,7 +1016,7 @@ class TestPtzGaps:
     @pytest.mark.asyncio
     async def test_move_not_connected(self):
         from app.services.ptz_service import PtzService
-        svc = PtzService()
+        svc = PtzService("cam1", {"ptz_enabled": 1})
         with patch.object(svc, "_ensure_connected", new=AsyncMock(return_value=False)):
             ret = await svc.move("up")
         assert ret["success"] is False and "not connected" in ret["error"]
@@ -1034,7 +1024,7 @@ class TestPtzGaps:
     @pytest.mark.asyncio
     async def test_step_not_connected(self):
         from app.services.ptz_service import PtzService
-        svc = PtzService()
+        svc = PtzService("cam1", {"ptz_enabled": 1})
         with patch.object(svc, "_ensure_connected", new=AsyncMock(return_value=False)):
             ret = await svc.step("left", 100)
         assert ret["success"] is False and "not connected" in ret["error"]
@@ -1042,7 +1032,7 @@ class TestPtzGaps:
     @pytest.mark.asyncio
     async def test_step_move_failure_marks_broken(self):
         from app.services.ptz_service import PtzService
-        svc = PtzService()
+        svc = PtzService("cam1", {"ptz_enabled": 1})
         svc._ptz = MagicMock()
         svc._ptz.Stop = AsyncMock()
         svc._ptz.create_type = MagicMock(return_value=MagicMock())
@@ -1100,78 +1090,6 @@ def admin_client(monkeypatch):
     return TestClient(app), headers
 
 
-class TestVisionLogRoutesGaps:
-    def test_list_and_clear_endpoints(self, admin_client):
-        tc, headers = admin_client
-        resp = tc.get("/api/vision-logs", headers=headers,
-                      params={"camera_id": "cam1", "kind": "action", "limit": 5})
-        assert resp.status_code == 200 and resp.json()["data"][0]["kind"] == "preview"
-        resp = tc.delete("/api/vision-logs", headers=headers, params={"camera_id": "cam1"})
-        assert resp.status_code == 200 and resp.json()["data"] == {"deleted": 7}
-
-    def test_browse_root_non_windows_branch(self, admin_client, monkeypatch):
-        tc, headers = admin_client
-        monkeypatch.setattr(os, "name", "posix")
-        resp = tc.get("/api/files/browse", headers=headers)
-        assert resp.status_code == 200
-        assert resp.json()["data"]["entries"] == [{"name": "/", "path": "/", "type": "dir"}]
-
-    def test_browse_scan_failure_returns_400(self, admin_client, monkeypatch):
-        import app.routes.vision_log_routes as vlr
-        tc, headers = admin_client
-        monkeypatch.setattr(vlr, "_scan_dir_sync",
-                            MagicMock(side_effect=OSError("permission denied")))
-        resp = tc.get("/api/files/browse", headers=headers,
-                      params={"path": str(Path("/tmp").anchor)})
-        assert resp.status_code == 400
-        assert "read_failed" in resp.text and "读取目录失败" in resp.text
-
-    def test_scan_dir_entry_limit_breaks(self, tmp_path, monkeypatch):
-        import app.routes.vision_log_routes as vlr
-        monkeypatch.setattr(vlr, "_DIR_ENTRY_LIMIT", 2)
-        for i in range(4):
-            (tmp_path / f"f{i}.mp4").write_bytes(b"x")
-        dirs, files = vlr._scan_dir_sync(tmp_path, {"mp4"})
-        assert dirs == [] and len(files) == 2  # 达到上限即 break
-
-    def test_scan_dir_skips_entries_raising_oserror(self, tmp_path, monkeypatch):
-        """无权限/失效符号链接条目：OSError → 跳过继续。"""
-        import app.routes.vision_log_routes as vlr
-        good = tmp_path / "ok.mp4"
-        good.write_bytes(b"video")
-
-        class BadEntry:
-            name = "broken"
-            path = str(tmp_path / "broken")
-
-            def is_dir(self):
-                raise OSError("stale symlink")
-
-            def is_file(self):
-                raise OSError("stale symlink")
-
-        real_iterdir = Path.iterdir
-        monkeypatch.setattr(Path, "iterdir",
-                            lambda self: iter([BadEntry(), good]) if self == tmp_path
-                            else real_iterdir(self))
-        dirs, files = vlr._scan_dir_sync(tmp_path, {"mp4"})
-        assert dirs == [] and len(files) == 1 and files[0]["name"] == "ok.mp4"
-
-    def test_scan_dir_filters_dirs_and_files(self, tmp_path):
-        import app.routes.vision_log_routes as vlr
-        (tmp_path / "sub").mkdir()
-        (tmp_path / "$RECYCLE.BIN").mkdir()
-        (tmp_path / "movie.MKV").write_bytes(b"v")
-        (tmp_path / "note.txt").write_text("x", encoding="utf-8")
-        dirs, files = vlr._scan_dir_sync(tmp_path, {"mkv"})
-        assert [d["name"] for d in dirs] == ["sub"]  # $ 开头目录被排除
-        assert len(files) == 1 and files[0]["name"] == "movie.MKV"
-        assert files[0]["size"] == 1
-
-
-# ============================================================================
-# app/services/camera_discovery_service.py
-# ============================================================================
 
 class TestDiscoveryGaps:
     def test_status_property_reflects_state(self):
@@ -1262,33 +1180,6 @@ class TestDiscoveryGaps:
         assert result is None
         assert svc._probe_creds == (80, "u", "p")
         assert svc._status == "not_found"
-
-    @pytest.mark.asyncio
-    async def test_find_camera_legacy_path_subnet_from_rtsp(self, monkeypatch):
-        from app.core import config as cfg
-        from app.services.camera_discovery_service import CameraDiscoveryService
-        monkeypatch.setitem(cfg.CONFIG, "ptz", dict(cfg.CONFIG.get("ptz", {}), ip=""))
-        monkeypatch.setitem(cfg.CONFIG, "vision",
-                            dict(cfg.CONFIG.get("vision", {}),
-                                 device_mac="aabbccddeeff",
-                                 rtsp_url="rtsp://192.168.9.9:554/s"))
-        svc = CameraDiscoveryService()
-        with patch.object(svc, "_scan_ports", AsyncMock(return_value=[])), \
-             patch("asyncio.sleep", AsyncMock()):
-            assert await svc.find_camera(timeout=0.01) is None
-        assert svc._status == "not_found"
-
-    @pytest.mark.asyncio
-    async def test_find_camera_without_subnet_errors(self, monkeypatch):
-        """无 MAC 参数外的子网且无法推断（ptz.ip 与 rtsp_url 都没有）→ error。"""
-        from app.core import config as cfg
-        from app.services.camera_discovery_service import CameraDiscoveryService
-        monkeypatch.setitem(cfg.CONFIG, "ptz", dict(cfg.CONFIG.get("ptz", {}), ip=""))
-        monkeypatch.setitem(cfg.CONFIG, "vision",
-                            dict(cfg.CONFIG.get("vision", {}), rtsp_url=""))
-        svc = CameraDiscoveryService()
-        assert await svc.find_camera(target_mac="aabbccddeeff", subnet="") is None
-        assert svc._status == "error" and svc._last_error == "无法推断子网"
 
     @pytest.mark.asyncio
     async def test_scan_locked_subnet_without_hosts_errors(self):
@@ -1405,29 +1296,6 @@ class TestDiscoveryGaps:
             await svc.capture_mac_on_startup()  # 无凭证 → 跳过
         rd.assert_not_awaited()
 
-    @pytest.mark.asyncio
-    async def test_capture_mac_legacy_empty_hardware_id(self, monkeypatch):
-        from app.core import config as cfg
-        from app.services.camera_discovery_service import CameraDiscoveryService
-        monkeypatch.setitem(cfg.CONFIG, "vision",
-                            dict(cfg.CONFIG.get("vision", {}),
-                                 discovery_enabled=True, device_mac=""))
-        monkeypatch.setitem(cfg.CONFIG, "ptz",
-                            dict(cfg.CONFIG.get("ptz", {}),
-                                 ip="192.168.1.50", username="admin"))
-        monkeypatch.setenv("PTZ_PASSWORD", "test-pwd")
-        update = AsyncMock()
-        monkeypatch.setattr("app.services.camera_discovery_service.update_config_section",
-                            update)
-        svc = CameraDiscoveryService()
-        with patch.object(svc, "read_device_hardware_id", AsyncMock(return_value="")):
-            await svc.capture_mac_on_startup()
-        update.assert_not_awaited()
-
-
-# ============================================================================
-# app/virtual_camera_stream.py
-# ============================================================================
 
 def _make_vcam(trigger=None, **kw):
     from app.virtual_camera_stream import VirtualCameraStream

@@ -17,14 +17,18 @@ class HealthChecker:
     llm_available: bool = False
 
     async def check_ha(self, ha_client: Any) -> bool:
-        """Check if Home Assistant is reachable."""
+        """Check if Home Assistant is reachable (lightweight GET /api/).
+
+        探活只关心「HA 活着吗」，用全量 /api/states 每分钟白拉 1-2MB；
+        轻量 GET /api/ 走同样的认证与连接链路，足以代表可用性。
+        """
         try:
-            states = await asyncio.wait_for(ha_client.get_states(), timeout=5.0)
-            self.ha_available = len(states) > 0
+            ok = await asyncio.wait_for(ha_client.ping(), timeout=5.0)
+            self.ha_available = bool(ok)
             if self.ha_available:
-                logger.info("HA health check: OK (%d entities)", len(states))
+                logger.info("HA health check: OK")
             else:
-                logger.warning("HA health check: no entities found")
+                logger.warning("HA health check: unexpected response")
         except asyncio.TimeoutError:
             self.ha_available = False
             logger.warning("HA health check: timeout (5s)")

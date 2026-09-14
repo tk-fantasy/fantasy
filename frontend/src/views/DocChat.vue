@@ -31,13 +31,6 @@ let currentStreamingMsg = null
 let ws = null
 let reconnectTimer = null
 
-// Slash command autocomplete
-const showSlashMenu = ref(false)
-const slashIndex = ref(0)
-const slashFiltered = ref([])
-
-const SLASH_COMMANDS = []
-
 const statusText = computed(() => {
   switch (statusPhase.value) {
     case 'thinking': return '正在思考...'
@@ -153,15 +146,6 @@ function sendMessage() {
   const text = inputText.value.trim()
   if (!text) return
 
-  if (text.startsWith('/')) {
-    const cmd = SLASH_COMMANDS.find(c => c.cmd === text)
-    if (cmd) {
-      executeSlashCommand(cmd)
-      inputText.value = ''
-      return
-    }
-  }
-
   messages.value.push({ role: 'user', content: text })
   inputText.value = ''
 
@@ -173,55 +157,13 @@ function sendMessage() {
   scrollToBottom()
 }
 
-// ============ Slash Commands ============
-function onInput(e) {
-  const val = e.target.value
-  if (val.startsWith('/')) {
-    const q = val.slice(1).toLowerCase()
-    slashFiltered.value = SLASH_COMMANDS.filter(c =>
-      c.cmd.startsWith('/' + q) || c.desc.toLowerCase().includes(q)
-    )
-    if (slashFiltered.value.length) {
-      showSlashMenu.value = true
-      slashIndex.value = 0
-    } else {
-      showSlashMenu.value = false
-    }
-  } else {
-    showSlashMenu.value = false
-  }
-}
-
+// ============ Input ============
+// 斜杠命令子系统已随 SLASH_COMMANDS 清空一并移除（空数组连死了菜单/键盘
+// 分支/模板块，placeholder 还在误导用户输入 / 命令）。这里只剩纯文本输入。
 function onKeydown(e) {
-  if (showSlashMenu.value) {
-    if (e.key === 'ArrowDown') {
-      e.preventDefault()
-      slashIndex.value = (slashIndex.value + 1) % slashFiltered.value.length
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault()
-      slashIndex.value = (slashIndex.value - 1 + slashFiltered.value.length) % slashFiltered.value.length
-    } else if (e.key === 'Tab' || e.key === 'Enter') {
-      if (slashFiltered.value.length) {
-        e.preventDefault()
-        executeSlashCommand(slashFiltered.value[slashIndex.value])
-      }
-    } else if (e.key === 'Escape') {
-      showSlashMenu.value = false
-    }
-  } else if (e.key === 'Enter' && !e.shiftKey) {
+  if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault()
     sendMessage()
-  }
-}
-
-function executeSlashCommand(cmd) {
-  showSlashMenu.value = false
-  inputText.value = ''
-  if (cmd.action === 'nav') {
-    messages.value.push({ role: 'system', content: `正在跳转到 ${cmd.cmd} ...` })
-    setTimeout(() => router.push(cmd.url), 300)
-  } else if (cmd.action === 'api' || cmd.action === 'fn') {
-    cmd.handler()
   }
 }
 
@@ -286,24 +228,11 @@ onUnmounted(() => {
 
     <!-- Input Area -->
     <div class="chat-input-area">
-      <div class="slash-autocomplete" v-if="showSlashMenu">
-        <div
-          v-for="(cmd, i) in slashFiltered"
-          :key="cmd.cmd"
-          class="slash-item"
-          :class="{ active: i === slashIndex }"
-          @click="executeSlashCommand(cmd)"
-        >
-          <span class="slash-cmd">{{ cmd.cmd }}</span>
-          <span class="slash-desc">{{ cmd.desc }}</span>
-        </div>
-      </div>
       <div class="input-row">
         <input
           v-model="inputText"
           type="text"
-          placeholder="输入消息或 / 命令..."
-          @input="onInput"
+          placeholder="输入问题..."
           @keydown="onKeydown"
           class="chat-input"
         />
@@ -513,45 +442,6 @@ onUnmounted(() => {
 .chat-input-area {
   position: relative;
   padding-top: var(--space-6);
-}
-
-.slash-autocomplete {
-  position: absolute;
-  bottom: 100%;
-  left: 0;
-  right: 0;
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
-  margin-bottom: var(--space-4);
-  max-height: 200px;
-  overflow-y: auto;
-  box-shadow: var(--shadow-lg);
-}
-
-.slash-item {
-  display: flex;
-  align-items: center;
-  gap: var(--space-6);
-  padding: var(--space-4) var(--space-8);
-  cursor: pointer;
-  transition: background var(--duration-fast);
-}
-
-.slash-item:hover,
-.slash-item.active {
-  background: var(--color-surface-hover);
-}
-
-.slash-cmd {
-  font-weight: var(--weight-semibold);
-  color: var(--color-primary);
-  min-width: 80px;
-}
-
-.slash-desc {
-  color: var(--color-text-muted);
-  font-size: var(--text-sm);
 }
 
 .input-row {

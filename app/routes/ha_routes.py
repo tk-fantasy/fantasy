@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, Query
@@ -10,12 +11,13 @@ from fastapi import APIRouter, Depends, Query
 from ..container import AppContainer, get_container
 from ..clients.ha_client import HomeAssistantClient
 from ..core.api_models import ApiResponse
-from ..core.auth import get_current_admin
+from ..core.auth import get_current_admin, get_current_user, require_owned_session
 from ..core.config import get_config, update_config_section
 from ..core.exceptions import AppException
-from ..schema.api_schemas import HAConfigRequest, HAServiceCallRequest, ModelTestRequest, UniqueSettingsRequest, EntityAliasRequest, EntityNoteRequest, EntityOperableRequest, ActionMapRequest
+from ..schema.api_schemas import HAConfigRequest, HAServiceCallRequest, ModelTestRequest, UniqueSettingsRequest, EntityAliasRequest, EntityNoteRequest, EntityOperableRequest, ActionMapRequest, PendingConfirmRequest, PendingSelectRequest
 from ..services.ha_service import HAService
 from ..services.control_probe import call_with_probe
+from ..services.pending_selections import cancel_selection, confirm_selection
 
 logger = logging.getLogger(__name__)
 
@@ -357,6 +359,113 @@ async def ha_call_service(payload: HAServiceCallRequest, container: AppContainer
         raise AppException(str(e), code="ha_error", http_status=502)
 
 
+# ---------------------------------------------------------------------------
+# 设备消歧待选确认 —— 网页弹框勾选后直接执行，不再回模型
+#
+# 与聊天工具 call_service 的消歧闸门共用 services.pending_selections：草稿挂在
+# SessionState.pending_confirmations（内存、10 分钟 TTL、不持久化）。语音/飞书等
+# 无界面渠道不走这里 —— 模型口头列举候选，用户下一轮直接说设备名即可。
+#
+# 顺序约束（同 /rules/pending/*）：前端必须等本轮 Dialog.Finish 到达后再弹框。
+# dispatcher 在轮末才把 user/assistant 消息 append 进 model_messages
+# （agents/dispatcher.py），确认若在轮中落进来，下面那条合成消息会排在原始请求
+# 之前，下一轮模型读到的是乱序历史。
+# ---------------------------------------------------------------------------
+
+_SELECTION_GONE = "待选设备不存在或已过期，请重新说一遍指令"
+
+
+async def _execute_selection(container: AppContainer, draft: dict, entity_id: str) -> Any:
+    """执行用户在消歧弹框里勾选的指令。
+
+    与 call_service 工具同源：entity_operable 黑名单校验 + call_with_probe +
+    device_op 审计（actor="AI"）。
+
+    **不复用 POST /api/ha/call_service**，但理由不是它没鉴权 —— 它由全局
+    `api_token_guard` 中间件守着（app/main.py），和所有 /api/* 一样要 JWT/APP_TOKEN。
+    真正的区别是语义：那个端点是**人在设备页手动操作**的入口，所以它刻意不查
+    entity_operable（该黑名单的含义是「禁止 **AI** 操作」，人点按钮本来就该能操作），
+    审计也记 actor="手动"。而这里执行的是 **AI 会话里发起的指令**，只是最后一步
+    由用户点了勾选，必须继续受 AI 侧约束；复用手动路径就等于给「禁止 AI 操作」
+    开了一条绕过弹框的旁路。
+    """
+    service = str(draft.get("service") or "")
+    data = draft.get("data") or {}
+    eids = [e.strip() for e in entity_id.split(",") if e.strip()]
+    # 会话中途被禁的设备，不能因为弹框里还留着就执行
+    from ..core.database import Database
+    disabled = await Database.get().prefs_get_by_scope("entity_operable")
+    blocked = [e for e in eids if e in disabled]
+    if blocked:
+        raise AppException(
+            f"设备「{'、'.join(blocked)}」被用户设为禁止 AI 操作，调用被拒绝。",
+            code="entity_not_operable", http_status=403)
+    # 按实体各自的域分组下发，不能信草稿的 domain：那是模型对**歧义原话**猜的域
+    # （「打开灯」→ light），而候选集里可能混着别的域的实体（墙壁开关键是 switch.*）。
+    # 按草稿域调跨域实体会被 HA 静默忽略——HTTP 200 + HA 内部 warning，设备毫无动作
+    # （2026-09-13「会客厅灯左键」事故）。entity_id 前缀永远是它真实的域。
+    groups: dict[str, list[str]] = {}
+    for eid in eids:
+        groups.setdefault(eid.split(".", 1)[0], []).append(eid)
+    results = [await call_with_probe(container.ha_client, dom, service, ",".join(ids), data)
+               for dom, ids in groups.items()]
+    result = results[0] if len(results) == 1 else results
+    # 调用后立即清状态缓存，确保前端重拉拿到最新状态
+    container.ha_service.invalidate_states_cache()
+    try:
+        from ..services.device_event_service import record_device_op
+        name_of = {str(c.get("entity_id", "")): str(c.get("label", ""))
+                   for c in (draft.get("candidates") or [])}
+        await record_device_op(eids, service, "AI", name_of)
+    except Exception:  # noqa: BLE001 — 审计失败不影响执行结果
+        logger.debug("record device_op failed", exc_info=True)
+    return result
+
+
+@router.post("/ha/pending/{pending_id}/select")
+async def select_pending_devices(
+    pending_id: str,
+    payload: PendingSelectRequest,
+    container: AppContainer = Depends(get_container),
+    current_user: dict = Depends(get_current_user),
+) -> ApiResponse[dict]:
+    """提交弹框勾选 → 校验在候选内 → 执行 → 摘草稿 → 补一条合成消息进会话历史。"""
+    session = await require_owned_session(container, payload.session_id, current_user)
+    result = await confirm_selection(
+        session, pending_id, payload.entity_ids,
+        lambda draft, eid: _execute_selection(container, draft, eid),
+    )
+    if not result.get("ok"):
+        # 选择越界是用户可修正的输入问题（400），执行失败是下游问题（502），
+        # 草稿没了才是 404
+        status = {"invalid_selection": 400, "exec_failed": 502}.get(
+            str(result.get("reason")), 404)
+        raise AppException(str(result.get("error") or _SELECTION_GONE),
+                           code="pending_select_failed", http_status=status)
+    names = [str(n) for n in (result.get("names") or [])]
+    # 让下一轮 LLM 知道设备是用户在界面上挑的（会话历史不存 tool 消息，
+    # 不补这一条模型会以为指令还没执行）
+    session.model_messages.append(
+        {"role": "user", "content": f"（我已通过界面选择：{'、'.join(names)}，指令已执行）"})
+    await container.session_store.store_session(session)
+    return ApiResponse(data={"entity_ids": result.get("entity_ids"), "names": names})
+
+
+@router.post("/ha/pending/{pending_id}/cancel")
+async def cancel_pending_selection(
+    pending_id: str,
+    payload: PendingConfirmRequest,
+    container: AppContainer = Depends(get_container),
+    current_user: dict = Depends(get_current_user),
+) -> ApiResponse[dict]:
+    """放弃待选草稿（不执行任何设备操作）。camera_id 字段忽略。"""
+    session = await require_owned_session(container, payload.session_id, current_user)
+    if not cancel_selection(session, pending_id):
+        raise AppException(_SELECTION_GONE,
+                           code="pending_selection_not_found", http_status=404)
+    return ApiResponse(data={"cancelled": True})
+
+
 @router.get("/ha/config")
 async def get_ha_config() -> ApiResponse[dict]:
     ha_cfg = get_config("ha", {})
@@ -402,7 +511,10 @@ async def set_ha_config(
     from ..core.net_guard import url_scheme_error, HTTP_SCHEMES
     scheme_err = url_scheme_error(url, HTTP_SCHEMES)
     if scheme_err:
-        return ApiResponse(success=False, message=scheme_err, data={"saved": False})
+        # 刻意返回 200 + data.saved=false（不抛异常）：probe 类失败前端要就地显示
+        # 在对应输入框旁，而不是弹全局错误。AdvancedView 依赖 data.saved === false，
+        # 别改成 raise —— 信号走 data.saved，不走 HTTP 状态码。
+        return ApiResponse(message=scheme_err, data={"saved": False})
     new_token = str(payload.token).strip() if payload.token is not None else None
 
     # 只传了 url（没传 token）：用现有 token 验证 url 是否可达
@@ -471,22 +583,6 @@ async def test_ha_connection(container: AppContainer = Depends(get_container)) -
         )
 
 
-@router.post("/models/test")
-async def test_model_connection_route(payload: ModelTestRequest) -> ApiResponse[dict]:
-    """测试模型连接。"""
-    from ..services.model_test_service import test_model_connection
-
-    result = await test_model_connection(
-        base_url=payload.base_url,
-        model=payload.model,
-        role=payload.role,
-        api_key=payload.api_key,
-        chat_path=payload.chat_path,
-        embed_path=payload.embed_path,
-    )
-    return ApiResponse(data=result)
-
-
 @router.get("/unique")
 async def get_unique_settings() -> ApiResponse[dict]:
     """获取聊天助手的个性化设置（角色设定、行为原则）。"""
@@ -511,11 +607,15 @@ async def set_unique_settings(payload: UniqueSettingsRequest) -> ApiResponse[dic
     if payload.persona:
         updates["persona"] = payload.persona.strip()
     new_cfg = update_config_section("chat_assistant", updates)
+    # guidelines 返回 config 实际生效值（与 GET /unique、prompt 同口径），
+    # 而非硬编码默认值——此前保存 persona 后前端拿到的
+    # guidelines/guidelines_custom 是假的。
+    guidelines_cfg = str(new_cfg.get("guidelines", "") or "").strip()
     return ApiResponse(
         data={
             "persona": new_cfg.get("persona", "") or DEFAULT_PERSONA,
-            "guidelines": GUIDELINES,
+            "guidelines": guidelines_cfg or GUIDELINES,
             "persona_custom": bool(new_cfg.get("persona", "")),
-            "guidelines_custom": False,
+            "guidelines_custom": bool(guidelines_cfg),
         }
     )

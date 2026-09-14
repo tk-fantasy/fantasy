@@ -13,8 +13,8 @@ describe('useLlmStatus', () => {
     console.error = vi.fn()
   })
 
-  it('ROLE_LABELS 覆盖状态条展示的 4 个角色', () => {
-    expect(ROLE_LABELS).toEqual({ chat: '对话', summary: '摘要', vision: '视觉', embed: '向量' })
+  it('ROLE_LABELS 覆盖状态条展示的 3 个角色（summary 角色已删除）', () => {
+    expect(ROLE_LABELS).toEqual({ chat: '对话', vision: '视觉', embed: '向量' })
   })
 
   it('onStatusHover 懒加载：首次请求，缓存后不再请求', async () => {

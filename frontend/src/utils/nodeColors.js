@@ -1,4 +1,4 @@
-export const NODE_COLORS = {
+const NODE_COLORS = {
   Document: '#4fc3f7',
   Entity: '#ffb74d',
   Category: '#81c784',

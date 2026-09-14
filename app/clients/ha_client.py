@@ -71,6 +71,28 @@ class HomeAssistantClient:
         response.raise_for_status()
         return response.json()
 
+    async def get_state(self, entity_id: str) -> dict[str, Any] | None:
+        """获取单个实体状态；不存在返回 None（HA 对未知 entity_id 返回 404）。
+
+        call_service 回读等只需一个实体的场景用本方法，避免全量 /api/states。
+        """
+        client = await self._get_client()
+        response = await client.get(f"/api/states/{entity_id}")
+        if response.status_code in (404, 405):
+            return None
+        response.raise_for_status()
+        return response.json()
+
+    async def ping(self) -> bool:
+        """轻量探活：GET /api/（约百字节），替代全量 /api/states 的健康检查。
+
+        稳态下健康探活按分钟级轮询，用全量 states 探活等于每分钟白拉 1-2MB。
+        """
+        client = await self._get_client()
+        response = await client.get("/api/")
+        response.raise_for_status()
+        return response.status_code == 200
+
     # ============ 服务调用 ============
 
     async def call_service(

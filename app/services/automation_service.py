@@ -199,6 +199,26 @@ class AutomationService:
             logger.info("Automation rules applied", extra={"applied_count": len(applied)})
         return applied
 
+    async def trigger_rule(self, rule_id: str) -> dict:
+        """手动触发一条规则：跳过条件评估直接执行动作（用户说"触发"即立即执行）。
+
+        与自动评估的差异：冷却/设备门控是"自动评估"防抖概念，手动触发不受限；
+        动作仍走现有 _execute_action 全链路（失败处理/留痕/虚拟摄像头演练 dry_run）。
+        规则不存在抛 ValueError（工具层转 tool_error）。
+        """
+        rule = self._rule_registry.get_rule(rule_id)
+        if rule is None:
+            raise ValueError(f"规则不存在: {rule_id}")
+        results = await self._run_actions(rule, time.time())
+        try:
+            from .alert_service import alert_service
+            await alert_service.record(
+                "automation", f"rule:{rule.get('name', rule_id)}",
+                f"手动触发规则「{rule.get('name', rule_id)}」，执行了 {len(results)} 个动作")
+        except Exception:  # noqa: BLE001
+            pass
+        return {"rule": rule.get("name") or rule_id, "results": results}
+
     async def _apply_results(self, rules: list[dict], results: list, now: float,
                              applied: list[dict], camera_id: str = "") -> list[dict]:
         """统一处理评估结果：异常记日志跳过，result==1 执行动作 + 记指标 + 识别留痕。"""

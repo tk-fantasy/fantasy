@@ -36,6 +36,10 @@ class SessionState:
     model_messages: list[dict[str, Any]] = field(default_factory=list)
     summaries: list[dict[str, Any]] = field(default_factory=list)
     latest_visual_state: dict[str, Any] = field(default_factory=dict)
+    # 两段式确认暂存区（如 automation_rule_create 的待确认规则）。
+    # 仅内存、不持久化：pending 短命（10 分钟 TTL），重启丢了让用户重说，
+    # 不值得为它扩展序列化 schema；工具侧 get-or-init，兼容旧反序列化会话。
+    pending_confirmations: dict[str, dict[str, Any]] = field(default_factory=dict)
     created_at: int = field(default_factory=_now_ms)
     updated_at: int = field(default_factory=_now_ms)
 
@@ -258,12 +262,18 @@ class SessionStore:
             if session is None:
                 session = SessionState(session_id=session_id, request_id=request_id, user_id=user_id)
                 self._sessions[session_id] = session
+                session.updated_at = _now_ms()
+                self._save_session_async(session)
             else:
+                # 已在内存的会话：轮首只更新了 request_id/user_id/updated_at，
+                # 不再整序列化落库——此前每发一条消息就把全部历史事件白 dump
+                # 一遍（100 轮老会话 = 每条消息两次全量重写）。轮末 store_session
+                # 会带着这些字段落盘；仅当进程在轮中崩溃，DB 少一次无实质变化
+                # 的中间态。
                 session.request_id = request_id
                 if user_id:
                     session.user_id = user_id
-            session.updated_at = _now_ms()
-            self._save_session_async(session)
+                session.updated_at = _now_ms()
         return session
 
     async def create_session(self, user_id: str = "") -> SessionState:

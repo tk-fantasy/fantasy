@@ -47,7 +47,8 @@ async def create_scene(
                 user_id=current_user["user_id"], scene_id=payload.id or "")
         return ApiResponse(data=scene)
     except ValueError as e:
-        return ApiResponse(success=False, message=str(e), data=None)
+        # 场景名不能为空 / 至少需要一个动作 / 没有可捕获的设备状态
+        raise AppException(str(e), code="scene_invalid", http_status=400)
 
 
 @router.post("/scenes/{scene_id}/apply")
@@ -59,9 +60,11 @@ async def apply_scene(
         result = await _svc(container).apply_scene(scene_id)
         return ApiResponse(data=result)
     except ValueError as e:
-        return ApiResponse(success=False, message=str(e), data=None)
+        # scene_service 只在「场景不存在」时抛 ValueError
+        raise AppException(str(e), code="scene_not_found", http_status=404)
     except RuntimeError as e:
-        return ApiResponse(success=False, message=str(e), data=None)
+        # HA 客户端未装配/不可用
+        raise AppException(str(e), code="ha_unavailable", http_status=503)
 
 
 @router.delete("/scenes/{scene_id}")

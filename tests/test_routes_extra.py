@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.core.api_models import ApiResponse
+from app.core.exceptions import AppException
 
 
 def _mock_container(**overrides):
@@ -274,16 +275,21 @@ class TestIsAllowedExternalMcp:
 # ===================== scheduler_routes =====================
 
 class TestSchedulerRoutesGuard:
-    """scheduler_service 未就绪时所有路由返回失败（不抛）。"""
+    """scheduler_service 未就绪时所有路由抛 503。
+
+    此前这些分支 return ApiResponse(success=False, ...)，但 ApiResponse 没有
+    success 字段 → 静默变成 code='ok' + HTTP 200，前端把失败当成功解包。
+    """
 
     @pytest.mark.asyncio
     async def test_list_tasks_scheduler_not_ready(self):
         from app.routes import scheduler_routes
 
         container = _mock_container()  # scheduler_service=None
-        result = await scheduler_routes.list_scheduled_tasks(container=container)
-        assert result.data is None
-        assert "未就绪" in result.message
+        with pytest.raises(AppException) as ei:
+            await scheduler_routes.list_scheduled_tasks(container=container)
+        assert ei.value.http_status == 503
+        assert "未就绪" in ei.value.message
 
     @pytest.mark.asyncio
     async def test_create_task_scheduler_not_ready(self):
@@ -295,8 +301,9 @@ class TestSchedulerRoutesGuard:
             payload={"kind": "message", "message": "hi"},
         )
         container = _mock_container()
-        result = await scheduler_routes.create_scheduled_task(payload, container=container)
-        assert result.data is None
+        with pytest.raises(AppException) as ei:
+            await scheduler_routes.create_scheduled_task(payload, container=container)
+        assert ei.value.http_status == 503
 
     @pytest.mark.asyncio
     async def test_set_enabled_scheduler_not_ready(self):
@@ -304,26 +311,29 @@ class TestSchedulerRoutesGuard:
         from app.schema.api_schemas import ScheduledTaskEnabledRequest
 
         container = _mock_container()
-        result = await scheduler_routes.set_scheduled_task_enabled(
-            "t1", ScheduledTaskEnabledRequest(enabled=False), container=container,
-        )
-        assert result.data is None
+        with pytest.raises(AppException) as ei:
+            await scheduler_routes.set_scheduled_task_enabled(
+                "t1", ScheduledTaskEnabledRequest(enabled=False), container=container,
+            )
+        assert ei.value.http_status == 503
 
     @pytest.mark.asyncio
     async def test_run_now_scheduler_not_ready(self):
         from app.routes import scheduler_routes
 
         container = _mock_container()
-        result = await scheduler_routes.run_scheduled_task_now("t1", container=container)
-        assert result.data is None
+        with pytest.raises(AppException) as ei:
+            await scheduler_routes.run_scheduled_task_now("t1", container=container)
+        assert ei.value.http_status == 503
 
     @pytest.mark.asyncio
     async def test_delete_task_scheduler_not_ready(self):
         from app.routes import scheduler_routes
 
         container = _mock_container()
-        result = await scheduler_routes.delete_scheduled_task("t1", container=container)
-        assert result.data is None
+        with pytest.raises(AppException) as ei:
+            await scheduler_routes.delete_scheduled_task("t1", container=container)
+        assert ei.value.http_status == 503
 
 
 class TestSchedulerListTasks:

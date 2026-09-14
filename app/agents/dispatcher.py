@@ -14,6 +14,11 @@ from .validator_agent import ValidatorAgent
 from ..schema.chat_schema import Dialog, Event, Instruction, Template, UI
 from ..services.priority_service import interactive_priority
 from ..services.prompt_service import build_system_prompt
+from ..services.pending_rules import (
+    KIND_AUTOMATION_RULE,
+    resolve_pending,
+    wants_rule_creation,
+)
 from ..services.session_store import SessionStore
 
 logger = logging.getLogger(__name__)
@@ -37,6 +42,9 @@ class _StreamRunState:
 
     final_content: str = ""
     tool_call_count: int = 0
+    # 本轮是否调过 automation_rule_create（创建关键词门控配套）：validator 用它
+    # 判定「声称已创建规则」是否为幻觉——没调过却声称 = 必然撒谎。
+    rule_create_called: bool = False
     has_error: bool = False
     has_streamed_tokens: bool = False  # WS 路径：是否已推送过 token
     # run_id -> 该次调用的 args。用 run_id 而非 tool_name 做 key，
@@ -75,6 +83,7 @@ def _make_event_handler(
     *,
     stream_tokens: bool,
     entity_name_map: dict[str, str] | None = None,
+    name_map_provider: Callable[[], Awaitable[dict[str, str]]] | None = None,
 ) -> Callable[[dict], Awaitable[None]]:
     """构造统一的流式事件处理器，消除 REST/WS 两路重复的事件分支。
 
@@ -85,6 +94,8 @@ def _make_event_handler(
         stream_tokens: WS 路径为 True，额外推送 TokenStream 与 executing 状态；
             REST 路径为 False，仅累积 final_content。
         entity_name_map: {entity_id: friendly_name}，供 CallTool 填充设备友好名。
+        name_map_provider: 惰性映射提供者；设置时优先于 entity_name_map，
+            仅在首个 call_service 事件时才调用（纯闲聊轮零开销）。
     """
 
     async def handler(se: dict) -> None:
@@ -105,6 +116,8 @@ def _make_event_handler(
         elif event_type == "tool_start":
             state.tool_call_count += 1
             tool_name = se.get("tool_name", "unknown")
+            if tool_name.split("___")[-1] == "automation_rule_create":
+                state.rule_create_called = True
             tool_args = se.get("tool_args", {})
             run_id = se.get("run_id", "") or f"tool-{state.tool_call_count}"
             tool_id = f"tool-{state.tool_call_count}"
@@ -113,12 +126,18 @@ def _make_event_handler(
             state.pending_tool_names[run_id] = tool_name
             state.pending_tool_ids[run_id] = tool_id
             service_name = tool_name.split("___")[0] if "___" in tool_name else "local"
-            # call_service 时把 entity_id 翻译成友好名（如 light.bed → 床头灯）
+            # call_service 时把 entity_id 翻译成友好名（如 light.bed → 床头灯）。
+            # 惰性获取：只有真的出现 call_service 事件才拉一次映射，
+            # 纯闲聊轮不再每轮白建全量 {entity_id: name} dict。
             friendly_name = None
-            if entity_name_map and "call_service" in tool_name:
+            if "call_service" in tool_name:
                 eid = str(tool_args.get("entity_id", ""))
                 if eid:
-                    friendly_name = entity_name_map.get(eid)
+                    if name_map_provider is not None:
+                        name_map = await name_map_provider()
+                    else:
+                        name_map = entity_name_map or {}
+                    friendly_name = name_map.get(eid)
             if stream_tokens:
                 # WS：先推 executing 状态，再推 CallTool
                 await emit(
@@ -218,8 +237,15 @@ class Dispatcher:
         self._session_store = session_store
         self._agent = agent
         self._tools: list = []           # 工具列表（构建 per-user agent 用）
-        self._user_agents: dict[str, Any] = {}  # user_id → agent 缓存
+        # per-user agent 缓存：key = (user_id, variant)。
+        # 规则创建是关键词门控（pending_rules.wants_rule_creation）：回合变体
+        # full / no_create（有活草稿）/ clean（automation_rule_* 整族不可见），
+        # 见 _pick_variant —— 代码级隔离，不依赖模型自觉。
+        self._user_agents: dict[tuple[str, str], Any] = {}
         self._user_agent_lock = asyncio.Lock()
+        # 全局裁剪变体（懒构建）：user 无独立 key 时回退全局，也要按变体分流。
+        # full 版就是启动时传入的 self._agent，不重复构建。
+        self._variant_agents: dict[str, Any] = {}
         # 后台小任务引用（如 broadcasting 状态清除），防事件循环只持弱引用被 GC
         self._bg_tasks: set[asyncio.Task] = set()
         # 多路。取 focus/state 时按主摄像头(第一个 enabled)。
@@ -326,12 +352,13 @@ class Dispatcher:
         同时更新工具列表并清空 per-user agent 缓存，下次各用户聊天时按新工具重建。
         旧全局 agent 和所有 per-user agent 的 httpx 客户端在此一并关闭回收。
         """
-        # 先关闭被取代的旧客户端（全局 + 所有 per-user），再清缓存换新。
+        # 先关闭被取代的旧客户端（全局 + 所有 per-user + 无 create 变体），再清缓存换新。
         await self.close_all_agent_clients()
         self._agent = agent
         if tools is not None:
             self._tools = tools
         self._user_agents.clear()
+        self._variant_agents.clear()
         if agent is not None and clients is not None:
             self._agent_clients[id(agent)] = clients
 
@@ -341,9 +368,10 @@ class Dispatcher:
         清缓存前先关闭该 agent 的 httpx 客户端，回收连接池。
         同时清 validator 的 per-user LLM 缓存，避免 validator 用旧 key 请求。
         """
-        old = self._user_agents.pop(user_id, None)
-        if old is not None:
-            await self._close_agent_clients(old)
+        for allow in ("full", "no_create", "clean"):
+            old = self._user_agents.pop((user_id, allow), None)
+            if old is not None:
+                await self._close_agent_clients(old)
         self._validator.invalidate_user(user_id)
 
     async def _close_agent_clients(self, agent: Any) -> None:
@@ -371,29 +399,124 @@ class Dispatcher:
             if agent is not None:
                 await self._close_agent_clients(agent)
 
-    async def _get_agent(self, user_id: str) -> Any:
-        """按 user_id 获取 agent。用户有独立 key 配置时返回 per-user agent，
-        无配置或无 user_id 时回退全局 self._agent。"""
+    def _tools_for_variant(self, variant: str) -> list:
+        """按回合变体取工具列表。
+
+        - full：全量工具（消息明确出现创建关键词，wants_rule_creation 命中）。
+        - no_create：剔除 automation_rule_create，保留 confirm/revise 等——
+          会话里有活草稿、用户在做「确认 / 改成…」后续时使用。
+        - clean：automation_rule_* 整族剔除——无关键词且无活草稿的回合，模型
+          对"创建规则"这个概念要完全无感知（工具名本身就是泄漏源：实测
+          glm-4-flash 会从 confirm/revise 的命名类推出 create，再编造
+          automation.rule_1 这种实体）。
+        """
+        if variant == "full":
+            return self._tools
+
+        def _keep(name: str) -> bool:
+            if variant == "no_create":
+                return name != "automation_rule_create"
+            return not name.startswith("automation_rule_")
+
+        kept = []
+        for t in self._tools:
+            name = getattr(t, "name", "") or getattr(t, "tool_name", "")
+            if _keep(name):
+                kept.append(t)
+        return kept
+
+    def _live_rule_draft(self, session) -> bool:
+        """会话里是否有未过期的自动化规则草稿（决定确认/修改回合的变体）。"""
+        try:
+            _, entry, _ = resolve_pending(session, KIND_AUTOMATION_RULE)
+            return entry is not None
+        except Exception:
+            logger.debug("live rule draft check failed", exc_info=True)
+            return False
+
+    def _pick_variant(self, session, query: str) -> str:
+        """回合变体选择：关键词命中 → full；有活草稿（确认/修改流）→ no_create；
+        其余 → clean（完全无规则概念）。"""
+        if wants_rule_creation(query):
+            return "full"
+        if self._live_rule_draft(session):
+            return "no_create"
+        return "clean"
+
+    async def _get_agent(self, user_id: str, variant: str = "full") -> Any:
+        """按 user_id + 回合变体获取 agent。
+
+        - variant="full"：用户有独立 key 时用其配置 + 全量工具构建，否则回退
+          全局 agent（启动时构建的全量工具版）。
+        - 其他变体：工具列表按 _tools_for_variant 剔除后构建（全局与 per-user
+          各自懒构建缓存）。变体构建失败时退回全量版——创建侧还有工具层硬门
+          （create handler 校验 current_query）兜底。
+        """
+        if variant == "full":
+            if not user_id:
+                return self._agent
+            key = (user_id, "full")
+            if key in self._user_agents:
+                return self._user_agents[key]
+            model_config = await load_model_config_for_user(user_id)
+            if not model_config:
+                return self._agent  # 用户无独立配置，回退全局
+            async with self._user_agent_lock:
+                # double-check：持锁后可能已被其他协程构建
+                if key in self._user_agents:
+                    return self._user_agents[key]
+                try:
+                    agent, clients = build_chat_agent(self._tools, model_config=model_config)
+                    self._user_agents[key] = agent
+                    self._agent_clients[id(agent)] = clients
+                    logger.info("Built per-user agent for user_id=%s, model=%s",
+                                user_id, model_config.get("model"))
+                    return agent
+                except Exception:
+                    logger.exception("Failed to build per-user agent for %s, falling back to global", user_id)
+                    return self._agent
+
+        # ---- 裁剪变体（no_create / clean）----
         if not user_id:
-            return self._agent
-        if user_id in self._user_agents:
-            return self._user_agents[user_id]
+            cached = self._variant_agents.get(variant)
+            if cached is not None:
+                return cached
+            async with self._user_agent_lock:
+                if self._variant_agents.get(variant) is not None:
+                    return self._variant_agents[variant]
+                try:
+                    agent, clients = build_chat_agent(self._tools_for_variant(variant))
+                    self._variant_agents[variant] = agent
+                    self._agent_clients[id(agent)] = clients
+                    logger.info("Built global %r agent (%d tools)",
+                                variant, len(self._tools_for_variant(variant)))
+                    return agent
+                except Exception:
+                    logger.exception("Failed to build global %r agent, "
+                                     "falling back to full agent (handler gate still applies)", variant)
+                    self._variant_agents[variant] = self._agent
+                    return self._variant_agents[variant]
+        key = (user_id, variant)
+        if key in self._user_agents:
+            return self._user_agents[key]
         model_config = await load_model_config_for_user(user_id)
         if not model_config:
-            return self._agent  # 用户无独立配置，回退全局
+            return await self._get_agent("", variant=variant)
         async with self._user_agent_lock:
-            # double-check：持锁后可能已被其他协程构建
-            if user_id in self._user_agents:
-                return self._user_agents[user_id]
+            if key in self._user_agents:
+                return self._user_agents[key]
             try:
-                agent, clients = build_chat_agent(self._tools, model_config=model_config)
-                self._user_agents[user_id] = agent
+                agent, clients = build_chat_agent(
+                    self._tools_for_variant(variant), model_config=model_config)
+                self._user_agents[key] = agent
                 self._agent_clients[id(agent)] = clients
-                logger.info("Built per-user agent for user_id=%s, model=%s",
-                            user_id, model_config.get("model"))
+                logger.info("Built per-user %r agent for user_id=%s", variant, user_id)
                 return agent
             except Exception:
-                logger.exception("Failed to build per-user agent for %s, falling back to global", user_id)
+                # 持锁中，禁止再进 _get_agent（非重入锁会自锁死）——直接回全量
+                # 全局；创建侧还有工具层硬门兜底。
+                logger.exception("Failed to build per-user %r agent for %s, "
+                                 "falling back to full global agent", variant, user_id)
                 return self._agent
 
     async def _emit_turn_error(
@@ -625,7 +748,7 @@ class Dispatcher:
         async def emit(instruction: Instruction) -> None:
             instructions.append(instruction)
 
-        agent = await self._get_agent(user_id)
+        agent = await self._get_agent(user_id, variant=self._pick_variant(session, query))
         await self._run_turn(event, session, query, ctx, emit, stream_tokens=False, agent=agent, user_id=user_id)
 
         session.history_instructions.extend(instructions)
@@ -689,7 +812,7 @@ class Dispatcher:
                 logger.info("dispatch_stream: ws send failed, muting further emits "
                             "(turn continues for persistence)")
 
-        agent = await self._get_agent(user_id)
+        agent = await self._get_agent(user_id, variant=self._pick_variant(session, query))
         try:
             await self._run_turn(event, session, query, ctx, emit, stream_tokens=True, agent=agent, user_id=user_id)
         finally:
@@ -752,18 +875,28 @@ class Dispatcher:
 
         state = _StreamRunState()
 
-        # 设备友好名映射（容错：HA 不可用时用空 dict，不阻塞对话）
-        entity_name_map: dict[str, str] = {}
-        if self._ha_service:
-            try:
-                entity_name_map = await self._ha_service.get_entity_name_map()
-            except Exception:
-                logger.debug("Failed to get entity_name_map [%s]", path, exc_info=True)
+        # 设备友好名映射改惰性：仅当本轮真的出现 call_service 事件（或 validator
+        # 需要核对话术）才拉一次，纯闲聊轮不再每轮白建全量 {entity_id: name} dict。
+        # 同一轮内只拉一次（带缓存）；容错：HA 不可用时返回空 dict，不阻塞对话。
+        name_map_cache: dict[str, str] | None = None
+
+        async def _load_entity_name_map() -> dict[str, str]:
+            nonlocal name_map_cache
+            if name_map_cache is None:
+                if not self._ha_service:
+                    name_map_cache = {}
+                else:
+                    try:
+                        name_map_cache = await self._ha_service.get_entity_name_map()
+                    except Exception:
+                        logger.debug("Failed to get entity_name_map [%s]", path, exc_info=True)
+                        name_map_cache = {}
+            return name_map_cache
 
         handler = _make_event_handler(
             state, emit, request_id, session_id,
             stream_tokens=stream_tokens,
-            entity_name_map=entity_name_map,
+            name_map_provider=_load_entity_name_map,
         )
 
         # 主轮：运行 LangGraph agent，收集流式事件
@@ -847,21 +980,36 @@ class Dispatcher:
         # retry_count 检查之后求值，否则重试耗尽后的最后一次条件求值会
         # 白付一次调用。
         retry_count = 0
+        # 规则创建声明核查（创建关键词门控配套，代码级）：回复声称"已创建规则"
+        # 但本轮没调过 automation_rule_create → 必为幻觉，走定向重写消息，不进
+        # should_retry 的通用管线（那是为 0 工具调用轮设计的）。
+        creation_claim_lied = (
+            not state.rule_create_called
+            and ValidatorAgent.has_rule_create_claim(state.final_content)
+        )
         while (retry_count < self._validator.max_retries
-               and state.tool_call_count == 0 and not state.has_error
-               and await self._validator.should_retry(
-                   state.final_content, state.tool_call_count,
-                   user_id=user_id, query=query,
-                   entity_name_map=entity_name_map)):
+               and not state.has_error
+               and (creation_claim_lied
+                    or (state.tool_call_count == 0
+                        and await self._validator.should_retry(
+                            state.final_content, state.tool_call_count,
+                            user_id=user_id, query=query,
+                            entity_name_map=await _load_entity_name_map())))):
             retry_count += 1
-            logger.info("Validator: auto-retry (%d/%d) [%s]", retry_count, self._validator.max_retries, path)
+            logger.info("Validator: auto-retry (%d/%d) [%s]%s",
+                        retry_count, self._validator.max_retries, path,
+                        "（声称已创建规则但未调创建工具）" if creation_claim_lied else "")
             # retrying 状态：与失败重试轮一致，REST 也发（统一策略）
             await emit(
                 Instruction.build_instruction(
                     UI.Status(phase="retrying"), request_id, session_id,
                 )
             )
-            lc_messages.append(self._validator.build_retry_message())
+            if creation_claim_lied:
+                lc_messages.append(ValidatorAgent.build_rule_create_claim_retry_message(
+                    state.final_content[:120]))
+            else:
+                lc_messages.append(self._validator.build_retry_message())
             # Validator 重试轮同样补注入家族开关
             self._inject_family_switch(lc_messages, ctx.get("chat_model", ""),
                                        include_system=False)

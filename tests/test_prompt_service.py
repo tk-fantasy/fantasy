@@ -64,3 +64,13 @@ async def test_system_prompt_candidate_retry_guideline():
     from app.services.prompt_service import GUIDELINES
     assert "候选" in GUIDELINES
     assert "重试一次" in GUIDELINES
+
+
+@pytest.mark.asyncio
+async def test_system_prompt_ambiguous_control_still_calls_tool():
+    """GUIDELINES：控制意图模糊也必须调 call_service（闸门处理歧义），禁止纯文字追问。"""
+    from app.services.prompt_service import GUIDELINES
+    assert "必须调用 call_service" in GUIDELINES
+    assert "禁止只在文字里追问" in GUIDELINES
+    # 设备清单已注入提示词，get_entities 改为按需复核而非动作前必调
+    assert "通常直接取用" in GUIDELINES

@@ -36,7 +36,12 @@ def _load_env_minimal() -> None:
         if not _line or _line.startswith("#") or "=" not in _line:
             continue
         _k, _, _v = _line.partition("=")
-        os.environ.setdefault(_k.strip(), _v.strip())
+        _v = _v.strip()
+        # 与 config.py 的 dotenv 解析对齐：剥掉成对包裹引号，否则脚本入口
+        # （先 import auth）会把字面引号注入 os.environ（如 JWT_SECRET 带引号签名）。
+        if len(_v) >= 2 and _v[0] == _v[-1] and _v[0] in ("'", '"'):
+            _v = _v[1:-1]
+        os.environ.setdefault(_k.strip(), _v)
 
 
 def _resolve_jwt_secret() -> str:
@@ -65,7 +70,7 @@ JWT_REFRESH_TOKEN_EXPIRE_SECONDS = 7 * 24 * 60 * 60  # 7 天
 
 
 def hash_password(password: str) -> str:
-    """对密码进行 bcrypt 哈希。"""
+    """对密码进行哈希（pbkdf2_sha256，见 pwd_context）。"""
     return pwd_context.hash(password)
 
 
@@ -77,9 +82,14 @@ def verify_password(password: str, password_hash: str) -> bool:
 # ============ Token 撤销黑名单 ============
 # 登出时把 token 的 jti 加入黑名单，verify_token 检查命中即拒绝。
 # 存 (jti, exp) 而非裸 jti：清理线程能按 exp 过期移除，避免 set 无限增长。
-# 内存存储（process-local）——重启清空，合理：重启后旧 cookie 也失效了。
+# 内存 + prefs KV 持久：进程内查内存（零开销），登出时写 KV、启动时回灌——
+# JWT 密钥刻意跨重启持久（保住 refresh 会话），黑名单若纯内存，重启后
+# 已登出的 24h access / 7d refresh token 会整体复活。
 _revoked_tokens: dict[str, int] = {}  # jti → exp（unix 秒）
 _revoked_lock = threading.Lock()
+
+# 撤销记录的 KV 持久化 scope（emoji_preferences 表复用作通用 KV）
+_REVOKED_KV_SCOPE = "token_revoke"
 
 
 def revoke_token(payload: dict[str, Any]) -> None:
@@ -103,6 +113,60 @@ def is_revoked(jti: str | None) -> bool:
         return False
     with _revoked_lock:
         return jti in _revoked_tokens
+
+
+async def revoke_token_persisted(payload: dict[str, Any]) -> None:
+    """撤销 + KV 持久化：登出后即使重启进程，已登出 token 依然被拒。
+
+    持久化失败只降级为内存撤销（当前进程内仍有效），不阻塞登出流程。
+    """
+    revoke_token(payload)
+    jti = payload.get("jti")
+    try:
+        exp = int(payload.get("exp", 0) or 0)
+    except (TypeError, ValueError):
+        exp = 0
+    if not jti or not exp:
+        return
+    try:
+        from .database import Database
+        await Database.get().emoji_pref_upsert(_REVOKED_KV_SCOPE, jti, str(exp))
+    except Exception:  # noqa: BLE001
+        logger.warning("Failed to persist revoked token (memory-only revocation)", exc_info=True)
+
+
+async def load_revoked_tokens() -> int:
+    """启动回灌：把 KV 里未过期的撤销记录装回内存黑名单，顺带清过期行。
+
+    每请求仍只查内存（is_revoked 零 DB 开销）：DB 只在登出时写、启动时读。
+    """
+    try:
+        from .database import Database
+        rows = await Database.get().prefs_get_by_scope(_REVOKED_KV_SCOPE)
+    except Exception:  # noqa: BLE001
+        logger.warning("Failed to load revoked tokens from KV", exc_info=True)
+        return 0
+    now = int(time.time())
+    loaded = 0
+    stale: list[str] = []
+    for jti, exp_raw in rows.items():
+        try:
+            exp = int(exp_raw)
+        except (TypeError, ValueError):
+            stale.append(jti)
+            continue
+        if exp > now:
+            with _revoked_lock:
+                _revoked_tokens[jti] = exp
+            loaded += 1
+        else:
+            stale.append(jti)
+    for jti in stale:
+        try:
+            await Database.get().emoji_pref_delete(_REVOKED_KV_SCOPE, jti)
+        except Exception:  # noqa: BLE001
+            pass
+    return loaded
 
 
 def create_access_token(user_id: str, username: str) -> str:
@@ -215,7 +279,7 @@ def extract_token_from_request(request: Request) -> str | None:
 
 
 def extract_refresh_token_from_request(request: Request) -> str | None:
-    """从请求中提取 refresh token：body > cookie。"""
+    """从请求中提取 refresh token（仅 cookie；body 通道从未实现）。"""
     return request.cookies.get(REFRESH_COOKIE)
 
 
@@ -224,14 +288,16 @@ async def get_current_user(
 ) -> dict[str, str]:
     """FastAPI 依赖注入：从请求中提取当前用户信息。
 
-    支持两种方式：Authorization header > httpOnly cookie
+    支持两种方式：Authorization header > httpOnly cookie。
+    认证中间件已解码的 payload 挂在 request.state.jwt_payload，直接复用，
+    避免每请求二次 JWT decode；APP_TOKEN 直通等未走中间件解码的路径回退自取。
     """
-    token = extract_token_from_request(request)
-
-    if not token:
-        raise AppException("未提供认证信息", code="missing_auth", http_status=401)
-
-    payload = verify_token(token)
+    payload = getattr(request.state, "jwt_payload", None)
+    if not isinstance(payload, dict):
+        token = extract_token_from_request(request)
+        if not token:
+            raise AppException("未提供认证信息", code="missing_auth", http_status=401)
+        payload = verify_token(token)
 
     # 仅 access token 可用于访问 API；refresh token 只能用于 /api/auth/refresh
     if payload.get("type") != "access":
@@ -264,5 +330,22 @@ async def get_current_admin(
             code="admin_required", http_status=403,
         )
     return {**current_user, "is_admin": 1}
+
+
+async def require_owned_session(
+    container: Any, session_id: str, current_user: dict
+) -> Any:
+    """校验会话归属当前用户并返回 SessionState；不存在 404、不归属 403。
+
+    与 get_current_user/get_current_admin 一样属于路由层的授权依赖，故放在这里；
+    container 用鸭子类型（只取 .session_store）以避免 core ← container 的循环导入。
+    凡是按 session_id 读写会话内部状态（消息、待确认草稿）的端点都必须过这道校验。
+    """
+    session = await container.session_store.get_session(session_id)
+    if session is None:
+        raise AppException("会话不存在", code="session_not_found", http_status=404)
+    if session.user_id and session.user_id != current_user["user_id"]:
+        raise AppException("无权访问该会话", code="forbidden", http_status=403)
+    return session
 
 

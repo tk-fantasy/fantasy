@@ -7,8 +7,8 @@ alert_service 与各 hook 点写入）。生成复用对话（chat）模型的 L
 调度：自带轻量每日检查循环（不进 scheduler 任务列表，避免系统行为出现在
 用户的定时任务页）。每周日 weekly_report.hour（默认 20 点）生成一次。
 
-开关（默认保守）：weekly_report.enabled=false（生成消耗 LLM token，用户
-明确开启才生效）、weekly_report.hour=20。
+开关：weekly_report.enabled（默认 true，与 CHANGELOG「默认改为开启」一致；
+不需要的用户在配置里显式关掉）、weekly_report.hour=20。
 """
 from __future__ import annotations
 
@@ -214,9 +214,9 @@ class WeeklyReportService:
 
     def _is_enabled(self) -> bool:
         try:
-            return bool(get_config("weekly_report.enabled", False))
+            return bool(get_config("weekly_report.enabled", True))
         except Exception:  # noqa: BLE001
-            return False
+            return True
 
     async def latest_report(self) -> dict | None:
         """取最近一份周报文本（family_events 里最后一次 weekly_report）。"""

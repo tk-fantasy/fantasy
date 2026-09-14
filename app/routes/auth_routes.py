@@ -16,7 +16,7 @@ from ..core.auth import (
     get_current_user,
     hash_password,
     is_secure_request,
-    revoke_token,
+    revoke_token_persisted,
     set_auth_cookies,
     verify_password,
     verify_token,
@@ -141,17 +141,18 @@ async def refresh(request: Request, response: Response) -> ApiResponse[dict]:
 
 @router.post("/auth/logout")
 async def logout(request: Request, response: Response) -> ApiResponse[dict]:
-    """登出：把当前 access + refresh token 加入黑名单，再清除认证 cookie。
+    """登出：把当前 access + refresh token 加入黑名单（KV 持久化，跨重启有效），
+    再清除认证 cookie。
 
     token 本身仍有效到过期，但 verify_token 会拒绝黑名单中的 jti，
-    防止残留 token 在登出后被复用。
+    防止残留 token 在登出后被复用——包括重启之后（黑名单启动回灌）。
     """
     # 撤销 access token（header 或 cookie）
     access_token = extract_token_from_request(request)
     if access_token:
         try:
             payload = verify_token(access_token)
-            revoke_token(payload)
+            await revoke_token_persisted(payload)
         except Exception:
             pass  # token 无效/已过期，无需撤销
     # 撤销 refresh token（cookie）
@@ -159,7 +160,7 @@ async def logout(request: Request, response: Response) -> ApiResponse[dict]:
     if refresh_token:
         try:
             payload = verify_token(refresh_token)
-            revoke_token(payload)
+            await revoke_token_persisted(payload)
         except Exception:
             pass
     clear_auth_cookies(response)

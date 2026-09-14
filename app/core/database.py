@@ -206,8 +206,7 @@ class Database:
                 key TEXT NOT NULL,
                 emoji_char TEXT NOT NULL,
                 updated_at INTEGER NOT NULL,
-                user_id TEXT DEFAULT '',
-                UNIQUE(scope, key, user_id)
+                UNIQUE(scope, key)
             );
 
             CREATE TABLE IF NOT EXISTS users (
@@ -310,9 +309,40 @@ class Database:
 
         await _ensure_column("sessions", "user_id", "user_id TEXT DEFAULT ''")
         await _ensure_column("rules", "user_id", "user_id TEXT DEFAULT ''")
-        await _ensure_column("emoji_preferences", "user_id", "user_id TEXT DEFAULT ''")
-        # 多摄像头:rules 表加 camera_id 列(空串=全局规则,归所有摄像头)
-        await _ensure_column("rules", "camera_id", "camera_id TEXT DEFAULT ''")
+
+        # —— 死列清理（零读零写的历史遗留，真源在别处）——
+        # rules.camera_id：仅旧迁移写、零读（摄像头绑定在 data JSON）；老库
+        # 可能没有该列（新版已不再 ensure），按需 drop。
+        async with db.execute("PRAGMA table_info(rules)") as cur:
+            _rules_cols = {row[1] for row in await cur.fetchall()}
+        if "camera_id" in _rules_cols:
+            try:
+                await db.execute("ALTER TABLE rules DROP COLUMN camera_id")
+                logger.info("Migration: dropped rules.camera_id (dead column)")
+            except Exception:
+                logger.warning("Migration: drop rules.camera_id failed (non-fatal)", exc_info=True)
+        # emoji_preferences.user_id：零读零写，UNIQUE 实际退化 (scope,key)。
+        # 该列被 UNIQUE 索引引用，DROP COLUMN 不适用，走标准重建法。
+        async with db.execute("PRAGMA table_info(emoji_preferences)") as cur:
+            _emoji_cols = {row[1] for row in await cur.fetchall()}
+        if "user_id" in _emoji_cols:
+            await db.execute("""
+                CREATE TABLE emoji_preferences_new (
+                    scope TEXT NOT NULL,
+                    key TEXT NOT NULL,
+                    emoji_char TEXT NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    UNIQUE(scope, key)
+                )
+            """)
+            await db.execute("""
+                INSERT INTO emoji_preferences_new (scope, key, emoji_char, updated_at)
+                SELECT scope, key, emoji_char, updated_at FROM emoji_preferences
+            """)
+            await db.execute("DROP TABLE emoji_preferences")
+            await db.execute("ALTER TABLE emoji_preferences_new RENAME TO emoji_preferences")
+            logger.info("Migration: dropped emoji_preferences.user_id (dead column)")
+
         # family_events 加 actor 列（统计图数据基础：device_op 由 AI 还是手动触发，
         # 结构化字段替代解析中文 message 前缀）
         await _ensure_column("family_events", "actor", "actor TEXT DEFAULT ''")
@@ -366,14 +396,14 @@ class Database:
                     "frame_interval_ms": int(v.get("frame_interval_ms", 1000)),
                     "display_enabled": 1 if legacy.get("automation", {}).get("camera_vl_display_enabled") else 0,
                 })
-                # 把现有规则的 camera_id 回填到新 id(data JSON blob + 列都设)
+                # 把现有规则的摄像头绑定回填到 data JSON（真源；camera_id 列已删）
                 async with db.execute("SELECT id, data FROM rules") as cur:
                     for row in await cur.fetchall():
                         d = json.loads(row[1]) if row[1] else {}
                         d["camera_id"] = cid
                         await db.execute(
-                            "UPDATE rules SET data = ?, camera_id = ? WHERE id = ?",
-                            (json.dumps(d, ensure_ascii=False), cid, row[0]))
+                            "UPDATE rules SET data = ? WHERE id = ?",
+                            (json.dumps(d, ensure_ascii=False), row[0]))
                 # vision_focuses KV 每条加 camera_id(若存在)
                 fv = await instance.kv_get("vision_focuses")
                 if fv:

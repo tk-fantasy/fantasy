@@ -86,10 +86,18 @@ class AppContainer:
         return self.ha_client_ref[0]
 
     def reload_all_clients(self) -> None:
-        """重载所有 LLM 客户端（切换用户或更新 key 后调用）。"""
+        """重载所有 LLM 客户端（更新 key 或自愈后调用）。
+
+        必须含 vision_key_pool：视觉客户端的 key 池是独立于 vision_client 的
+        ApiKeyManager（bootstrap 装配），漏掉它的话迁移/自愈场景下视觉链路
+        仍拿着旧池持续 401——表现为「配置看着恢复了，视觉仍报错」。
+        """
         self.llm_chat_client.reload()
         self.vision_client.reload()
         self.embed_client.reload()
+        pool = getattr(self, "vision_key_pool", None)
+        if pool is not None:
+            pool.reload()
         if self.rag_service:
             self.rag_service.maybe_rebuild_if_model_changed()
 

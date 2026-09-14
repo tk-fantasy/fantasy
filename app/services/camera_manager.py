@@ -113,6 +113,17 @@ class CameraManager:
         )
         if self._loop is not None:
             stream.set_event_loop(self._loop)
+        # 滑块落盘值(vision.motion_threshold)优先于 cameras 表列的初始值：
+        # 滑块接口承诺「重启后保持」，而 worker 启动只读表列——不在此回放的话，
+        # 调完滑块一重启就静默回退旧值（UI 显示新值、实际跑旧值）。
+        # 配置里没有该键（从未用过滑块）时不动，尊重每路各自的表列值。
+        from ..core.config import get_config as _get_config
+        _vision_cfg = _get_config("vision", {}) or {}
+        if "motion_threshold" in _vision_cfg:
+            try:
+                stream.set_motion_threshold(int(_vision_cfg["motion_threshold"]))
+            except Exception:  # noqa: BLE001
+                logger.exception("apply vision.motion_threshold to %s failed", cid)
         self._streams[cid] = stream
         stream.start()
         return stream
@@ -377,8 +388,8 @@ class CameraManager:
     def set_motion_threshold(self, threshold: int) -> None:
         """全局 dhash 阈值热更新:广播所有路(滑块无 camera_id,作用于全部)。
 
-        与各路 cameras 表 motion_threshold 列不冲突——表列是初始值,本方法是
-        运行时滑块热更新,复用 vision.motion_threshold 落盘语义。
+        落盘 vision.motion_threshold 会在 _spawn（含重启后的启动路径）回放，
+        滑块值跨重启保持；cameras 表列 motion_threshold 只是每路初始默认。
         """
         for s in self._streams.values():
             try:
@@ -477,10 +488,10 @@ class CameraManager:
         return rows
 
     def primary_camera_id(self) -> str | None:
-        """无参 /video_feed 取主路:当前预览路优先,否则第一个 enabled 路。
+        """取主路:当前预览路优先,否则第一个 enabled 路。
 
-        供 mcp_routes.py 旧 /video_feed(无 camera_id)端点用——多路化后该端点
-        需选定主路。有预览路用预览路,否则取 list_cameras()[0]。
+        多路化后「无 camera_id 的默认路」语义统一收敛到这里。
+        有预览路用预览路,否则取 list_cameras()[0]。
         """
         if self._active_display_id:
             return self._active_display_id

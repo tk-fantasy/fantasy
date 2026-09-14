@@ -9,10 +9,9 @@ from fastapi import APIRouter, Depends, Request, Response
 from ..container import AppContainer, get_container
 from ..core.api_models import ApiResponse
 from ..core.auth import get_current_user, create_access_token, create_refresh_token, is_secure_request, set_auth_cookies, verify_password
-from ..core.config import get_config, update_memory_config, write_secrets
 from ..core.database import Database
 from ..core.exceptions import AppException
-from ..schema.api_schemas import UserLLMKeysRequest, UserProvidersRequest, UserSwitchRequest
+from ..schema.api_schemas import UserLLMKeysRequest, UserSwitchRequest
 
 logger = logging.getLogger(__name__)
 
@@ -37,18 +36,6 @@ async def list_users(
                 configured_users.append(user)
 
     return ApiResponse(data=configured_users)
-
-
-@router.get("/users/me")
-async def get_current_user_info(
-    current_user: dict = Depends(get_current_user),
-) -> ApiResponse[dict]:
-    """获取当前用户信息。"""
-    db = Database.get()
-    user = await db.user_get_by_id(current_user["user_id"])
-    if not user:
-        raise AppException("用户不存在", code="user_not_found", http_status=404)
-    return ApiResponse(data=user)
 
 
 @router.post("/users/switch")
@@ -95,47 +82,11 @@ async def switch_user(
     })
 
 
-@router.get("/users/{username}/llm_keys")
-async def get_user_llm_keys(
-    username: str,
-    current_user: dict = Depends(get_current_user),
-) -> ApiResponse[list[dict]]:
-    """获取指定用户的 LLM keys。仅允许查看自己的配置。"""
-    db = Database.get()
-    user = await db.user_get_by_username(username)
-    if not user:
-        raise AppException("用户不存在", code="user_not_found", http_status=404)
-
-    # 仅允许查看自己的配置（与 POST 写接口的归属校验对齐，防 IDOR）
-    if user["id"] != current_user["user_id"]:
-        raise AppException("无权查看他人配置", code="forbidden", http_status=403)
-
-    llm_keys_json = await db.user_setting_get(user["id"], "llm_keys")
-    llm_keys = json.loads(llm_keys_json) if llm_keys_json else []
-
-    # 返回时隐藏实际 API key
-    result = []
-    for key in llm_keys:
-        result.append({
-            "id": key.get("id"),
-            "base_url": key.get("base_url", ""),
-            "model": key.get("model", ""),
-            "type": key.get("type", ""),
-            "chat_path": key.get("chat_path", "/chat/completions"),
-            "embed_path": key.get("embed_path", ""),
-            "api_key_env": key.get("api_key_env", ""),
-            "api_key_set": bool(key.get("api_key", "")),
-        })
-
-    return ApiResponse(data=result)
-
-
 @router.post("/users/{username}/llm_keys")
 async def save_user_llm_keys(
     username: str,
     payload: UserLLMKeysRequest,
     current_user: dict = Depends(get_current_user),
-    container: AppContainer = Depends(get_container),
 ) -> ApiResponse[dict]:
     """保存用户的 LLM keys。仅允许修改自己的配置。"""
     db = Database.get()
@@ -153,84 +104,10 @@ async def save_user_llm_keys(
     # 供 main.py 启动自愈在全局 .env 丢失时恢复——"将错就错"容错策略）
     await db.user_setting_set(user["id"], "llm_keys", json.dumps(keys, ensure_ascii=False))
 
-    # 如果是当前用户，同时更新内存配置（不写 config.json）
-    if user["id"] == current_user["user_id"]:
-        update_memory_config("llm_keys", keys)
-
-        # 更新 .env
-        # env 名只接受 LLM_KEY_ 前缀：api_key_env 由客户端 payload 提供，
-        # 不加限制可以用任意键名覆盖 .env/os.environ（如 JWT_SECRET、
-        # HA_TOKEN），重启后生效即全局投毒。非合规名只跳过 env 写入——
-        # per-user key 解析优先读 DB 里的 api_key 明文字段，不影响功能。
-        import re as _re
-        _safe_env = _re.compile(r"^LLM_KEY_[A-Za-z0-9_]+$")
-        env_updates = {}
-        for key in keys:
-            env_name = key.get("api_key_env", "")
-            api_key = key.get("api_key", "")
-            if env_name and api_key:
-                if not _safe_env.match(env_name):
-                    logger.warning(
-                        "user %s: api_key_env %r 不符合 LLM_KEY_ 前缀约定，跳过写入 .env",
-                        username, env_name)
-                    continue
-                env_updates[env_name] = api_key
-        if env_updates:
-            write_secrets(env_updates)
-
-        # 重载客户端
-        try:
-            container.reload_all_clients()
-        except Exception as e:
-            logger.warning("Failed to reload LLM clients: %s", e)
-
+    # 只写 per-user DB，不动全局：per-user 解析在请求时实时读 DB，后台任务
+    # （自动化兜底/周报/摘要/RAG）继续用启动时加载的全局 key——与 switch_user
+    # 的约定一致。此处覆盖全局 CONFIG/.env/全局客户端的话，多用户下"最后保存
+    # 的人"会劫持所有走全局解析的后台任务。
     return ApiResponse(data={"saved": True, "count": len(keys)})
 
 
-@router.get("/users/{username}/providers")
-async def get_user_providers(
-    username: str,
-    current_user: dict = Depends(get_current_user),
-) -> ApiResponse[dict]:
-    """获取指定用户的 providers 配置。仅允许查看自己的配置。"""
-    db = Database.get()
-    user = await db.user_get_by_username(username)
-    if not user:
-        raise AppException("用户不存在", code="user_not_found", http_status=404)
-
-    # 仅允许查看自己的配置（防 IDOR，与 POST 写接口归属校验对齐）
-    if user["id"] != current_user["user_id"]:
-        raise AppException("无权查看他人配置", code="forbidden", http_status=403)
-
-    providers_json = await db.user_setting_get(user["id"], "providers")
-    providers = json.loads(providers_json) if providers_json else {}
-
-    return ApiResponse(data=providers)
-
-
-@router.post("/users/{username}/providers")
-async def save_user_providers(
-    username: str,
-    payload: UserProvidersRequest,
-    current_user: dict = Depends(get_current_user),
-) -> ApiResponse[dict]:
-    """保存用户的 providers 配置。仅允许修改自己的配置。"""
-    db = Database.get()
-    user = await db.user_get_by_username(username)
-    if not user:
-        raise AppException("用户不存在", code="user_not_found", http_status=404)
-
-    # 仅允许修改自己的配置
-    if user["id"] != current_user["user_id"]:
-        raise AppException("无权修改他人配置", code="forbidden", http_status=403)
-
-    providers = payload.providers
-
-    # 保存到 DB
-    await db.user_setting_set(user["id"], "providers", json.dumps(providers, ensure_ascii=False))
-
-    # 如果是当前用户，同时更新内存配置（不写 config.json）
-    if user["id"] == current_user["user_id"]:
-        update_memory_config("providers", providers)
-
-    return ApiResponse(data={"saved": True})

@@ -3,8 +3,9 @@ import { ref, computed, onMounted } from 'vue'
 import BaseToggle from '../components/BaseToggle.vue'
 import EmojiPicker from '../components/EmojiPicker.vue'
 import ReviseChatModal from '../components/ReviseChatModal.vue'
+import CameraBindModal from '../components/CameraBindModal.vue'
 import FlowSelect from '../components/FlowSelect.vue'
-import { apiGet } from '../utils/api'
+import { apiGet, apiPost } from '../utils/api'
 import { getRuleMismatch } from '../utils/ruleMismatch'
 import { useCamera } from '../composables/useCamera'
 import { useEmojiPref } from '../composables/useEmojiPref'
@@ -16,6 +17,8 @@ const newRuleText = ref('')
 const creating = ref(false)
 const selectedRule = ref(null)
 const showRuleDetail = ref(false)
+// 解析完、正等用户选摄像头的规则（视觉规则走两段式创建，见 createRule）
+const pendingPreview = ref(null)
 
 // D7:规则绑定摄像头;空串=全局规则(定时/天气),选某路=只对该路生效
 const { cameras, loadCameras } = useCamera()
@@ -105,32 +108,46 @@ async function createRule() {
 
   creating.value = true
   try {
-    const res = await fetch('/api/task/rule', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, camera_id: selectedCameraId.value }),
-    })
-    if (!res.ok) {
-      const errText = await res.text()
-      console.error('createRule failed:', res.status, errText)
-      alert(res.status === 401 ? '登录已过期，请重新登录' : '创建失败：' + errText)
-      creating.value = false
+    // 两段式：先只解析不落库。「这条规则是不是视觉类型」要等 LLM 解析完才知道，
+    // 而 header 的「当前作用范围」是打字之前定的 —— 在「全局(定时/天气)」范围下
+    // 输入「有人就开灯」，解析出来是 vision + camera_id=''，也就是 ruleMismatch
+    // 标红的危险态（automation_service 对未绑定的规则在每一路上都评估）。
+    // preview 刻意不带 camera_id，让 needs_camera 反映规则本身的性质。
+    const preview = await apiPost('/api/rules/preview', { text })
+    if (preview?.needs_camera) {
+      pendingPreview.value = preview.rule
       return
     }
-    const json = await res.json()
-    if (json.data) {
-      rules.value.unshift({
-        ...json.data,
-        enabled: json.data.enabled !== false,
-      })
-      newRuleText.value = ''
-      showCreateForm.value = false
-    }
+    // 非视觉规则不依赖摄像头，沿用 header 的作用范围（保持原有"按房间归类"用法）
+    await saveRule({ ...preview.rule, camera_id: selectedCameraId.value })
   } catch (e) {
-    console.error('Failed to create rule:', e)
+    alert('创建失败：' + (e?.message || e))
   } finally {
     creating.value = false
   }
+}
+
+async function saveRule(rule) {
+  try {
+    const saved = await apiPost('/api/rules', rule)
+    rules.value.unshift({ ...saved, enabled: saved.enabled !== false })
+    newRuleText.value = ''
+    showCreateForm.value = false
+    pendingPreview.value = null
+  } catch (e) {
+    alert('创建失败：' + (e?.message || e))
+  }
+}
+
+// 摄像头选择框确认：cameraId 为 '' 表示用户显式选了「全部摄像头（全局）」
+function onBindConfirm(cameraId) {
+  if (!pendingPreview.value) return
+  saveRule({ ...pendingPreview.value, camera_id: cameraId })
+}
+
+function onBindCancel() {
+  // 只丢掉这次解析结果，输入框内容留着让用户改措辞重来
+  pendingPreview.value = null
 }
 
 function formatCondition(condition) {
@@ -419,6 +436,18 @@ onMounted(() => {
       :initial="selectedRule"
       @applied="onRuleUpdated"
       @close="closeRuleDetail"
+    />
+
+    <!-- 视觉规则的摄像头绑定：preview 判定 needs_camera 后弹出，选完才落库 -->
+    <CameraBindModal
+      v-if="pendingPreview"
+      :cameras="cameras"
+      :rule-name="pendingPreview.name || ''"
+      :condition="formatCondition(pendingPreview.condition)"
+      :action-text="(pendingPreview.action_descriptions || []).join('，')"
+      :scope-camera-id="selectedCameraId"
+      @confirm="onBindConfirm"
+      @close="onBindCancel"
     />
 
     <EmojiPicker

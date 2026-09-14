@@ -6,32 +6,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 
-class TestChatRoute:
-    """测试 /api/chat 路由。"""
-
-    @pytest.mark.asyncio
-    async def test_chat_success(self):
-        """正常聊天返回指令列表。"""
-        from app.routes.session_routes import chat
-        from app.schema.api_schemas import ChatRequest
-
-        mock_container = MagicMock()
-        mock_instruction = MagicMock()
-        mock_instruction.model_dump.return_value = {"action": "test"}
-        mock_dispatcher = MagicMock()
-        mock_dispatcher.dispatch = AsyncMock(return_value=[mock_instruction])
-        mock_container.dispatcher = mock_dispatcher
-
-        current_user = {"user_id": "user-123", "username": "tester"}
-        payload = ChatRequest(query="你好", session_id="test-session")
-        result = await chat(payload, current_user, container=mock_container)
-
-        assert result.code == "ok"
-        assert len(result.data) == 1
-        mock_dispatcher.dispatch.assert_called_once()
-        # 确认 user_id 透传
-        assert mock_dispatcher.dispatch.call_args.kwargs.get("user_id") == "user-123"
-
 
 class TestSessionRoutes:
     """测试会话管理路由。"""

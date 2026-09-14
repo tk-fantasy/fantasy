@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { adaptControls, formatSliderValue, toActualValue } from '../../src/utils/deviceCapabilities'
+import { adaptControls, formatSliderValue } from '../../src/utils/deviceCapabilities'
 
 describe('adaptControls', () => {
   it('returns empty array for null/undefined controls', () => {
@@ -122,16 +122,5 @@ describe('formatSliderValue', () => {
 
   it('rounds float values', () => {
     expect(formatSliderValue({ current: 50.7, unit: '%' })).toBe('51%')
-  })
-})
-
-describe('toActualValue', () => {
-  it('returns input value without inputScale', () => {
-    expect(toActualValue({}, 100)).toBe(100)
-  })
-
-  it('applies inputScale when present', () => {
-    const result = toActualValue({ inputScale: 2.55 }, 100)
-    expect(result).toBeCloseTo(255, 0)
   })
 })

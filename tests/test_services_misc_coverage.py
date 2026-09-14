@@ -1625,7 +1625,7 @@ class TestHealthCheckEdges:
     async def test_check_all_aggregates(self):
         hc = HealthChecker()
         ha = MagicMock()
-        ha.get_states = AsyncMock(return_value=[{"state": "on"}])
+        ha.ping = AsyncMock(return_value=True)
         llm = MagicMock()
         llm.enabled = True
         llm.chat = AsyncMock(return_value="ok")

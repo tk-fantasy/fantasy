@@ -51,7 +51,7 @@ class TestGetAgent:
             result = await dispatcher._get_agent("user-1")
 
         assert result is user_agent
-        assert "user-1" in dispatcher._user_agents
+        assert ("user-1", "full") in dispatcher._user_agents
 
     @pytest.mark.asyncio
     async def test_second_call_uses_cache(self):

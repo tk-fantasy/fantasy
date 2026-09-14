@@ -1,7 +1,8 @@
 """家庭报告路由 — 事件历史（告警/任务/自动化）+ 周报。
 
-数据源是 family_events 表（alert_service 与各 hook 点写入）。周报生成默认
-关闭（weekly_report.enabled），此处提供手动触发入口与最近报告查询。
+数据源是 family_events 表（alert_service 与各 hook 点写入）。周报默认周日
+20 点自动生成（weekly_report.enabled，默认开），此处提供手动触发入口与
+最近报告查询。
 """
 from __future__ import annotations
 
@@ -13,6 +14,7 @@ from fastapi import APIRouter, Depends, Query
 from ..container import AppContainer, get_container
 from ..core.api_models import ApiResponse
 from ..core.database import Database
+from ..core.exceptions import AppException
 
 logger = logging.getLogger(__name__)
 
@@ -110,10 +112,10 @@ async def generate_weekly_report(container: AppContainer = Depends(get_container
     """手动生成一份周报（管理员日常维护用，无权限门槛——家庭共享）。"""
     svc = container.weekly_report_service
     if svc is None:
-        return ApiResponse(success=False, message="周报服务未就绪", data=None)
+        raise AppException("周报服务未就绪", code="report_unavailable", http_status=503)
     try:
         result = await svc.generate()
         return ApiResponse(data=result)
     except Exception as e:  # noqa: BLE001
         logger.exception("manual weekly report generation failed")
-        return ApiResponse(success=False, message=f"生成失败: {e}", data=None)
+        raise AppException(f"生成失败: {e}", code="report_generate_failed", http_status=500)

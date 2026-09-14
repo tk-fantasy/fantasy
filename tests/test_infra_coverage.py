@@ -67,7 +67,7 @@ class TestContainer:
             "ha_service": SimpleNamespace(), "llm_chat_client": mk(),
             "vision_client": mk(), "embed_client": mk(),
             "session_store": SimpleNamespace(), "vision_service": SimpleNamespace(),
-            "vision_key_pool": SimpleNamespace(), "rule_service": SimpleNamespace(),
+            "vision_key_pool": SimpleNamespace(reload=Mock()), "rule_service": SimpleNamespace(),
             "rule_registry_service": SimpleNamespace(), "automation_service": SimpleNamespace(),
             "summarization_service": SimpleNamespace(), "llm_settings_service": SimpleNamespace(),
             "emoji_service": SimpleNamespace(), "mcp_client_manager": SimpleNamespace(),
@@ -95,9 +95,10 @@ class TestContainer:
         assert c.ha_client == "ha2"
         # controls 缓存是容器新建的 list
         assert c.ha_controls_cache_ref == [""]
-        # reload_all_clients：三个客户端 reload + rag 钩子（summary 角色已删除）
+        # reload_all_clients：三个客户端 + vision_key_pool 池 reload + rag 钩子
+        # （池漏 reload 会让迁移/自愈后视觉链路持续拿旧 key 401）
         c.reload_all_clients()
-        for name in ("llm_chat_client", "vision_client", "embed_client"):
+        for name in ("llm_chat_client", "vision_client", "embed_client", "vision_key_pool"):
             services[name].reload.assert_called_once()
         # rag_service 为 None 时不炸（分支覆盖）
         assert c.rag_service is None
@@ -617,9 +618,10 @@ class TestLegacyCameraMigration:
         assert cam["display_enabled"] == 1
         cid = cam["id"]
         assert await db2.kv_get("cameras_migrated") == "1"
-        async with db2._db.execute("SELECT data, camera_id FROM rules WHERE id='r1'") as cur:
-            data, col_cid = await cur.fetchone()
-        assert json.loads(data)["camera_id"] == cid and col_cid == cid
+        async with db2._db.execute("SELECT data FROM rules WHERE id='r1'") as cur:
+            (data,) = await cur.fetchone()
+        # camera_id 列已删（死列），绑定只存在于 data JSON
+        assert json.loads(data)["camera_id"] == cid
         focuses = json.loads(await db2.kv_get("vision_focuses"))
         assert focuses[0]["camera_id"] == cid
         await Database.close()
@@ -691,12 +693,17 @@ class TestSessionStorePersistence:
         got = await store.get_session("s1")
         assert got is not None and got.user_id == "u1"
         await store.load_from_db()  # 幂等：重复加载 no-op
-        # get_or_create 更新 request_id/user_id 并排队保存
+        # get_or_create 更新内存里的 request_id/user_id，但不再整序列化落库
+        # （轮首只改了 request_id，全量重 dump 是纯浪费；轮末 store_session 落盘）
         s = await store.get_or_create("s1", "r2", user_id="u9")
         assert s.request_id == "r2" and s.user_id == "u9"
         await store.shutdown()
         async with db._db.execute("SELECT user_id FROM sessions WHERE id='s1'") as cur:
-            assert (await cur.fetchone())[0] == "u9"
+            assert (await cur.fetchone())[0] == "u1"  # 轮首未写库
+        await store.store_session(s)
+        await store.shutdown()
+        async with db._db.execute("SELECT user_id FROM sessions WHERE id='s1'") as cur:
+            assert (await cur.fetchone())[0] == "u9"  # store_session 落盘
 
     async def test_load_from_db_failure_starts_fresh(self, env, monkeypatch):
         store, _ = env
@@ -1217,32 +1224,32 @@ class TestWeeklyReportService:
 
     async def test_start_stop_lifecycle(self, wr, monkeypatch):
         svc, db, broadcast, wrs = wr
-        # 默认关闭 → 不起循环
-        await svc.start()
-        assert svc._loop_task is None
-        # 打开开关 → 起循环；stop 取消
-        real_get_config = wrs.get_config
-
-        def on(key, default=None):
-            if key == "weekly_report.enabled":
-                return True
-            return real_get_config(key, default)
-
-        monkeypatch.setattr(wrs, "get_config", on)
+        # 默认开启（与 CHANGELOG 一致）→ 起循环；stop 取消
         await svc.start()
         assert svc._loop_task is not None and not svc._loop_task.done()
         await svc.stop()
         assert svc._loop_task is None
         await svc.stop()  # 幂等
+        # 显式关闭 → 不起循环
+        real_get_config = wrs.get_config
 
-    async def test_is_enabled_exception_returns_false(self, wr, monkeypatch):
+        def on(key, default=None):
+            if key == "weekly_report.enabled":
+                return False
+            return real_get_config(key, default)
+
+        monkeypatch.setattr(wrs, "get_config", on)
+        await svc.start()
+        assert svc._loop_task is None
+
+    async def test_is_enabled_exception_returns_true(self, wr, monkeypatch):
         svc, db, broadcast, wrs = wr
 
         def boom(*a, **k):
             raise RuntimeError("cfg broken")
 
         monkeypatch.setattr(wrs, "get_config", boom)
-        assert svc._is_enabled() is False
+        assert svc._is_enabled() is True
 
     async def test_daily_check_generates_and_ignores_error_then_cancel(self, wr, monkeypatch):
         svc, db, broadcast, wrs = wr

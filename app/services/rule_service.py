@@ -10,12 +10,48 @@ from ..clients.client_factory import build_per_user_chat_client
 from ..clients.llm_chat_client import LlmChatClient
 from ..core.config import get_config
 from ..utils.json_extractor import extract_json_from_content
-from ..utils.text_match import fuzzy_match
+from ..utils.text_match import fuzzy_match, match_devices
 from .entity_controls import resolve_controls, controls_to_text
 
 logger = logging.getLogger(__name__)
 
 MAX_RETRIES = 2
+
+# 自动匹配修复时排除的不可控 domain：传感器/诊断实体读得了但控不了，
+# 匹配到它们生成的动作永远执行不出效果（与 device_registry.DIAGNOSTIC_DOMAINS 同口径）
+_UNCONTROLLABLE_DOMAINS = frozenset({"sensor", "binary_sensor"})
+
+# 开/关意图在不同 domain 下的标准 service（不在 services_info 时回退 turn_on/turn_off）
+_INTENT_SERVICE_BY_DOMAIN = {
+    "cover": {"on": "open_cover", "off": "close_cover"},
+    "lock": {"on": "unlock", "off": "lock"},
+}
+
+
+def _service_intent(service: str) -> str:
+    """把原 service 归约为开/关意图：open_cover/open_lock/turn_on → on，close/turn_off → off。"""
+    s = (service or "").lower()
+    if "off" in s or "close" in s:
+        return "off"
+    return "on"
+
+
+def _pick_service(domain: str, intent: str, services_info: dict) -> str:
+    """为匹配到的 domain 选一个该意图下真实存在的 service。
+
+    优先 domain 特化（cover→open_cover 等），回退 turn_on/turn_off，
+    都不在 services_info 里时再宽匹配语义词，最后放弃（调用方跳过修复）。
+    """
+    available = services_info.get(domain) or {}
+    preferred = _INTENT_SERVICE_BY_DOMAIN.get(domain, {}).get(intent, f"turn_{intent}")
+    if preferred in available:
+        return preferred
+    for svc in available:
+        if intent == "on" and ("on" in svc or "open" in svc):
+            return svc
+        if intent == "off" and ("off" in svc or "close" in svc):
+            return svc
+    return ""
 
 
 def _filter_devices(query: str, devices: list[dict]) -> list[dict]:
@@ -29,6 +65,24 @@ def _filter_devices(query: str, devices: list[dict]) -> list[dict]:
         if fuzzy_match(query, name) or fuzzy_match(query, eid):
             match.append(d)
     return match
+
+
+def _is_known_camera(camera_id: str) -> bool:
+    """camera_id 是否是真实存在的摄像头。
+
+    取不到列表（容器未装配 / camera_manager 缺失 / 列表为空 / 抛错）一律放行——
+    与 pending_rules.find_missing_entities 的「校验失败放行」口径一致，不因校验
+    手段不可用而锁死修改。
+    """
+    try:
+        # 函数内导入：container 反向依赖 services，模块级 import 会成环
+        from ..container import get_container
+        manager = getattr(get_container(), "camera_manager", None)
+        cameras = manager.list_cameras() if manager is not None else None
+    except Exception:  # noqa: BLE001
+        return True
+    ids = {str(c.get("id", "")) for c in (cameras or []) if isinstance(c, dict)}
+    return not ids or camera_id in ids
 
 
 class RuleService:
@@ -148,8 +202,93 @@ class RuleService:
                                 f"动作{i+1}: service '{service}' 与设备 '{entity_id}' 不匹配，"
                                 f"可控参数: {ctrl_params}，该 service 字段: {service_fields}"
                             )
-        
+
         return errors
+
+    def _auto_repair_actions(self, parsed: dict, full_devices: list[dict], services_info: dict) -> list[dict]:
+        """确定性自动匹配：LLM 反复修不对时，把幻觉 entity_id 强制替换为最接近的真实设备。
+
+        只在重试耗尽后调用（用户明确要求"就算错了也先给一个能确认的草稿，弹窗里
+        二次核对"）。匹配 query 依次取动作中文描述 → 规则 summary/name——幻觉 id
+        本身是英文乱码，当 query 只会匹配到噪声。替换会同步修正 domain/service，
+        替换明细记入 parsed["auto_corrections"] 供弹窗横幅与模型复述使用。
+
+        完全匹配不到的动作保持原样不动（绝不硬塞不相干设备），由调用方按
+        validation_errors 拦截——塞一个无关设备进去，用户没核出来确认了，比
+        确认不了更危险。
+        """
+        valid = {d["entity_id"] for d in full_devices}
+        descriptions = parsed.get("action_descriptions") or []
+        corrections: list[dict] = []
+        for i, action in enumerate(parsed.get("actions") or []):
+            tool_input = action.get("mcp_tool_input") or {}
+            entity_id = str(tool_input.get("entity_id", "") or "")
+            if not entity_id or entity_id in valid:
+                continue
+            query = ""
+            for source in (descriptions[i] if i < len(descriptions) else "",
+                           parsed.get("summary", ""), parsed.get("name", "")):
+                if source and str(source).strip():
+                    query = str(source)
+                    break
+            candidates = [d for d in match_devices(query, full_devices)
+                          if str(d.get("entity_id", "")).split(".")[0] not in _UNCONTROLLABLE_DOMAINS]
+            if not candidates:
+                logger.warning("auto_repair: 动作%d 设备 %r 无近似匹配，保留待拦截", i + 1, entity_id)
+                continue
+            matched = candidates[0]
+            new_domain = str(matched["entity_id"]).split(".")[0]
+            new_service = _pick_service(new_domain, _service_intent(str(tool_input.get("service", ""))),
+                                        services_info)
+            if not new_service:
+                logger.warning("auto_repair: %r 无可用 service，跳过修复", matched["entity_id"])
+                continue
+            tool_input["domain"] = new_domain
+            tool_input["service"] = new_service
+            tool_input["entity_id"] = matched["entity_id"]
+            # 原 data 是按幻觉设备的 service 生成的，字段大概率不适用新设备，重置为无参动作
+            tool_input["data"] = {}
+            corrections.append({
+                "action_index": i,
+                "from": entity_id,
+                "to": matched["entity_id"],
+                "to_name": matched.get("name", matched["entity_id"]),
+                "query": query,
+            })
+            logger.info("auto_repair: 动作%d %r → %r (query=%r)", i + 1, entity_id,
+                        matched["entity_id"], query)
+        if corrections:
+            parsed["auto_corrections"] = corrections
+        return corrections
+
+    def _friendly_device_hints(self, parsed: dict, full_devices: list[dict]) -> str:
+        """为重试反馈附上人话设备对照，帮模型自愈。
+
+        此前重试错误只贴全量拼音 entity_id（60+ 个乱码），模型对不上"门"是哪个，
+        3 轮都修不对。这里按动作描述给出 top3 相关候选（友好名 + entity_id）；
+        一个都匹配不上时给主控设备清单，让模型至少知道家里有什么。
+        """
+        hints: list[str] = []
+        valid = {d["entity_id"] for d in full_devices}
+        descriptions = parsed.get("action_descriptions") or []
+        for i, action in enumerate(parsed.get("actions") or []):
+            tool_input = action.get("mcp_tool_input") or {}
+            entity_id = str(tool_input.get("entity_id", "") or "")
+            if not entity_id or entity_id in valid:
+                continue
+            query = (descriptions[i] if i < len(descriptions) else "") or parsed.get("summary", "")
+            candidates = [d for d in match_devices(query, full_devices)
+                          if str(d.get("entity_id", "")).split(".")[0] not in _UNCONTROLLABLE_DOMAINS][:3]
+            if candidates:
+                listed = "、".join(f"{d.get('name')} ({d['entity_id']})" for d in candidates)
+                hints.append(f"动作{i+1} 与「{query}」相关的真实设备: {listed}")
+        if not hints:
+            primary = [d for d in full_devices
+                       if str(d.get("entity_id", "")).split(".")[0] not in _UNCONTROLLABLE_DOMAINS][:10]
+            if primary:
+                listed = "、".join(f"{d.get('name')} ({d['entity_id']})" for d in primary)
+                hints.append(f"家里没有与描述相关的设备，现有可控设备: {listed}")
+        return "\n".join(hints)
 
     async def _prepare_rule_context(self, filter_text: str, user_id: str = "") -> dict:
         """加载 HA 数据并构造规则解析 system prompt。
@@ -290,17 +429,51 @@ class RuleService:
             # 校验失败，还有重试机会
             if attempt < MAX_RETRIES:
                 error_text = "\n".join(f"- {e}" for e in errors)
+                device_hints = self._friendly_device_hints(parsed, full_devices)
                 messages.append({"role": "assistant", "content": content})
                 messages.append({
                     "role": "user",
                     "content": f"你生成的规则有以下错误，请修正后重新生成完整的 JSON：\n{error_text}"
+                               f"\n\n设备对照提示（entity_id 必须从这些里取）：\n{device_hints}"
                 })
                 logger.info("Rule validation failed (attempt %d), retrying: %s", attempt + 1, errors)
             else:
                 logger.warning("Rule validation failed after %d attempts: %s", MAX_RETRIES + 1, errors)
+                # 确定性兜底：LLM 反复修不对时，代码层强制匹配最接近的真实设备并替换，
+                # 替换明细挂在 auto_corrections 供弹窗核对；仍修不好的记 validation_errors
+                # 交给调用方拦截（不出带非法设备的死局草稿）。
+                self._auto_repair_actions(parsed, full_devices, services_info)
+                remaining = self._validate_actions(parsed.get("actions", []), full_devices, services_info)
+                if remaining:
+                    parsed["validation_errors"] = remaining
+                    logger.warning("Rule auto-repair incomplete: %s", remaining)
                 return parsed
 
         return self._fallback_rule(text, camera_id)
+
+    @staticmethod
+    def _resolve_revised_camera(parsed: dict, current_cam: str) -> str:
+        """决定修改后规则的 camera_id。
+
+        三条规则：
+        1. LLM 没输出 → 保留原值（未提到的字段保持原样）
+        2. LLM 输出了但不是真实摄像头 → 重置回原值。幻觉 id 会让规则绑到不存在
+           的那一路，automation_service 按 camera_id 过滤 → 永不触发，且界面上看
+           不出问题，比不改更糟
+        3. type 改成 time/weather → 清空。camera_id 对非视觉规则没有意义，留着会
+           被 ruleMismatch 标 orange（定时/天气规则绑摄像头）
+        """
+        new_cam = str(parsed.get("camera_id", "") or "").strip()
+        if not new_cam:
+            resolved = current_cam
+        elif new_cam != current_cam and not _is_known_camera(new_cam):
+            logger.info("revise_rule: LLM 给出未知 camera_id %r，重置回 %r", new_cam, current_cam)
+            resolved = current_cam
+        else:
+            resolved = new_cam
+        if str(parsed.get("type", "") or "").strip().lower() in ("time", "weather"):
+            return ""
+        return resolved
 
     async def revise_rule(self, current_rule: dict, instruction: str, user_id: str = "") -> dict:
         """基于自然语言指令迭代修改已有规则（不落库，只返回预览）。
@@ -326,10 +499,14 @@ class RuleService:
         full_devices = ctx["full_devices"]
         services_info = ctx["services_info"]
         current_type = str(current_rule.get("type", "") or "")
-        # 只传 schema 子集，避免 id/enabled/时间戳噪声干扰 LLM
+        current_cam = str(current_rule.get("camera_id", "") or "").strip()
+        # 只传 schema 子集，避免 id/enabled/时间戳噪声干扰 LLM。
+        # camera_id 必须在内：它是视觉规则的路由字段，用户会说「改绑到门口摄像头」，
+        # 不把它给 LLM 看就永远改不动（此前漏了，导致自然语言改绑静默 no-op）。
         current_brief = {
             k: current_rule.get(k)
-            for k in ("name", "condition", "type", "actions", "action_descriptions", "cooldown_seconds", "summary")
+            for k in ("name", "condition", "type", "actions", "action_descriptions",
+                      "cooldown_seconds", "summary", "camera_id")
             if k in current_rule
         }
 
@@ -367,7 +544,7 @@ class RuleService:
             parsed.setdefault("cooldown_seconds", current_rule.get("cooldown_seconds",
                               get_config("automation.default_cooldown_seconds", 5)))
             parsed.setdefault("summary", current_rule.get("summary", ""))
-            parsed.setdefault("camera_id", current_rule.get("camera_id", ""))   # Task 5
+            parsed["camera_id"] = self._resolve_revised_camera(parsed, current_cam)
 
             # 校验 actions
             errors = self._validate_actions(parsed.get("actions", []), full_devices, services_info)
@@ -376,14 +553,22 @@ class RuleService:
 
             if attempt < MAX_RETRIES:
                 error_text = "\n".join(f"- {e}" for e in errors)
+                device_hints = self._friendly_device_hints(parsed, full_devices)
                 messages.append({"role": "assistant", "content": content})
                 messages.append({
                     "role": "user",
-                    "content": f"你修改后的规则有以下错误，请修正后重新生成完整的 JSON：\n{error_text}",
+                    "content": f"你修改后的规则有以下错误，请修正后重新生成完整的 JSON：\n{error_text}"
+                               f"\n\n设备对照提示（entity_id 必须从这些里取）：\n{device_hints}",
                 })
                 logger.info("Rule revise validation failed (attempt %d): %s", attempt + 1, errors)
             else:
                 logger.warning("Rule revise validation failed after %d attempts: %s", MAX_RETRIES + 1, errors)
+                # 与 build_rule 同款确定性兜底：修不好才挂 validation_errors
+                self._auto_repair_actions(parsed, full_devices, services_info)
+                remaining = self._validate_actions(parsed.get("actions", []), full_devices, services_info)
+                if remaining:
+                    parsed["validation_errors"] = remaining
+                    logger.warning("Rule revise auto-repair incomplete: %s", remaining)
                 return {"rule": parsed, "summary": summary}
 
         return {"rule": current_rule, "summary": "修改失败", "fallback": True}
@@ -398,17 +583,33 @@ class RuleService:
         if not client.enabled:
             return "LLM 未配置，无法解释规则。"
         from .prompt_service import RULE_EXPLAIN_PROMPT
-        # 只传 schema 子集，避免 id/时间戳噪声
+        # 只传 schema 子集，避免 id/时间戳噪声；camera_id 必须在内——
+        # 用户会问"这条规则看的哪个摄像头"，不给他看就答不上
         brief = {
             k: current_rule.get(k)
             for k in ("name", "condition", "type", "actions", "action_descriptions",
-                      "cooldown_seconds", "summary")
+                      "cooldown_seconds", "summary", "camera_id")
             if k in current_rule
         }
+        # 实体对照：本部署的 entity_id 是设备厂商乱码（switch.ckcper_cn_...），
+        # 靠"拼音翻译"认不出设备。附上 {entity_id → 友好名}，模型才答得出
+        # "控制的 id/设备是哪个"而不编造。
+        entity_lines: list[str] = []
+        try:
+            devices = await self._ha_devices_provider() if self._ha_devices_provider else []
+        except Exception:  # noqa: BLE001 — 对照表拉不到时降级为无对照，不阻塞解释
+            devices = []
+        name_map = {d["entity_id"]: d.get("name", "") for d in devices or []}
+        for action in current_rule.get("actions") or []:
+            eid = str((action.get("mcp_tool_input") or {}).get("entity_id", "") or "")
+            if eid:
+                entity_lines.append(f"- {eid} → {name_map.get(eid) or '（对照表中无此设备）'}")
+        entity_mapping = ("\n\n实体对照（entity_id → 设备名）：\n" + "\n".join(entity_lines)) if entity_lines else ""
         messages = [
             {"role": "system", "content": RULE_EXPLAIN_PROMPT},
             {"role": "user", "content": (
-                f"规则 JSON:\n{json.dumps(brief, ensure_ascii=False, indent=2)}\n\n"
+                f"规则 JSON:\n{json.dumps(brief, ensure_ascii=False, indent=2)}"
+                f"{entity_mapping}\n\n"
                 f"用户的问题：{question}"
             )},
         ]

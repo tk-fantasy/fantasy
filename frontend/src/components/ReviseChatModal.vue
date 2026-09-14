@@ -8,16 +8,28 @@
  * - modify：对话式修改。自然语言说怎么改 → LLM 输出预览 → 满意后「应用修改」落库。
  *
  * 后端无状态：explain 端点只读解释，revise 端点只做 LLM 推理不落库，update 端点才写库。
+ *
+ * 第三种形态 —— pending 模式（传了 pendingId 即启用）：
+ * 规则还是聊天里刚解析出的**草稿**（存在会话内存里，10 分钟 TTL），没有 rule_id。
+ * 底部换成「确认创建 / 取消创建」，确认走 /api/rules/pending/{id}/confirm 直接落库、
+ * 绕过模型 —— 用户点了就生效，不需要再回聊天里打字说「确认」。
+ * explain/revise 也改走 pending 端点，规则由后端从草稿取，所以不传 current。
  */
 import { ref, computed, watch, nextTick } from 'vue'
 import { apiPost, apiPut } from '../utils/api'
 
 const props = defineProps({
   kind: { type: String, required: true, validator: (v) => v === 'rule' || v === 'task' },
-  itemId: { type: String, required: true },
+  // pending 模式下草稿还没 rule_id，故非必填
+  itemId: { type: String, default: '' },
   initial: { type: Object, required: true }, // 当前规则/任务的完整对象
+  pendingId: { type: String, default: '' },  // 非空即 pending 模式
+  sessionId: { type: String, default: '' },  // 草稿按会话存，pending 端点必带
+  // 可选摄像头列表（[{id, name, enabled}]），由调用方从 useCamera() 传入。
+  // pending 模式下视觉规则要绑一路，选择器就渲染在这里。
+  cameras: { type: Array, default: () => [] },
 })
-const emit = defineEmits(['applied', 'close'])
+const emit = defineEmits(['applied', 'close', 'confirmed', 'cancelled', 'expired'])
 
 // 模式：plan（只读解释）/ modify（修改）。默认 plan，先理解再动手。
 const mode = ref('plan')
@@ -30,8 +42,58 @@ const hasRevision = ref(false) // 至少成功 revise 一次后亮起「应用�
 const applying = ref(false)
 const scrollRef = ref(null)
 const showJson = ref(false) // 折叠的原始 JSON 视图
+const actionError = ref('')  // 确认/取消失败原因，显示在弹窗内（不用 alert）
+
+// 摄像头选择：null=还没选（视觉规则时挡住确认），''=显式选「全部摄像头（全局）」
+const selectedCamera = ref(
+  String(props.initial?.camera_id || '').trim() || null)
 
 const isRule = computed(() => props.kind === 'rule')
+const isPending = computed(() => !!props.pendingId)
+// 与后端 PENDING_TTL_SECONDS 一致；revise 会重置计时，所以这里只给个提示不做倒计时
+const EXPIRE_MINUTES = 10
+
+// 自动匹配明细：用户说的设备不存在时，后端已强制替换为最接近的真实设备
+// （rule.auto_corrections）。横幅亮出来让用户核对——不提示的话，用户核对的
+// 只是系统的猜测，替换就失去意义了。revise 会带新规则回来，跟随 pendingJson 刷新。
+const autoCorrections = computed(() => {
+  const list = pendingJson.value?.auto_corrections
+  return Array.isArray(list) ? list : []
+})
+
+// type 缺失/非法一律按视觉处理 —— 与后端 pending_rules.is_vision_rule 和
+// utils/ruleMismatch.js 同口径。从 pendingJson 现算而不是收 needsCamera prop：
+// revise 把规则改成天气/定时后选择器要自己消失，prop 会滞后一轮。
+const isVisionRule = computed(() => {
+  const t = String(pendingJson.value?.type || '').trim().toLowerCase()
+  return t !== 'time' && t !== 'weather'
+})
+const showCameraPicker = computed(() => isPending.value && isVisionRule.value)
+// 视觉规则必须显式做一次选择（选某一路或选全局），没选就不许确认。
+// 后端 confirm 也守同一条不变量，这里只是别让用户白点一次。
+const cameraChoiceMissing = computed(() => showCameraPicker.value && selectedCamera.value === null)
+const isGlobalChoice = computed(() => showCameraPicker.value && selectedCamera.value === '')
+
+const cameraChoices = computed(() => [
+  { id: '', name: '全部摄像头（全局）' },
+  ...props.cameras
+    .filter((c) => c && c.enabled !== false)
+    .map((c) => ({ id: c.id, name: c.name || c.id })),
+])
+
+// revise 可能改掉 type 或 camera_id（rule_service._resolve_revised_camera 会在
+// 转成非视觉时清空绑定），把选择器同步到新状态
+watch(() => pendingJson.value?.camera_id, (cam) => {
+  if (!showCameraPicker.value) return
+  const next = String(cam || '').trim()
+  // 只在草稿真的换了绑定时跟随；用户手动选了全局('')而草稿仍是旧值时不要抢回去
+  if (next && next !== selectedCamera.value) selectedCamera.value = next
+})
+
+const modalTitle = computed(() => {
+  if (isPending.value) return '确认创建规则'
+  return isRule.value ? '规则详情' : '任务详情'
+})
 
 // plan 模式的建议问题（点击即问）
 const suggestedQuestions = computed(() => {
@@ -105,11 +167,17 @@ async function sendInstruction() {
 
 // plan 模式：只读解释
 async function callExplain(question) {
-  const url = isRule.value
-    ? `/api/rules/${props.itemId}/explain`
-    : `/api/scheduled-tasks/${props.itemId}/explain`
+  // pending 草稿走独立端点：规则由后端从会话草稿里取，不传 current
+  const url = isPending.value
+    ? `/api/rules/pending/${props.pendingId}/explain`
+    : (isRule.value
+      ? `/api/rules/${props.itemId}/explain`
+      : `/api/scheduled-tasks/${props.itemId}/explain`)
+  const body = isPending.value
+    ? { session_id: props.sessionId, question }
+    : { current: pendingJson.value, question }
   try {
-    const result = await apiPost(url, { current: pendingJson.value, question })
+    const result = await apiPost(url, body)
     messages.value[messages.value.length - 1] = { role: 'assistant', content: result.answer || '(无回复)' }
   } catch (e) {
     messages.value[messages.value.length - 1] = {
@@ -125,17 +193,23 @@ async function callExplain(question) {
 
 // modify 模式：迭代修改
 async function callRevise(instruction) {
-  const url = isRule.value
-    ? `/api/rules/${props.itemId}/revise`
-    : `/api/scheduled-tasks/${props.itemId}/revise`
+  const url = isPending.value
+    ? `/api/rules/pending/${props.pendingId}/revise`
+    : (isRule.value
+      ? `/api/rules/${props.itemId}/revise`
+      : `/api/scheduled-tasks/${props.itemId}/revise`)
+  const body = isPending.value
+    ? { session_id: props.sessionId, instruction }
+    : { instruction, current: pendingJson.value }
   try {
-    const result = await apiPost(url, { instruction, current: pendingJson.value })
+    const result = await apiPost(url, body)
     const updated = isRule.value ? result.rule : result.task
     const summary = result.summary || '已更新'
     if (updated) {
       pendingJson.value = { ...pendingJson.value, ...updated }
       hasRevision.value = true
     }
+    actionError.value = ''
     messages.value[messages.value.length - 1] = { role: 'assistant', content: `✅ ${summary}` }
   } catch (e) {
     messages.value[messages.value.length - 1] = {
@@ -169,6 +243,58 @@ async function applyChanges() {
     emit('applied', updated)
   } catch (e) {
     alert('保存失败：' + (e.message || e))
+  } finally {
+    applying.value = false
+  }
+}
+
+// ===== pending 模式：确认 / 取消（直接落库，不经模型）=====
+
+async function confirmPending() {
+  if (applying.value) return
+  applying.value = true
+  actionError.value = ''
+  const body = { session_id: props.sessionId }
+  // 只有视觉规则才传 camera_id：'' 是「全部摄像头（全局）」的显式选择，
+  // 非视觉规则不传，让后端沿用草稿现状。
+  // 没选摄像头时按钮本身就是 disabled（cameraChoiceMissing），这里不必再兜一层；
+  // 真正的不变量由后端 confirm 的 camera_required 守着。
+  if (showCameraPicker.value) body.camera_id = selectedCamera.value ?? ''
+  try {
+    const saved = await apiPost(
+      `/api/rules/pending/${props.pendingId}/confirm`,
+      body,
+    )
+    emit('confirmed', saved)
+  } catch (e) {
+    // 草稿过期/进程重启后草稿必丢（不持久化）：让上层提示用户重说需求并关掉弹窗；
+    // 其它失败（如设备已不存在）留在弹窗内，用户还能改。
+    if (e?.status === 404) {
+      emit('expired', e.message || '待确认规则不存在或已过期')
+      return
+    }
+    actionError.value = e.message || String(e)
+  } finally {
+    applying.value = false
+  }
+}
+
+async function cancelPending() {
+  if (applying.value) return
+  applying.value = true
+  actionError.value = ''
+  try {
+    const result = await apiPost(
+      `/api/rules/pending/${props.pendingId}/cancel`,
+      { session_id: props.sessionId },
+    )
+    emit('cancelled', result?.name || '')
+  } catch (e) {
+    if (e?.status === 404) {
+      emit('expired', e.message || '待确认规则不存在或已过期')
+      return
+    }
+    actionError.value = e.message || String(e)
   } finally {
     applying.value = false
   }
@@ -254,7 +380,7 @@ function formatPayload(payload) {
       <div class="revise-overlay" @click.self="emit('close')">
         <div class="revise-container aurora-before">
           <div class="revise-header">
-            <h2>{{ isRule ? '规则详情' : '任务详情' }}</h2>
+            <h2>{{ modalTitle }}</h2>
             <div class="header-actions">
               <button class="btn-toggle-json" :class="{ active: showJson }" @click="showJson = !showJson">
                 {{ showJson ? '收起 JSON' : '查看 JSON' }}
@@ -280,9 +406,44 @@ function formatPayload(payload) {
 
           <!-- 顶部：当前项可读摘要（随 pendingJson 刷新） -->
           <div class="revise-summary">
+            <p v-if="isPending" class="pending-notice">
+              这条规则<strong>还没有创建</strong>，点下方「确认创建」才会生效并开始自动执行。
+              <span class="pending-ttl">草稿 {{ EXPIRE_MINUTES }} 分钟内有效</span>
+            </p>
+            <div v-if="autoCorrections.length" class="auto-fix-banner">
+              <p v-for="c in autoCorrections" :key="c.action_index" class="auto-fix-item">
+                ⚠️ 没找到 <s>{{ c.from }}</s>，已自动匹配为「{{ c.to_name }}」——请核对该设备是否是你想要的，
+                不对可在下方修改模式里更换。
+              </p>
+            </div>
             <div v-for="part in summaryParts" :key="part.label" class="summary-row">
               <span class="summary-label">{{ part.label }}</span>
               <span class="summary-value">{{ part.value }}</span>
+            </div>
+
+            <!-- 视觉规则的摄像头绑定：必须显式选一次（某一路 / 全部摄像头） -->
+            <div v-if="showCameraPicker" class="camera-picker">
+              <div class="camera-picker-head">
+                <span class="summary-label">看哪路</span>
+                <span class="vision-tag">识别为：视觉规则</span>
+              </div>
+              <div class="camera-options">
+                <button
+                  v-for="c in cameraChoices"
+                  :key="c.id || '__global__'"
+                  type="button"
+                  class="camera-chip"
+                  :class="{ active: selectedCamera === c.id, global: c.id === '' }"
+                  @click="selectedCamera = c.id"
+                >{{ c.name }}</button>
+              </div>
+              <p v-if="cameraChoiceMissing" class="camera-hint required">
+                必须选一路 —— 不绑定的话任意一路摄像头有人都会触发这条规则
+              </p>
+              <p v-else-if="isGlobalChoice" class="camera-hint danger">
+                ⚠️ 已选「全部摄像头」：每一路画面里出现目标都会触发。确认这是你要的
+              </p>
+              <p v-else class="camera-hint">只有这一路的画面会触发这条规则</p>
             </div>
           </div>
 
@@ -338,22 +499,47 @@ function formatPayload(payload) {
                 {{ loading ? '…' : '发送' }}
               </button>
             </div>
+            <p v-if="actionError" class="action-error">❌ {{ actionError }}</p>
             <div class="action-row">
               <span class="hint">
-                {{ mode === 'plan'
-                  ? '只读问答，不会改动配置'
-                  : (hasRevision ? '预览已更新，确认无误后应用' : '先对话修改，再应用') }}
+                <template v-if="isPending">
+                  {{ cameraChoiceMissing
+                    ? '还需选择这条规则看哪一路摄像头'
+                    : (mode === 'plan'
+                      ? '只读问答，不会因此创建规则'
+                      : (hasRevision ? '改动已同步到草稿，确认无误后创建' : '可先对话修改，再确认创建')) }}
+                </template>
+                <template v-else>
+                  {{ mode === 'plan'
+                    ? '只读问答，不会改动配置'
+                    : (hasRevision ? '预览已更新，确认无误后应用' : '先对话修改，再应用') }}
+                </template>
               </span>
               <div class="action-btns">
-                <button class="btn-cancel" @click="emit('close')">关闭</button>
-                <button
-                  v-if="mode === 'modify'"
-                  class="btn-apply"
-                  :disabled="!hasRevision || applying"
-                  @click="applyChanges"
-                >
-                  {{ applying ? '保存中…' : '应用修改' }}
-                </button>
+                <!-- pending：确认/取消直接落库或弃稿，不提供「应用修改」（草稿没有 rule_id） -->
+                <template v-if="isPending">
+                  <button class="btn-cancel" :disabled="applying" @click="cancelPending">
+                    取消创建
+                  </button>
+                  <button
+                    class="btn-apply"
+                    :disabled="applying || cameraChoiceMissing"
+                    @click="confirmPending"
+                  >
+                    {{ applying ? '处理中…' : '✅ 确认创建' }}
+                  </button>
+                </template>
+                <template v-else>
+                  <button class="btn-cancel" @click="emit('close')">关闭</button>
+                  <button
+                    v-if="mode === 'modify'"
+                    class="btn-apply"
+                    :disabled="!hasRevision || applying"
+                    @click="applyChanges"
+                  >
+                    {{ applying ? '保存中…' : '应用修改' }}
+                  </button>
+                </template>
               </div>
             </div>
           </div>
@@ -547,6 +733,106 @@ function formatPayload(payload) {
   font-size: var(--text-sm);
   color: var(--color-text);
   word-break: break-all;
+}
+
+/* pending 模式：还没落库的醒目提示 + TTL */
+.pending-notice {
+  font-size: var(--text-xs);
+  line-height: 1.7;
+  color: var(--color-text-secondary);
+  background: var(--color-warning-bg, rgba(255, 176, 32, 0.12));
+  border: 1px solid var(--color-warning-border, rgba(255, 176, 32, 0.35));
+  border-radius: var(--radius-lg);
+  padding: var(--space-6) var(--space-10);
+  margin: 0 0 var(--space-6);
+}
+.pending-notice strong { color: var(--color-text); }
+.pending-ttl {
+  display: block;
+  color: var(--color-text-muted);
+}
+
+/* 自动匹配横幅：幻觉设备被替换为近似真实设备，醒目提示用户核对 */
+.auto-fix-banner {
+  margin: 0 0 var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.auto-fix-item {
+  font-size: var(--text-xs);
+  line-height: 1.7;
+  color: var(--color-text);
+  background: var(--color-warning-bg, rgba(255, 176, 32, 0.12));
+  border: 1px solid var(--color-warning-border, rgba(255, 176, 32, 0.35));
+  border-left: 3px solid var(--color-warning-border, rgba(255, 176, 32, 0.6));
+  border-radius: var(--radius-md);
+  padding: var(--space-5) var(--space-8);
+  margin: 0;
+  word-break: break-all;
+}
+.auto-fix-item s { color: var(--color-text-muted); }
+
+/* 视觉规则的摄像头绑定选择器 */
+.camera-picker {
+  margin-top: var(--space-8);
+  padding-top: var(--space-8);
+  border-top: 1px dashed var(--color-border);
+}
+.camera-picker-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  margin-bottom: var(--space-6);
+}
+.vision-tag {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: 1px var(--space-6);
+}
+.camera-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-6);
+}
+.camera-chip {
+  padding: var(--space-5) var(--space-10);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-out);
+}
+.camera-chip:hover { background: var(--color-surface-hover); }
+.camera-chip.active {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: #fff;
+}
+/* 「全部摄像头（全局）」选中时用警示色而非主色 —— 它是合法但危险的选择 */
+.camera-chip.global.active {
+  background: var(--color-warning, #b07000);
+  border-color: var(--color-warning, #b07000);
+}
+.camera-hint {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  margin: var(--space-6) 0 0;
+  line-height: 1.6;
+}
+.camera-hint.required { color: var(--color-text-secondary); }
+.camera-hint.danger { color: var(--color-warning, #b07000); }
+
+/* 确认/取消失败：留在弹窗内展示，不用 alert（用户还要能改） */
+.action-error {
+  font-size: var(--text-xs);
+  color: var(--color-error, #ff6b6b);
+  margin: var(--space-6) 0 0;
+  word-break: break-word;
 }
 
 /* 消息列表 */

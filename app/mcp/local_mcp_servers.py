@@ -12,6 +12,16 @@ from .search_tools import web_search_handler
 from .weather_tools import get_weather_handler
 
 
+def _resolve_ha_client(ha_client):
+    """兼容两种注入：[client] 可变引用（生产，HA 热替换后在调用时才取新实例）
+    或直接传 client（测试便利）。ref 语义见 tools.ToolDeps.ha_client_ref——
+    注册时解引用会把已关闭的旧 client 永久焊死在 verify 工具上。
+    """
+    if isinstance(ha_client, list):
+        return ha_client[0]
+    return ha_client
+
+
 def _get_tz_offset_hours() -> int:
     return int(get_config("home.timezone_offset", 8))
 
@@ -51,7 +61,7 @@ def register_local_tools(manager: MCPClientManager) -> None:
         MCPTool(
             client_id="local",
             tool_name="describe_state",
-            description=("查询当前摄像头连接状态和最近一次工具调用结果。"
+            description=("查询本轮对话开始时的摄像头状态快照（轮内调用不刷新，非实时）。"
                          "返回里 camera_opened=false 表示摄像头离线——涉及画面的回答必须"
                          "说明摄像头离线、无法看到实时画面，不得描述画面内容"),
             parameters={"type": "object", "properties": {}},
@@ -116,113 +126,6 @@ def register_local_tools(manager: MCPClientManager) -> None:
 # 验证工具工厂（需要运行时依赖注入）
 # ---------------------------------------------------------------------------
 
-def create_verify_condition_handler(vision_client, ha_client, camera_manager):
-    """创建条件验证工具处理器。
-
-    根据 condition_type 路由到合适的验证源，返回当前状态数据和条件判断结果。
-    返回值中 condition_met 字段明确表示条件是否成立（true/false/null）。
-
-    camera_manager 是唯一摄像头来源(多路);vision 分支走三级取帧(与 vision_chat 一致)。
-    """
-    async def handler(parameters: dict, session) -> dict:
-        condition = str(parameters.get("condition", ""))
-        cond_type = str(parameters.get("condition_type", "auto")).lower()
-        camera_id = str(parameters.get("camera_id", "") or "").strip()
-
-        if cond_type == "auto":
-            cond_lower = condition.lower()
-            if any(kw in cond_lower for kw in ["时间", "几点", "白天", "晚上", "早上", "下午", "hour", "time", "钟"]):
-                cond_type = "time"
-            elif any(kw in cond_lower for kw in ["天气", "下雨", "温度", "晴", "weather"]):
-                cond_type = "weather"
-            elif any(kw in cond_lower for kw in ["画面", "看到", "摄像头", "有人", "检测", "camera", "接上", "没接"]):
-                cond_type = "vision"
-            elif any(kw in cond_lower for kw in ["设备", "实体", "entity", "device", "状态"]):
-                cond_type = "device"
-            else:
-                cond_type = "time"
-
-        if cond_type == "time":
-            time_data = await current_time_handler({"tz_offset_hours": _get_tz_offset_hours()}, session)
-            return {
-                "condition_met": None,
-                "type": "time",
-                "current_time": time_data,
-                "instruction": "请根据以上当前时间数据判断条件是否成立",
-            }
-
-        if cond_type == "weather":
-            weather_data = await get_weather_handler(parameters, session)
-            return {
-                "condition_met": None,
-                "type": "weather",
-                "current_weather": weather_data,
-                "instruction": "请根据以上当前天气数据判断条件是否成立",
-            }
-
-        if cond_type == "vision":
-            # 多路取帧三级:用户指定 → 当前预览路(_active_display_id)→ 第一个 enabled。
-            frame = None
-            cid = camera_id or getattr(camera_manager, "_active_display_id", "") or ""
-            if not cid:
-                cams = camera_manager.list_cameras()
-                if cams:
-                    cid = cams[0]["id"]
-            if cid:
-                frame = camera_manager.get_frame(cid)
-            if frame is None:
-                return {
-                    "condition_met": None,
-                    "type": "vision",
-                    "camera_connected": False,
-                    "data": "摄像头当前没有画面（未连接或无法打开）",
-                    "instruction": "摄像头未连接，请根据条件内容判断是否满足",
-                }
-            import asyncio
-            answer = await vision_client.ask_about_frame(
-                frame,
-                f"请判断以下条件是否在画面中成立，回答是或否：{condition}"
-            )
-            return {
-                "condition_met": None,
-                "type": "vision",
-                "camera_connected": True,
-                "vision_judgment": answer,
-                "instruction": "请根据视觉分析结果判断条件是否成立",
-            }
-
-        if cond_type == "device":
-            try:
-                states = await ha_client.get_states()
-                devices = []
-                for s in states[:50]:
-                    domain = s["entity_id"].split(".")[0]
-                    if domain in ("group", "automation", "script", "scene", "person", "zone", "sun", "calendar", "todo", "weather", "binary_sensor", "sensor"):
-                        continue
-                    devices.append({
-                        "entity_id": s["entity_id"],
-                        "name": s["attributes"].get("friendly_name", s["entity_id"]),
-                        "state": s["state"],
-                    })
-                return {
-                    "condition_met": None,
-                    "type": "device",
-                    "devices": devices,
-                    "instruction": "请根据以上设备当前状态判断条件是否成立",
-                }
-            except Exception as e:
-                return {"condition_met": None, "type": "device", "error": f"查询设备状态失败: {e}"}
-
-        time_data = await current_time_handler({"tz_offset_hours": _get_tz_offset_hours()}, session)
-        return {
-            "condition_met": None,
-            "type": "time",
-            "current_time": time_data,
-            "instruction": "请根据以上当前时间数据判断条件是否成立",
-        }
-
-    return handler
-
 
 def create_verify_action_handler(ha_client):
     """创建动作验证工具处理器。
@@ -231,6 +134,7 @@ def create_verify_action_handler(ha_client):
     不硬编码 service→attribute 映射，而是从 data 参数出发在 attributes 中查找。
     """
     async def handler(parameters: dict, session) -> dict:
+        ha = _resolve_ha_client(ha_client)
         # 本地模型（Ollama）常在工具参数首尾带空格，导致 entity_id 精确匹配失败。
         # 在入口统一 strip，避免下游每个比较点都要单独处理。
         entity_id = str(parameters.get("entity_id", "")).strip()
@@ -243,7 +147,7 @@ def create_verify_action_handler(ha_client):
         has_domain = "." in entity_id
 
         try:
-            states = await ha_client.get_states()
+            states = await ha.get_states()
             actual = None
 
             if has_domain:

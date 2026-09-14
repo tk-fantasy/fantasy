@@ -10,7 +10,6 @@
 import { ref } from 'vue'
 
 export function useEntityMeta(selectedEntity, selectedDevice) {
-  const entityAliases = ref({})         // {entity_id: alias}
   const editingName = ref(false)
   const nameInput = ref('')
 
@@ -21,16 +20,6 @@ export function useEntityMeta(selectedEntity, selectedDevice) {
   const entityOperable = ref({})        // {entity_id: "0"} — 被禁用 AI 操作的实体集合
 
   // ======================== 别名 ========================
-
-  async function loadEntityAliases() {
-    try {
-      const res = await fetch('/api/ha/entity-aliases', { credentials: 'include' })
-      const json = await res.json()
-      entityAliases.value = json.data?.aliases || {}
-    } catch (e) {
-      console.error('Failed to load entity aliases:', e)
-    }
-  }
 
   function startEditName() {
     if (!selectedEntity.value) return
@@ -49,7 +38,6 @@ export function useEntityMeta(selectedEntity, selectedDevice) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ entity_id: eid, alias }),
       })
-      entityAliases.value[eid] = alias
       // 立即更新当前实体和卡片里的显示名
       selectedEntity.value.name = alias || selectedEntity.value.attributes?.friendly_name || eid
       refreshDeviceEntityName(eid, selectedEntity.value.name)
@@ -152,14 +140,12 @@ export function useEntityMeta(selectedEntity, selectedDevice) {
   }
 
   return {
-    entityAliases,
     editingName,
     nameInput,
     entityNotes,
     noteInput,
     editingNote,
     entityOperable,
-    loadEntityAliases,
     startEditName,
     saveName,
     resetName,

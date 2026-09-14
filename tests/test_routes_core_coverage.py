@@ -610,17 +610,6 @@ class TestHATestAndModelRoutes:
         assert result.data["reason"] == "error"
         assert result.data["connected"] is False
 
-    async def test_models_test_route(self):
-        from app.routes.ha_routes import test_model_connection_route
-        from app.schema.api_schemas import ModelTestRequest
-
-        fake = AsyncMock(return_value={"ok": True, "latency_ms": 5})
-        with patch("app.services.model_test_service.test_model_connection", fake):
-            result = await test_model_connection_route(
-                ModelTestRequest(base_url="http://m:1", model="gpt", role="chat")
-            )
-        assert result.data["ok"] is True
-        assert fake.await_args.kwargs["model"] == "gpt"
 
 
 class TestUniqueSettingsRoutes:
@@ -659,19 +648,6 @@ class TestUniqueSettingsRoutes:
 # ===================== session_routes =====================
 
 class TestSessionRouteGuards:
-    async def test_chat_dispatcher_not_ready_503(self):
-        from app.routes.session_routes import chat
-        from app.schema.api_schemas import ChatRequest
-
-        container = MagicMock()
-        container.dispatcher = None
-        with pytest.raises(AppException) as ei:
-            await chat(
-                ChatRequest(query="hi", session_id="s"),
-                {"user_id": "u1"}, container=container,
-            )
-        assert ei.value.http_status == 503
-        assert ei.value.code == "dispatcher_not_ready"
 
     async def test_delete_all_sessions(self):
         from app.routes.session_routes import delete_all_sessions
@@ -723,26 +699,6 @@ class TestSessionRouteGuards:
                                  container=_mock_container(session_store=store))
         assert ei.value.code == "session_not_found"
 
-    async def test_fork_session(self):
-        from app.routes.session_routes import fork_session
-
-        store = MagicMock()
-        session = MagicMock()
-        session.user_id = "u1"
-        store.get_session = AsyncMock(return_value=session)
-        store.fork_session = AsyncMock(return_value=None)
-        with pytest.raises(AppException) as ei:
-            await fork_session("s1", {"message_id": "m1"}, {"user_id": "u1"},
-                               container=_mock_container(session_store=store))
-        assert ei.value.code == "session_not_found"
-
-        forked = MagicMock()
-        forked.summary.return_value = {"session_id": "s2"}
-        store.fork_session = AsyncMock(return_value=forked)
-        result = await fork_session("s1", {"message_id": "m1"}, {"user_id": "u1"},
-                                    container=_mock_container(session_store=store))
-        assert result.data["session_id"] == "s2"
-        store.fork_session.assert_awaited_once_with("s1", "m1", user_id="u1")
 
     async def test_undo_message(self):
         from app.routes.session_routes import undo_message
@@ -837,25 +793,7 @@ class TestSessionRouteGuards:
 # ===================== user_routes =====================
 
 class TestUserRouteGuards:
-    async def test_get_llm_keys_user_not_found(self):
-        from app.routes.user_routes import get_user_llm_keys
 
-        db = AsyncMock()
-        db.user_get_by_username = AsyncMock(return_value=None)
-        with patch("app.routes.user_routes.Database.get", return_value=db), \
-             pytest.raises(AppException) as ei:
-            await get_user_llm_keys("ghost", {"user_id": "u1"})
-        assert (ei.value.code, ei.value.http_status) == ("user_not_found", 404)
-
-    async def test_get_providers_user_not_found(self):
-        from app.routes.user_routes import get_user_providers
-
-        db = AsyncMock()
-        db.user_get_by_username = AsyncMock(return_value=None)
-        with patch("app.routes.user_routes.Database.get", return_value=db), \
-             pytest.raises(AppException) as ei:
-            await get_user_providers("ghost", {"user_id": "u1"})
-        assert (ei.value.code, ei.value.http_status) == ("user_not_found", 404)
 
     async def test_save_llm_keys_user_not_found(self):
         from app.routes.user_routes import save_user_llm_keys
@@ -867,22 +805,9 @@ class TestUserRouteGuards:
              pytest.raises(AppException) as ei:
             await save_user_llm_keys(
                 "ghost", UserLLMKeysRequest(keys=[]), {"user_id": "u1"},
-                container=MagicMock(),
             )
         assert (ei.value.code, ei.value.http_status) == ("user_not_found", 404)
 
-    async def test_save_providers_user_not_found(self):
-        from app.routes.user_routes import save_user_providers
-        from app.schema.api_schemas import UserProvidersRequest
-
-        db = AsyncMock()
-        db.user_get_by_username = AsyncMock(return_value=None)
-        with patch("app.routes.user_routes.Database.get", return_value=db), \
-             pytest.raises(AppException) as ei:
-            await save_user_providers(
-                "ghost", UserProvidersRequest(providers={}), {"user_id": "u1"}
-            )
-        assert (ei.value.code, ei.value.http_status) == ("user_not_found", 404)
 
 
 class TestSaveUserLlmKeys:
@@ -902,92 +827,34 @@ class TestSaveUserLlmKeys:
              pytest.raises(AppException) as ei:
             await save_user_llm_keys(
                 "tester", UserLLMKeysRequest(keys=[]), {"user_id": "u1"},
-                container=MagicMock(),
             )
         assert (ei.value.code, ei.value.http_status) == ("forbidden", 403)
 
-    async def test_save_own_keys_updates_env_memory_and_db(self):
+    async def test_save_own_keys_writes_db_only(self):
+        """保存自己的 keys 只落 per-user DB，不得碰全局。
+
+        回归护栏：旧版恒真死条件使每次保存都覆盖全局内存 CONFIG + 写 .env +
+        reload 全局客户端（多用户下"最后保存的人"劫持后台任务的全局解析）。
+        """
+        import app.routes.user_routes as ur
         from app.routes.user_routes import save_user_llm_keys
         from app.schema.api_schemas import UserLLMKeysRequest
 
+        assert not hasattr(ur, "update_memory_config")
+        assert not hasattr(ur, "write_secrets")
+
         db = self._setup()
-        container = MagicMock()
-        keys = [
-            {"id": "a", "api_key_env": "LLM_KEY_A", "api_key": "v1"},
-            {"id": "b", "api_key_env": "EVIL_NAME", "api_key": "v2"},  # 不合规范 → 跳过
-            {"id": "c"},                                               # 无 key → 跳过
-        ]
-        with patch("app.routes.user_routes.Database.get", return_value=db), \
-             patch("app.routes.user_routes.update_memory_config") as mem, \
-             patch("app.routes.user_routes.write_secrets") as wsec:
+        keys = [{"id": "a", "api_key_env": "LLM_KEY_A", "api_key": "v1"}]
+        with patch("app.routes.user_routes.Database.get", return_value=db):
             result = await save_user_llm_keys(
                 "tester", UserLLMKeysRequest(keys=keys), {"user_id": "u1"},
-                container=container,
             )
-        assert result.data == {"saved": True, "count": 3}
-        wsec.assert_called_once_with({"LLM_KEY_A": "v1"})
-        mem.assert_called_once_with("llm_keys", keys)
-        # DB 写入的是完整 JSON
+        assert result.data == {"saved": True, "count": 1}
         saved = db.user_setting_set.await_args.args
         assert saved[0] == "u1" and saved[1] == "llm_keys"
         assert json.loads(saved[2]) == keys
-        container.reload_all_clients.assert_called_once()
-
-    async def test_reload_failure_still_saves(self):
-        from app.routes.user_routes import save_user_llm_keys
-        from app.schema.api_schemas import UserLLMKeysRequest
-
-        db = self._setup()
-        container = MagicMock()
-        container.reload_all_clients = MagicMock(side_effect=RuntimeError("x"))
-        with patch("app.routes.user_routes.Database.get", return_value=db), \
-             patch("app.routes.user_routes.update_memory_config"), \
-             patch("app.routes.user_routes.write_secrets"):
-            result = await save_user_llm_keys(
-                "tester", UserLLMKeysRequest(keys=[{"id": "a"}]),
-                {"user_id": "u1"}, container=container,
-            )
-        assert result.data["saved"] is True
 
 
-class TestSaveUserProviders:
-    async def test_idor_rejected(self):
-        from app.routes.user_routes import save_user_providers
-        from app.schema.api_schemas import UserProvidersRequest
-
-        db = AsyncMock()
-        db.user_get_by_username = AsyncMock(
-            return_value={"id": "someone-else", "username": "tester"}
-        )
-        with patch("app.routes.user_routes.Database.get", return_value=db), \
-             pytest.raises(AppException) as ei:
-            await save_user_providers(
-                "tester", UserProvidersRequest(providers={}), {"user_id": "u1"}
-            )
-        assert (ei.value.code, ei.value.http_status) == ("forbidden", 403)
-
-    async def test_save_own_providers(self):
-        from app.routes.user_routes import save_user_providers
-        from app.schema.api_schemas import UserProvidersRequest
-
-        db = AsyncMock()
-        db.user_get_by_username = AsyncMock(
-            return_value={"id": "u1", "username": "tester"}
-        )
-        providers = {"chat": {"key_id": "k1"}}
-        with patch("app.routes.user_routes.Database.get", return_value=db), \
-             patch("app.routes.user_routes.update_memory_config") as mem:
-            result = await save_user_providers(
-                "tester", UserProvidersRequest(providers=providers), {"user_id": "u1"}
-            )
-        assert result.data == {"saved": True}
-        mem.assert_called_once_with("providers", providers)
-        saved = db.user_setting_set.await_args.args
-        assert (saved[0], saved[1]) == ("u1", "providers")
-        assert json.loads(saved[2]) == providers
-
-
-# ===================== llm_key_routes =====================
 
 class TestListLlmKeysRoute:
     async def test_empty_when_no_user_setting(self):

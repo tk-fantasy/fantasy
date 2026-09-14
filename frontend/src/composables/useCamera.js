@@ -1,7 +1,7 @@
 /**
  * 摄像头管理 composable(Task 11)。
  *
- * 封装 /api/cameras 全套 REST + /api/ha/areas + focuses + discovery。
+ * 封装 /api/cameras 全套 REST + /api/ha/areas + focuses。
  * 复用 utils/api 的 apiGet/apiPost/apiPut(命名导出);DELETE 走原生 fetch。
  */
 import { ref } from 'vue'
@@ -73,37 +73,10 @@ export function useCamera() {
     if (!res.ok) throw new Error(`删除关注项失败:HTTP ${res.status}`)
   }
 
-  // 自动化规则(per-camera):后端 /api/rules 返回全部,前端按 camera_id 过滤
-  async function loadRules(cameraId) {
-    const all = await apiGet('/api/rules')
-    return (all || []).filter(r => (r.camera_id || '') === cameraId)
-  }
-  async function createRule(cameraId, text) {
-    const res = await fetch('/api/task/rule', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, camera_id: cameraId }),
-    })
-    const json = await res.json()
-    if (!res.ok) throw new Error(json.message || `创建失败:HTTP ${res.status}`)
-    return json.data
-  }
-  async function toggleRule(id, enabled) {
-    await fetch(`/api/rules/${id}/enabled`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ enabled }),
-    })
-  }
-  async function deleteRule(id) {
-    await fetch(`/api/rules/${id}`, { method: 'DELETE' })
-  }
-
   return {
     cameras, areas, loading,
     loadCameras, loadAreas, createCamera, updateCamera, deleteCamera,
     testStream, enableDisplay, disableDisplay,
     loadFocuses, addFocus, updateFocus, deleteFocus,
-    loadRules, createRule, toggleRule, deleteRule,
   }
 }

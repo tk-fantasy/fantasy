@@ -44,15 +44,23 @@ async def _run_dispatch(container, event, ws_send, user_id: str) -> None:
         logger.exception("dispatch_stream: unhandled exception escaped")
 
 
-async def _handle_direct(websocket, container, payload, rid: str, user_id: str) -> None:
-    """直通模式：文字路由到 inbound_router 插件（通用，不硬编码任何插件）。"""
+async def _handle_direct(websocket, container, payload, rid: str, user_id: str,
+                         mode: str = "") -> None:
+    """直通模式：文字路由到 inbound_router 插件（通用，不硬编码任何插件）。
+
+    mode 由 _chat_loop 解析后传入（payload 显式值优先，默认值回退查宿主
+    current_mode）；缺省时回退 payload.mode（兼容旧调用/测试）。route_inbound
+    命中退出关键词时返回 exited_direct：守护已切回 aether，这里经 sink 广播
+    给确认（小爱会念出），前端收 Finish。
+    """
     from ..schema.chat_schema import Dialog, Instruction
 
+    if not mode:
+        mode = payload.get("mode", "")
     set_request_id(rid)
     session_id = payload.get("session_id", "")
     try:
         text = payload.get("query", "")
-        mode = payload.get("mode", "")
         layer = getattr(container, "integration_layer", None)
         if layer is None:
             await websocket.send_json(
@@ -63,10 +71,21 @@ async def _handle_direct(websocket, container, payload, rid: str, user_id: str) 
             )
             return
         result = await layer.route_inbound(text, mode)
-        msg = "已转交处理" if result.get("ok") else result.get("error", "直通失败")
+        if result.get("exited_direct"):
+            msg = result.get("message", "已退出直通模式")
+            sink_manager = getattr(layer, "sink_manager", None)
+            if sink_manager is not None:
+                try:
+                    await sink_manager.broadcast(f"好的，{msg}", rid)
+                except Exception:  # noqa: BLE001
+                    logger.warning("直通退出确认播报失败（不影响退出）", exc_info=True)
+            ok = True
+        else:
+            ok = bool(result.get("ok"))
+            msg = "已转交处理" if ok else result.get("error", "直通失败")
         await websocket.send_json(
             Instruction.build_instruction(
-                Dialog.Finish(success=result.get("ok", False), message=msg),
+                Dialog.Finish(success=ok, message=msg),
                 rid, session_id,
             ).model_dump()
         )
@@ -79,6 +98,23 @@ async def _handle_direct(websocket, container, payload, rid: str, user_id: str) 
         )
     finally:
         set_request_id("-")
+
+
+def _resolve_mode(payload_mode: str) -> str:
+    """解析本轮消息的路由模式。
+
+    前端显式传非默认值 → 照用（UI 手动路径）；传默认 "aether" → 回退查宿主全局
+    current_mode：LLM 工具（xiaoai_direct_mode）或直通守护切换模式后，前端无需
+    感知，下一轮消息自动进入/离开直通路由（单一事实源在宿主）。
+    """
+    mode = payload_mode or "aether"
+    if mode == "aether":
+        try:
+            from ..integration.config_helper import get_current_mode
+            mode = get_current_mode() or "aether"
+        except Exception:
+            mode = "aether"
+    return mode
 
 
 async def _receive_payload(websocket) -> dict | None:
@@ -120,8 +156,8 @@ async def _chat_loop(websocket, container, user_id: str) -> None:
             # 自动打断旧的（类 ChatGPT 体验）
             await _cancel_current(current_task, container)
 
-            mode = payload.get("mode", "aether")
             rid = payload.get("request_id") or new_request_id()
+            mode = _resolve_mode(payload.get("mode", "aether"))
 
             if mode == "aether":
                 set_request_id(rid)
@@ -137,7 +173,7 @@ async def _chat_loop(websocket, container, user_id: str) -> None:
             else:
                 # 任意非默认模式：通用路由到 inbound_router（不硬编码模式名）
                 current_task = asyncio.create_task(
-                    _handle_direct(websocket, container, payload, rid, user_id)
+                    _handle_direct(websocket, container, payload, rid, user_id, mode)
                 )
 
 

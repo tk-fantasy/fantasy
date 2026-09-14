@@ -25,6 +25,22 @@ def _cfg_getter(cfg):
     return lambda path, default=None: cfg.get(path, default)
 
 
+async def _expect_error(coro, status: int, text: str = "") -> AppException:
+    """断言路由以 AppException 失败，并校验 HTTP 状态码与消息。
+
+    这些分支此前写的是 return ApiResponse(success=False, ...)，但 ApiResponse
+    根本没有 success 字段（只有 code/message/data），Pydantic extra='ignore'
+    把它静默丢掉 → 发出去的是 code='ok' + HTTP 200，前端 _unwrap 的
+    `json.data ?? json` 在 data=None 时返回整个信封，失败被渲染成「✅ 已更新」。
+    """
+    with pytest.raises(AppException) as ei:
+        await coro
+    assert ei.value.http_status == status
+    if text:
+        assert text in ei.value.message
+    return ei.value
+
+
 # ---------------------------------------------------------------------------
 # weather_routes
 # ---------------------------------------------------------------------------
@@ -355,9 +371,7 @@ class TestSchedulerRoutes:
 
         cont = MagicMock()
         cont.scheduler_service = None
-        out = await list_scheduled_tasks(container=cont)
-        assert out.data is None
-        assert "未就绪" in out.message
+        await _expect_error(list_scheduled_tasks(container=cont), 503, "未就绪")
 
     async def test_create_task_explicit_name(self):
         from app.routes.scheduler_routes import create_scheduled_task
@@ -408,10 +422,11 @@ class TestSchedulerRoutes:
 
         cont = MagicMock()
         cont.scheduler_service = None
-        out = await create_scheduled_task(
-            ScheduledTaskCreateRequest(name="x", schedule={}, payload={}),
-            current_user={"user_id": "u1"}, container=cont)
-        assert "未就绪" in out.message
+        await _expect_error(
+            create_scheduled_task(
+                ScheduledTaskCreateRequest(name="x", schedule={}, payload={}),
+                current_user={"user_id": "u1"}, container=cont),
+            503, "未就绪")
 
     async def test_set_enabled_found_and_missing(self):
         from app.routes.scheduler_routes import set_scheduled_task_enabled
@@ -424,9 +439,10 @@ class TestSchedulerRoutes:
         svc.set_enabled.assert_awaited_with("t1", False)
 
         svc.set_enabled = AsyncMock(return_value=None)
-        out = await set_scheduled_task_enabled("nope", ScheduledTaskEnabledRequest(enabled=True),
-                                               container=cont)
-        assert "任务不存在" in out.message
+        await _expect_error(
+            set_scheduled_task_enabled("nope", ScheduledTaskEnabledRequest(enabled=True),
+                                       container=cont),
+            404, "任务不存在")
 
     async def test_run_now_found_missing_not_ready(self):
         from app.routes.scheduler_routes import run_scheduled_task_now
@@ -437,12 +453,12 @@ class TestSchedulerRoutes:
         svc.run_now.assert_awaited_with("t1", wait=True)
 
         svc.run_now = AsyncMock(return_value=None)
-        out = await run_scheduled_task_now("nope", wait=True, container=cont)
-        assert "任务不存在" in out.message
+        await _expect_error(run_scheduled_task_now("nope", wait=True, container=cont),
+                            404, "任务不存在")
 
         cont.scheduler_service = None
-        out = await run_scheduled_task_now("t1", wait=True, container=cont)
-        assert "未就绪" in out.message
+        await _expect_error(run_scheduled_task_now("t1", wait=True, container=cont),
+                            503, "未就绪")
 
     async def test_delete_task(self):
         from app.routes.scheduler_routes import delete_scheduled_task
@@ -477,9 +493,10 @@ class TestSchedulerRoutes:
         assert rv.await_args.args[0] == {"id": "t9", "name": "db-task"}
 
         svc.list_tasks = AsyncMock(return_value=[])
-        out = await revise_scheduled_task(
-            "nope", TaskReviseRequest(instruction="x", current={}), container=cont)
-        assert "任务不存在" in out.message
+        await _expect_error(
+            revise_scheduled_task("nope", TaskReviseRequest(instruction="x", current={}),
+                                  container=cont),
+            404, "任务不存在")
 
     async def test_revise_error_and_not_ready(self):
         from app.routes.scheduler_routes import revise_scheduled_task
@@ -488,15 +505,27 @@ class TestSchedulerRoutes:
         cont, svc = _sched_container()
         with patch("app.services.task_revise_service.revise_task",
                    new=AsyncMock(side_effect=ValueError("指令不明确"))):
-            out = await revise_scheduled_task(
-                "t1", TaskReviseRequest(instruction="x", current={"id": "t1"}),
-                container=cont)
-        assert "指令不明确" in out.message
+            # ValueError = 指令本身的问题 → 400
+            await _expect_error(
+                revise_scheduled_task("t1", TaskReviseRequest(instruction="x",
+                                                             current={"id": "t1"}),
+                                      container=cont),
+                400, "指令不明确")
+
+        with patch("app.services.task_revise_service.revise_task",
+                   new=AsyncMock(side_effect=RuntimeError("llm down"))):
+            # RuntimeError = LLM 侧故障 → 502
+            await _expect_error(
+                revise_scheduled_task("t1", TaskReviseRequest(instruction="x",
+                                                             current={"id": "t1"}),
+                                      container=cont),
+                502, "llm down")
 
         cont.scheduler_service = None
-        out = await revise_scheduled_task(
-            "t1", TaskReviseRequest(instruction="x", current={}), container=cont)
-        assert "未就绪" in out.message
+        await _expect_error(
+            revise_scheduled_task("t1", TaskReviseRequest(instruction="x", current={}),
+                                  container=cont),
+            503, "未就绪")
 
     async def test_update_task(self):
         from app.routes.scheduler_routes import update_scheduled_task
@@ -511,9 +540,9 @@ class TestSchedulerRoutes:
         assert patch_arg == {"name": "renamed"}  # 白名单字段才透传
 
         svc.update_task = AsyncMock(return_value=None)
-        out = await update_scheduled_task(
-            "nope", ScheduledTaskUpdateRequest(task={}), container=cont)
-        assert "任务不存在" in out.message
+        await _expect_error(
+            update_scheduled_task("nope", ScheduledTaskUpdateRequest(task={}), container=cont),
+            404, "任务不存在")
 
     async def test_explain_task(self):
         from app.routes.scheduler_routes import explain_scheduled_task
@@ -528,18 +557,20 @@ class TestSchedulerRoutes:
         assert out.data["answer"].startswith("这个任务")
 
         svc.list_tasks = AsyncMock(return_value=[])
-        out = await explain_scheduled_task(
-            "nope", ExplainRequest(question="q", current={}), container=cont)
-        assert "任务不存在" in out.message
+        await _expect_error(
+            explain_scheduled_task("nope", ExplainRequest(question="q", current={}),
+                                   container=cont),
+            404, "任务不存在")
 
         with patch("app.services.task_revise_service.explain_task",
                    new=AsyncMock(side_effect=RuntimeError("llm down"))):
-            out = await explain_scheduled_task(
-                "t1", ExplainRequest(question="q", current={"id": "t1"}), container=cont)
-        assert "llm down" in out.message
+            await _expect_error(
+                explain_scheduled_task("t1", ExplainRequest(question="q", current={"id": "t1"}),
+                                       container=cont),
+                502, "llm down")
 
     async def test_remaining_endpoints_not_ready(self):
-        """svc=None 的兜底分支：enabled / delete / update / explain。"""
+        """svc=None 的兜底分支：enabled / delete / update / explain 全部 503。"""
         from app.routes.scheduler_routes import (
             delete_scheduled_task,
             explain_scheduled_task,
@@ -552,17 +583,17 @@ class TestSchedulerRoutes:
 
         cont = MagicMock()
         cont.scheduler_service = None
-        out = await set_scheduled_task_enabled(
-            "t1", ScheduledTaskEnabledRequest(enabled=True), container=cont)
-        assert "未就绪" in out.message
-        out = await delete_scheduled_task("t1", container=cont)
-        assert "未就绪" in out.message
-        out = await update_scheduled_task(
-            "t1", ScheduledTaskUpdateRequest(task={}), container=cont)
-        assert "未就绪" in out.message
-        out = await explain_scheduled_task(
-            "t1", ExplainRequest(question="q", current={}), container=cont)
-        assert "未就绪" in out.message
+        await _expect_error(
+            set_scheduled_task_enabled("t1", ScheduledTaskEnabledRequest(enabled=True),
+                                       container=cont),
+            503, "未就绪")
+        await _expect_error(delete_scheduled_task("t1", container=cont), 503, "未就绪")
+        await _expect_error(
+            update_scheduled_task("t1", ScheduledTaskUpdateRequest(task={}), container=cont),
+            503, "未就绪")
+        await _expect_error(
+            explain_scheduled_task("t1", ExplainRequest(question="q", current={}), container=cont),
+            503, "未就绪")
 
     async def test_parse_schedule_route(self):
         from app.routes.scheduler_routes import parse_schedule
@@ -577,9 +608,8 @@ class TestSchedulerRoutes:
 
         with patch("app.services.schedule_parser_service.parse_schedule",
                    new=AsyncMock(side_effect=ValueError("时间描述不明确"))):
-            out = await parse_schedule(ScheduleParseRequest(phrase="大概"))
-        assert "时间描述不明确" in out.message
-        assert out.data is None
+            await _expect_error(parse_schedule(ScheduleParseRequest(phrase="大概")),
+                                400, "时间描述不明确")
 
 
 # ---------------------------------------------------------------------------
@@ -639,11 +669,11 @@ class TestSceneRoutes:
 
         svc = MagicMock()
         svc.create_scene = AsyncMock(side_effect=ValueError("场景至少需要一个动作"))
-        out = await create_scene(SceneCreateRequest(name="空"),
-                                 current_user={"user_id": "u1"},
-                                 container=self._cont(svc))
-        assert out.data is None
-        assert "至少需要一个动作" in out.message
+        await _expect_error(
+            create_scene(SceneCreateRequest(name="空"),
+                         current_user={"user_id": "u1"},
+                         container=self._cont(svc)),
+            400, "至少需要一个动作")
 
     async def test_apply_success_and_errors(self):
         from app.routes.scene_routes import apply_scene
@@ -654,12 +684,10 @@ class TestSceneRoutes:
         assert out.data["ok"] == 2
 
         svc.apply_scene = AsyncMock(side_effect=ValueError("场景不存在: s1"))
-        out = await apply_scene("s1", container=self._cont(svc))
-        assert "场景不存在" in out.message
+        await _expect_error(apply_scene("s1", container=self._cont(svc)), 404, "场景不存在")
 
         svc.apply_scene = AsyncMock(side_effect=RuntimeError("HA 服务不可用"))
-        out = await apply_scene("s1", container=self._cont(svc))
-        assert "HA 服务不可用" in out.message
+        await _expect_error(apply_scene("s1", container=self._cont(svc)), 503, "HA 服务不可用")
 
     async def test_delete_scene(self):
         from app.routes.scene_routes import delete_scene
@@ -691,10 +719,11 @@ class TestRuleRoutesGaps:
 
         cont = _rule_container()
         cont.rule_service.build_rule = AsyncMock(return_value={"condition": "  "})
-        out = await build_rule(RuleCreateRequest(text="乱写"),
-                               container=cont, current_user={"user_id": "u1"})
-        assert out.data is None
-        assert "无法从输入中解析出有效的视觉条件" in out.message
+        await _expect_error(
+            build_rule(RuleCreateRequest(text="乱写"),
+                       container=cont, current_user={"user_id": "u1"}),
+            400, "无法从输入中解析出有效的视觉条件")
+        cont.rule_registry_service.add_rule.assert_not_called()
 
     async def test_build_rule_ok_injects_user(self):
         from app.routes.rule_routes import build_rule
@@ -713,17 +742,21 @@ class TestRuleRoutesGaps:
         from app.routes.rule_routes import create_rule
         from app.schema.api_schemas import RulePayloadRequest
 
-        out = await create_rule(RulePayloadRequest(condition="   "),
-                                container=_rule_container(),
-                                current_user={"user_id": "u1"})
-        assert "规则必须包含 condition 字段" in out.message
+        await _expect_error(
+            create_rule(RulePayloadRequest(condition="   "),
+                        container=_rule_container(),
+                        current_user={"user_id": "u1"}),
+            400, "规则必须包含 condition 字段")
 
     async def test_create_rule_ok(self):
         from app.routes.rule_routes import create_rule
         from app.schema.api_schemas import RulePayloadRequest
 
         cont = _rule_container()
-        out = await create_rule(RulePayloadRequest(condition="有人"),
+        cont.camera_manager.list_cameras = MagicMock(
+            return_value=[{"id": "cam_1", "name": "门口"}])
+        # 视觉规则必须显式绑定摄像头（或显式传 ""=全部摄像头），否则 400
+        out = await create_rule(RulePayloadRequest(condition="有人", camera_id="cam_1"),
                                 container=cont, current_user={"user_id": "u1"})
         assert out.data["condition"] == "有人"
         added = cont.rule_registry_service.add_rule.await_args if \
@@ -763,16 +796,19 @@ class TestRuleRoutesGaps:
                               container=cont, current_user={"user_id": "u1"})
         assert ei.value.http_status == 404
 
-    async def test_revise_error_swallowed(self):
+    async def test_revise_error_raises(self):
+        """LLM 改失败必须以 502 抛出 —— 此前 return success=False 会被前端渲染成「✅ 已更新」。"""
         from app.routes.rule_routes import revise_rule
         from app.schema.api_schemas import RuleReviseRequest
 
         cont = _rule_container()
         cont.rule_service.revise_rule = AsyncMock(side_effect=RuntimeError("llm down"))
-        out = await revise_rule("r1", RuleReviseRequest(instruction="x", current={"a": 1}),
-                                container=cont, current_user={"user_id": "u1"})
-        assert "修改失败" in out.message
-        assert "llm down" in out.message
+        exc = await _expect_error(
+            revise_rule("r1", RuleReviseRequest(instruction="x", current={"a": 1}),
+                        container=cont, current_user={"user_id": "u1"}),
+            502)
+        assert "修改失败" in exc.message
+        assert "llm down" in exc.message
 
     async def test_update_rule_ok_and_errors(self):
         from app.routes.rule_routes import update_rule
@@ -787,14 +823,16 @@ class TestRuleRoutesGaps:
 
         cont.rule_registry_service.update_rule = MagicMock(
             side_effect=RuntimeError("db broken"))
-        out = await update_rule("r1", RuleUpdateRequest(rule={}), container=cont)
-        assert "保存失败" in out.message
+        await _expect_error(update_rule("r1", RuleUpdateRequest(rule={}), container=cont),
+                            500, "保存失败")
 
-        # AppException 透传（不吞）
+        # AppException 透传（不被包装成 500）
         cont.rule_registry_service.update_rule = MagicMock(
             side_effect=AppException("规则不存在", code="rule_not_found", http_status=404))
-        with pytest.raises(AppException):
+        with pytest.raises(AppException) as ei:
             await update_rule("r1", RuleUpdateRequest(rule={}), container=cont)
+        assert ei.value.http_status == 404
+        assert ei.value.code == "rule_not_found"
 
     async def test_explain_ok_404_and_error(self):
         from app.routes.rule_routes import explain_rule
@@ -815,9 +853,11 @@ class TestRuleRoutesGaps:
         cont.rule_registry_service.get_rule = MagicMock(
             return_value={"id": "r1", "condition": "c"})
         cont.rule_service.explain_rule = AsyncMock(side_effect=RuntimeError("timeout"))
-        out = await explain_rule("r1", ExplainRequest(question="q", current={}),
-                                 container=cont, current_user={"user_id": "u1"})
-        assert "解释失败" in out.message and "timeout" in out.message
+        exc = await _expect_error(
+            explain_rule("r1", ExplainRequest(question="q", current={}),
+                         container=cont, current_user={"user_id": "u1"}),
+            502)
+        assert "解释失败" in exc.message and "timeout" in exc.message
 
 
 # ---------------------------------------------------------------------------
@@ -844,146 +884,6 @@ def _rag_container(search_result="上下文内容", create=None, ready=True):
     return cont, rag, client
 
 
-class TestDocRoutesGaps:
-    async def _collect(self, resp):
-        chunks = []
-        async for c in resp.body_iterator:
-            chunks.append(c)
-        return "".join(chunks)
-
-    @staticmethod
-    def _tokens(body: str) -> list[str]:
-        import json as _json
-
-        out = []
-        for line in body.splitlines():
-            if line.startswith("data: ") and line != "data: [DONE]":
-                out.append(_json.loads(line[len("data: "):])["token"])
-        return out
-
-    async def test_doc_chat_stream_success(self):
-        from app.routes.doc_routes import doc_chat
-
-        cont, rag, client = _rag_container()
-        req = MagicMock()
-        req.json = AsyncMock(return_value={"message": "怎么配网?"})
-        resp = await doc_chat(req, container=cont, current_user={"user_id": "u1"})
-        body = await self._collect(resp)
-        tokens = self._tokens(body)
-        assert tokens == ["你好", "世界"]
-        assert body.rstrip().endswith("data: [DONE]")
-        assert resp.media_type == "text/event-stream"
-        rag.search.assert_awaited_once_with("怎么配网?")
-        # system 提示词包含 RAG 上下文
-        create_kwargs = client.chat.completions.create.call_args.kwargs
-        assert "上下文内容" in create_kwargs["messages"][0]["content"]
-        assert create_kwargs["messages"][1]["content"] == "怎么配网?"
-
-    async def test_doc_chat_search_failure_degrades(self):
-        """RAG 检索失败 → 降级为无上下文继续回答。"""
-        from app.routes.doc_routes import doc_chat
-
-        cont, rag, client = _rag_container()
-        rag.search = AsyncMock(side_effect=RuntimeError("index gone"))
-        req = MagicMock()
-        req.json = AsyncMock(return_value={"message": "q"})
-        resp = await doc_chat(req, container=cont, current_user={"user_id": "u1"})
-        await self._collect(resp)
-        ctx_in_system = client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
-        assert "上下文内容" not in ctx_in_system
-
-    async def test_doc_chat_stream_error_yields_fixed_message(self):
-        from app.routes.doc_routes import doc_chat
-
-        cont, rag, client = _rag_container(create=RuntimeError("upstream down"))
-        req = MagicMock()
-        req.json = AsyncMock(return_value={"message": "q"})
-        resp = await doc_chat(req, container=cont, current_user={"user_id": "u1"})
-        body = await self._collect(resp)
-        assert self._tokens(body) == ["[错误] 模型调用失败，请稍后重试或检查模型配置"]
-        assert "data: [DONE]" in body
-
-    async def test_doc_content_found_via_docs_root(self, tmp_path, monkeypatch):
-        from app.routes.doc_routes import doc_content
-
-        docs = tmp_path / "docs"
-        docs.mkdir()
-        (docs / "hello.md").write_text("# 你好\n内容", encoding="utf-8")
-        (docs / "sub").mkdir()
-        (docs / "sub" / "nested.md").write_text("子目录", encoding="utf-8")
-        monkeypatch.setenv("DOCS_ROOT", str(docs))
-        out = doc_content(doc_id="hello")
-        assert out["content"] == "# 你好\n内容"
-        out = doc_content(doc_id="nested")  # rglob 递归
-        assert out["content"] == "子目录"
-
-    async def test_doc_content_not_found(self, tmp_path, monkeypatch):
-        from app.routes.doc_routes import doc_content
-
-        docs = tmp_path / "docs"
-        docs.mkdir()
-        monkeypatch.setenv("DOCS_ROOT", str(docs))
-        with pytest.raises(AppException) as ei:
-            doc_content(doc_id="missing")
-        assert ei.value.http_status == 404
-
-    async def test_rebuild_started(self):
-        from app.routes.doc_routes import rebuild_doc_index
-
-        cont, rag, _ = _rag_container()
-        rag._rebuilding = False
-        fake_main = MagicMock()
-        with patch.dict(sys.modules, {"app.main": fake_main}):
-            out = await rebuild_doc_index(container=cont)
-        assert out == {"status": "started", "message": "索引重建已开始"}
-        assert rag._rebuilding is True
-        fake_main._stream_executor.submit.assert_called_once_with(rag.safe_build)
-
-    async def test_rebuild_already_running(self):
-        from app.routes.doc_routes import rebuild_doc_index
-
-        cont, rag, _ = _rag_container()
-        rag._rebuilding = True
-        out = await rebuild_doc_index(container=cont)
-        assert out == {"status": "already_running", "message": "重建正在进行中"}
-
-    async def test_rebuild_rag_unavailable_503(self):
-        from app.routes.doc_routes import rebuild_doc_index
-
-        cont = MagicMock()
-        cont.rag_service = None
-        with pytest.raises(AppException) as ei:
-            await rebuild_doc_index(container=cont)
-        assert ei.value.http_status == 503
-
-    async def test_rebuild_embed_not_configured_400(self):
-        from app.routes.doc_routes import rebuild_doc_index
-
-        cont, rag, _ = _rag_container()
-        cont.embed_client.enabled = False
-        with pytest.raises(AppException) as ei:
-            await rebuild_doc_index(container=cont)
-        assert ei.value.http_status == 400
-        assert ei.value.code == "embed_not_configured"
-
-    async def test_rebuild_status(self):
-        from app.routes.doc_routes import doc_rebuild_status
-
-        cont = MagicMock()
-        cont.rag_service = None
-        out = doc_rebuild_status(container=cont)  # 同步路由
-        assert out == {"rebuilding": False, "total": 0, "done": 0, "errors": 0,
-                       "message": "", "model": "", "chunk_count": 0}
-
-        cont2, rag2, _ = _rag_container()
-        rag2.rebuild_status = {"rebuilding": True, "total": 10, "done": 4}
-        out = doc_rebuild_status(container=cont2)
-        assert out["done"] == 4
-
-
-# ---------------------------------------------------------------------------
-# advanced_routes
-# ---------------------------------------------------------------------------
 
 class TestAdvancedRoutesGaps:
     async def test_get_config_password_flag(self, monkeypatch):
@@ -1324,10 +1224,11 @@ class TestReportRoutesGaps:
 
         cont = MagicMock()
         cont.weekly_report_service = None
+        # GET 无周报是正常状态（200 + data=null），不是错误
         out = await get_weekly_report(container=cont)
         assert out.data is None
-        out = await generate_weekly_report(container=cont)
-        assert "周报服务未就绪" in out.message
+        # 手动生成则必须有服务，缺了是 503
+        await _expect_error(generate_weekly_report(container=cont), 503, "周报服务未就绪")
 
     async def test_weekly_report_latest_and_generate(self):
         from app.routes.report_routes import generate_weekly_report, get_weekly_report
@@ -1349,6 +1250,6 @@ class TestReportRoutesGaps:
         svc = MagicMock()
         svc.generate = AsyncMock(side_effect=RuntimeError("llm down"))
         cont.weekly_report_service = svc
-        out = await generate_weekly_report(container=cont)
-        assert out.data is None
-        assert "生成失败" in out.message
+        exc = await _expect_error(generate_weekly_report(container=cont), 500)
+        assert "生成失败" in exc.message
+        assert "llm down" in exc.message

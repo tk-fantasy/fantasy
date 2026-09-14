@@ -4,6 +4,7 @@ import logging
 from datetime import datetime, timezone, timedelta
 
 from ..core.config import WEEKDAY_NAMES, get_config
+from .pending_rules import wants_rule_creation
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +24,7 @@ RULE_SYSTEM_PROMPT_TEMPLATE = (
     "只返回 JSON，不要 markdown，不要解释。\n\n"
     "输出字段:\n"
     '  "name": 规则简短名称,\n'
-    '  "type": 触发条件类型，三选一："time" | "weather" | "vision"，\n'
+    '  "type": （必填，不可省略、不可留空）触发条件类型，三选一："time" | "weather" | "vision"，\n'
     '  "condition": 用一句自然语言描述触发条件,\n'
     '  "actions": 动作数组,每个动作包含 mcp_tool_name 和 mcp_tool_input,\n'
     '  "action_descriptions": 每个动作的中文描述数组,\n'
@@ -76,13 +77,16 @@ RULE_EXPLAIN_PROMPT = (
     "- type: 规则类型。time=按时间触发，weather=按天气触发，vision=按摄像头视觉判断触发\n"
     "- actions: 触发后执行的动作列表。每个动作的 mcp_tool_input 里有 domain/service/entity_id/data\n"
     "- cooldown_seconds: 防重复触发的冷却秒数（同一条件触发后，多久内不再重复触发）\n"
-    "- summary: 规则的一句话总结\n\n"
+    "- summary: 规则的一句话总结\n"
+    "- camera_id: 规则绑定的摄像头 id（仅 vision 规则有意义，其余类型为空）\n\n"
     "回答要求：\n"
     "- 直接回答用户的问题，不要复述整个 JSON。\n"
     "- 如果用户问「这个规则什么时候触发 / 怎么触发」，讲清楚 condition 和 type。\n"
     "- 如果用户问「这个规则会做什么」，逐个解释 actions（用人话，比如「关闭客厅吊灯」而不是「turn_off」）。\n"
-    "- entity_id 里的英文拼音能看出设备名（如 light.chuang_tou_deng → 床头灯），翻译成中文名讲。\n"
-    "- 如果你不确定，如实说「这个字段我看不准」，不要编造。\n"
+    "- 如果用户问「控制的设备 / 设备 id / entity_id 是哪个」，如实念出 entity_id，"
+    "并对照消息里附的「实体对照」给出设备名。不要从 entity_id 的拼音猜设备名——"
+    "很多 entity_id 是设备厂商乱码，猜必错。\n"
+    "- 实体对照里查不到的设备，如实说「对照表里查不到」，不要编造。\n"
     "- 简洁，一两句话或几条短列表即可。"
 )
 
@@ -106,11 +110,11 @@ GUIDELINES = (
     "不能操作电脑文件、运行命令、发邮件。能力之外的事直接说「我做不到」，不要假装完成。\n"
     "\n"
     "## 工具\n"
-    "- 动作前先 get_entities 看真实设备与可控项，domain/service/param/entity_id 都取自返回，不要自己拼造。\n"
+    "- 设备清单已在本提示词中，domain/service/param/entity_id 通常直接取用；仅当怀疑清单过期或定位不到 entity_id 时才调 get_entities 复核。\n"
+    "- 用户表达设备控制意图（开/关/调/停）时必须调用 call_service 执行；目标模糊（如只说「开灯」）也把用户原话里的设备词直接传入，系统会让用户挑选——禁止只在文字里追问或答应而不调工具。\n"
     "- 设备有用户备注（特殊语义/怪癖，如继电器 ON 实为关门）时，备注已在设备列表里；需要单台详情或复核时调 get_device_manual。\n"
-    "- verify_condition / verify_action 只读，改状态只能 call_service。\n"
-    "- 用户要核对/验证某状态时调 verify_action，不要凭印象回答。\n"
-    "- 「如果…就…」类条件指令三步走：先 verify_condition 验条件；满足才 call_service 执行；再做 verify_action 核对。条件不满足就告诉用户、不执行。\n"
+    "- verify_action 只读，改状态只能 call_service；仅当 call_service 返回 verified=false（回读与预期不符）时调它复核（传相同的 service 和 data），verified=true 不要重复调。\n"
+    "- 「如果…就…」类条件指令：先判断条件、满足才执行——时间/天气直接用系统信息里已有的数据判断（无需调工具）；设备状态先调 get_entities 查真实状态；画面条件先调 vision_chat。条件不满足就告诉用户、不执行。\n"
     "- 用户问画面里/现在有什么等视觉问题时，先调 describe_state / vision_chat 看画面，不要回「我无法判断」。\n"
     "- 【定时任务】用户指定未来时间点或周期要做某事时（「X点X分开灯」「每天8点提醒」「每小时刷新」「X分钟后关灯」），"
     "必须调 scheduled_task_create 创建定时任务，让系统到点自动执行——禁止立即 call_service。"
@@ -121,7 +125,7 @@ GUIDELINES = (
     "- 以工具返回的真实结果为准。没调工具就说不知道，没执行就说没执行，不要描述根本没发生的操作。\n"
     "- entity_id 不存在时：若报错里附了候选实体，从候选中选最合适的一项重试一次；没有候选才停下告知用户。"
     "无论何时都禁止凭空编造新的 entity_id。\n"
-    "- 设备名唯一，用户提到设备名直接匹配，不要追问房间。\n"
+    "- 设备名对照本提示词清单匹配；匹配到多个时 call_service 会返回 need_selection 请用户挑选，不要自己挑一个。\n"
     "- 回答简短，调完工具用自然语言简洁总结，不要沉默或只丢工具结果。\n"
 )
 
@@ -204,5 +208,18 @@ async def build_system_prompt(
         if summary_texts:
             parts.append(f"\n你与用户的历史对话摘要：\n" + "\n".join(summary_texts))
             parts.append("（以上是之前对话的摘要，用户可能基于这些内容继续提问。）")
+
+    # 创建规则关键词门控（软推层）：用户明确要求创建时强制模型走工具、别直接
+    # 执行。硬隔离在 dispatcher 变体 agent（无关键词回合创建工具整族不可见）。
+    # 刻意没有 else 分支：无关键词回合对"规则创建"这个概念要完全无感知，
+    # 任何"不要创建规则"式提示都是反向注入——实测会教会模型输出工具调用文本。
+    if query and wants_rule_creation(query):
+        parts.append(
+            "\n本轮指令：用户这条消息明确提到了创建规则。若用户是想新建一条自动化规则，"
+            "必须调用 automation_rule_create 工具生成规则草稿——不要直接执行设备动作，"
+            "更不要只在文字里说已创建（没调工具就没有任何规则被创建）。草稿生成后要"
+            "说清「确认后才生效」。若用户只是在询问或谈论已有规则（如问怎么用、何时"
+            "触发、谁创建的），则正常回答，不要调用创建工具。"
+        )
 
     return "\n".join(parts)

@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 class AutomationRule:
     id: str
     trigger: dict
-    conditions: list[dict]
+    conditions: list[dict]                               # 已废弃（僵尸字段）：评估器只读 condition: str；仅为存量数据 round-trip 保留，勿新增消费
     actions: list[dict]
     summary: str
     enabled: bool

@@ -169,16 +169,18 @@ class TestHealthChecker:
     async def test_check_ha_success(self):
         checker = HealthChecker()
         ha_client = MagicMock()
-        ha_client.get_states = AsyncMock(return_value=[{"e": 1}, {"e": 2}])
+        # 探活走轻量 GET /api/（ping），不再全量拉 states
+        ha_client.ping = AsyncMock(return_value=True)
         result = await checker.check_ha(ha_client)
         assert result is True
         assert checker.ha_available is True
 
     @pytest.mark.asyncio
-    async def test_check_ha_no_entities(self):
+    async def test_check_ha_ping_false(self):
+        """ping 不通过（异常应答/非 200）→ 不可用。"""
         checker = HealthChecker()
         ha_client = MagicMock()
-        ha_client.get_states = AsyncMock(return_value=[])
+        ha_client.ping = AsyncMock(return_value=False)
         result = await checker.check_ha(ha_client)
         assert result is False
         assert checker.ha_available is False
@@ -187,7 +189,7 @@ class TestHealthChecker:
     async def test_check_ha_exception(self):
         checker = HealthChecker()
         ha_client = MagicMock()
-        ha_client.get_states = AsyncMock(side_effect=RuntimeError("conn refused"))
+        ha_client.ping = AsyncMock(side_effect=RuntimeError("conn refused"))
         result = await checker.check_ha(ha_client)
         assert result is False
 
@@ -221,7 +223,7 @@ class TestHealthChecker:
     async def test_check_all_returns_both(self):
         checker = HealthChecker()
         ha_client = MagicMock()
-        ha_client.get_states = AsyncMock(return_value=[{"e": 1}])
+        ha_client.ping = AsyncMock(return_value=True)
         llm = MagicMock()
         llm.enabled = True
         llm.chat = AsyncMock(return_value="ok")

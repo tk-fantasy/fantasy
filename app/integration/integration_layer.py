@@ -4,7 +4,9 @@
 挂到 AppContainer，由 main.py lifespan 启停。
 """
 
+import asyncio
 import logging
+from typing import Any
 
 from .host_registry import HostMethodRegistry
 from .manifest_loader import load_manifests
@@ -19,10 +21,19 @@ from .rpc_protocol import (
     METHOD_HOST_HA_DEVICES,
     METHOD_HOST_HA_STATES,
     METHOD_HOST_LLM_CHAT,
+    METHOD_HOST_MODE_GET,
+    METHOD_HOST_MODE_SET,
 )
+from .schema import CapabilityType
 from .sink_manager import SinkManager
 
 logger = logging.getLogger(__name__)
+
+# 直通模式退出关键词默认表（可用 config integration.direct_exit_keywords 覆盖）。
+# 框架层通用——任何 inbound_router 插件的直通模式都经此通道退出。
+_DIRECT_EXIT_KEYWORDS = [
+    "退出直通", "退出小爱", "结束直通", "关闭直通", "退出语音直通", "回到智能助手",
+]
 
 
 class IntegrationLayer:
@@ -41,6 +52,7 @@ class IntegrationLayer:
         env_per_plugin: dict[str, dict[str, str]] | None = None,
         broadcast_enabled: bool = True,
         host_deps: dict | None = None,
+        on_plugin_tools_changed=None,
     ) -> None:
         self._plugin_dir = plugin_dir
         self._api_version = api_version
@@ -48,6 +60,11 @@ class IntegrationLayer:
         # sink_manager 构造后再注册 handler（broadcast handler 需要 sink_manager）。
         self._host_registry = HostMethodRegistry()
         camera_manager = (host_deps or {}).get("camera_manager")
+        # 插件 agent 工具集变更回调（main 注入"重拉工具+重建 agent"的实现）。
+        # 平台层不认识"工具"，只在插件启停后通知有东西变了——解耦。
+        self.on_plugin_tools_changed = on_plugin_tools_changed
+        # start() 加载的子进程 manifest 缓存（get_agent_tool_plugins 用）
+        self._manifests: list = []
 
         # 注销任务强引用（loop.create_task 只持弱引用，防 GC 中途回收）
         unregister_tasks: set = set()
@@ -82,6 +99,8 @@ class IntegrationLayer:
         # 宿主侧集成注册表（非子进程插件，如飞书 WebSocket 长连接）
         # key=集成名, value={"name","description","alive"}
         self.host_integrations: dict[str, dict] = {}
+        # 插件工具刷新后台任务强引用（防 GC 中途回收）
+        self._tool_refresh_tasks: set = set()
 
     def update_ha_refs(self, new_client, new_service) -> None:
         """HA 配置热替换后重绑反向 RPC 的 ha handler（main.sync_ha_runtime_refs 调用）。
@@ -99,9 +118,27 @@ class IntegrationLayer:
     def _register_host_methods(self, host_deps: dict | None) -> None:
         """注册方向 2 宿主能力到 host_registry。
 
-        插件在 manifest.permissions 声明对应权限（ha/llm/broadcast）后，才能反向调用。
-        host_deps=None（如 e2e 测试）→ 不注册任何 handler，反向调用回 "未知方法" 错误。
+        插件在 manifest.permissions 声明对应权限（ha/llm/broadcast/mode）后，才能反向调用。
+        host_deps=None（如 e2e 测试）→ 不注册依赖宿主对象的 handler，
+        反向调用回 "未知方法" 错误；mode.set/get 只动全局配置，无条件注册。
         """
+        # mode.set/get 不依赖 host_deps：切的是 integration.current_mode 全局配置。
+        # 插件（如小爱直通工具）与前端 UI 的 set_mode action 写同一个值——单一事实源。
+        async def _mode_set(params: dict) -> dict:
+            from .config_helper import set_current_mode
+            mode = str(params.get("mode", "aether"))
+            set_current_mode(mode)
+            logger.info("插件反向切换聊天模式 → %s", mode)
+            return {"mode": mode}
+
+        async def _mode_get(params: dict) -> dict:
+            from .config_helper import get_current_mode
+            return {"mode": get_current_mode()}
+
+        reg = self._host_registry
+        reg.register(METHOD_HOST_MODE_SET, _mode_set, required_permission="mode")
+        reg.register(METHOD_HOST_MODE_GET, _mode_get, required_permission="mode")
+
         if not host_deps:
             return
         ha_client = host_deps.get("ha_client")
@@ -187,12 +224,43 @@ class IntegrationLayer:
         disabled = get_disabled_plugins()
         manifests = load_manifests(self._plugin_dir, api_version=self._api_version,
                                    disabled=disabled)
+        self._manifests = manifests
         subprocess_plugins = [m for m in manifests if m.needs_subprocess]
         logger.info("发现 %d 个集成插件（%d 个禁用，%d 个进程内）: %s",
                     len(manifests), len(disabled),
                     len(manifests) - len(subprocess_plugins),
                     [m.id for m in manifests])
         await self._supervisor.start_all(subprocess_plugins, self._plugin_dir)
+        self._notify_tools_changed()
+
+    def _notify_tools_changed(self) -> None:
+        """插件启停后通知宿主刷新其注入的 agent 工具（回调异常不拖垮启停）。"""
+        callback = self.on_plugin_tools_changed
+        if callback is None:
+            return
+        try:
+            result = callback()
+            if asyncio.iscoroutine(result):
+                _t = asyncio.get_running_loop().create_task(result)
+                self._tool_refresh_tasks.add(_t)
+                _t.add_done_callback(self._tool_refresh_tasks.discard)
+        except Exception:  # noqa: BLE001
+            logger.warning("on_plugin_tools_changed 回调失败", exc_info=True)
+
+    def get_agent_tool_plugins(self) -> list[tuple[str, Any]]:
+        """返回声明 agent_tools 且进程存活的插件 [(plugin_id, PluginProcess)]。
+
+        宿主装配（main._sync_plugin_agent_tools）据此拉工具定义并注册。
+        """
+        from .schema import CapabilityType as _Cap
+        out: list[tuple[str, Any]] = []
+        for manifest in self._manifests:
+            if not manifest.has_capability(_Cap.AGENT_TOOLS):
+                continue
+            proc = self._supervisor.get_process(manifest.id)
+            if proc is not None and proc.is_alive:
+                out.append((manifest.id, proc))
+        return out
 
     async def stop(self) -> None:
         """停止所有插件进程。"""
@@ -261,11 +329,14 @@ class IntegrationLayer:
         if plugin_id not in manifests:
             return False
         await self._supervisor.stop_one(plugin_id)
+        self._notify_tools_changed()
         if plugin_id in set(get_disabled_plugins()):
             return True
         if not manifests[plugin_id].needs_subprocess:
             return True
-        return await self._supervisor.start_one(manifests[plugin_id], self._plugin_dir)
+        started = await self._supervisor.start_one(manifests[plugin_id], self._plugin_dir)
+        self._notify_tools_changed()
+        return started
 
     def set_broadcast_enabled(self, enabled: bool) -> None:
         """运行时切换全局广播开关（同时写 config 持久化）。"""
@@ -322,7 +393,10 @@ class IntegrationLayer:
         返回是否有进程被停止。
         """
         self.set_plugin_enabled(plugin_id, enabled=False)
-        return await self._supervisor.stop_one(plugin_id)
+        stopped = await self._supervisor.stop_one(plugin_id)
+        if stopped:
+            self._notify_tools_changed()
+        return stopped
 
     async def start_plugin(self, plugin_id: str) -> bool:
         """运行时启动某插件进程（热启动：启用已禁用的插件）。
@@ -342,15 +416,35 @@ class IntegrationLayer:
         self.set_plugin_enabled(plugin_id, enabled=True)
         if not target.needs_subprocess:
             return True
-        return await self._supervisor.start_one(target, self._plugin_dir)
+        started = await self._supervisor.start_one(target, self._plugin_dir)
+        if started:
+            self._notify_tools_changed()
+        return started
 
     async def route_inbound(self, text: str, mode: str) -> dict:
         """将入站文字路由到声明 inbound_router 的插件（通用，不硬编码插件名）。
+
+        退出守护（框架层，任何 inbound_router 插件受益）：直通模式下短句命中
+        退出关键词时直接恢复 aether 模式、不转发插件——直通路径不进 LLM，
+        退出检测必须是零 LLM 的轻量匹配。词表可配
+        （integration.direct_exit_keywords）；≤16 字限定防长句误伤
+        （如"帮我翻译'退出直通模式'这句话"照常直通）。
 
         找第一个声明了 inbound_router 且存活的插件，RPC 调 router.handle。
         无插件 / 全禁用 → 返回 {ok: False, error: ...}。
         V1 只有一个 inbound_router（小爱），直接调第一个匹配。
         """
+        if mode and mode != "aether":
+            from .config_helper import get_config, set_current_mode
+            keywords = get_config("integration.direct_exit_keywords",
+                                  _DIRECT_EXIT_KEYWORDS)
+            stripped = text.strip()
+            if 0 < len(stripped) <= 16 and any(kw in stripped for kw in keywords):
+                set_current_mode("aether")
+                logger.info("直通退出关键词命中（mode=%s）：%r", mode, stripped)
+                return {"ok": True, "exited_direct": True,
+                        "message": "已退出直通模式"}
+
         from .config_helper import get_disabled_plugins
         from .manifest_loader import load_manifests
         from .rpc_protocol import METHOD_ROUTE

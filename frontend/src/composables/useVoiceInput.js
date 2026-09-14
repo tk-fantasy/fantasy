@@ -108,5 +108,5 @@ export function useVoiceInput({ onResult, onError } = {}) {
     }
   }
 
-  return { recording, transcribing, toggle, stop, available }
+  return { recording, transcribing, toggle, stop }
 }

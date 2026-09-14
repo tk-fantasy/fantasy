@@ -64,7 +64,7 @@ async def get_camera(camera_id: str):
 async def update_camera(camera_id: str, body: dict):
     c = get_container()
     updated = await c.camera_manager.update_camera(camera_id, body)
-    return ApiResponse(data=updated)
+    return ApiResponse(data=_mask_camera(updated))
 
 
 @router.delete("/cameras/{camera_id}")

@@ -125,7 +125,6 @@ class VisionService:
         """
         enabled = [f["text"] for f in self._vision_focuses.get(camera_id, []) if f.get("enabled", True)]
         return "；".join(enabled)
-        return ""
 
     async def evaluate_condition(
         self,

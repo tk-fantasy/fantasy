@@ -378,24 +378,48 @@ class HAService:
 
         返回 {domain: {svc_name: {"fields": [...], "required": [...]}}}。
         """
+        # 按 client 实例缓存全量定义 60 秒：/api/services 是最慢的 HA 接口之一
+        # （数百 KB），而服务定义几乎不随控制操作变化。缓存挂在 client 对象上，
+        # HA 热替换产生新 client 后自然失效；测试用的 mock 互不串味。
+        now = time.monotonic()
+        cached = getattr(ha_client, "_svc_defs_cache", None)
+        # isinstance 校验：Mock/异常对象不会伪装成合法缓存条目
+        if (isinstance(cached, tuple) and len(cached) == 2
+                and isinstance(cached[0], (int, float))
+                and now - cached[0] < 60.0):
+            full_defs = cached[1]
+        else:
+            full_defs: dict[str, dict] = {}
+            try:
+                for svc_entry in await ha_client.get_services():
+                    domain = svc_entry.get("domain", "")
+                    services = {}
+                    for svc_name, svc_def in svc_entry.get("services", {}).items():
+                        fields_dict = svc_def.get("fields", {})
+                        services[svc_name] = {
+                            "fields": list(fields_dict.keys()),
+                            "required": [
+                                fname
+                                for fname, fdef in fields_dict.items()
+                                if fdef.get("required", False)
+                            ],
+                        }
+                    full_defs[domain] = services
+                # 仅成功时缓存：HA 故障时不把空/残缺定义钉死 60 秒
+                try:
+                    ha_client._svc_defs_cache = (now, full_defs)
+                except Exception:  # noqa: BLE001
+                    pass
+            except Exception:
+                logger.warning("Failed to get HA service definitions", exc_info=True)
         services_info: dict[str, dict] = {}
-        try:
-            for svc_entry in await ha_client.get_services():
-                domain = svc_entry.get("domain", "")
-                if domains is not None and domain not in domains:
-                    continue
-                services = {}
-                for svc_name, svc_def in svc_entry.get("services", {}).items():
-                    fields_dict = svc_def.get("fields", {})
-                    entry = {"fields": list(fields_dict.keys())}
-                    if include_required:
-                        entry["required"] = [
-                            fname
-                            for fname, fdef in fields_dict.items()
-                            if fdef.get("required", False)
-                        ]
-                    services[svc_name] = entry
+        for domain, services in full_defs.items():
+            if domains is not None and domain not in domains:
+                continue
+            if include_required:
                 services_info[domain] = services
-        except Exception:
-            logger.warning("Failed to get HA service definitions", exc_info=True)
+            else:
+                services_info[domain] = {
+                    name: {"fields": entry["fields"]} for name, entry in services.items()
+                }
         return services_info

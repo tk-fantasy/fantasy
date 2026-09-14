@@ -21,7 +21,7 @@ import re
 import socket
 from typing import Any
 
-from ..core.config import get_config, update_config_section
+from ..core.config import get_config
 
 logger = logging.getLogger(__name__)
 
@@ -241,64 +241,37 @@ class CameraDiscoveryService:
     async def find_camera(
         self,
         camera_id: str = "",
-        target_mac: str | None = None,
-        subnet: str | None = None,
         timeout: float | None = None,
     ) -> str | None:
         """两段式扫描找目标设备当前 IP。
 
-        Task 3 多路化:优先按 camera_id 从 db.cameras_get 行读 MAC/子网/
-        discovery_enabled/凭证;camera_id 为空时回退旧逻辑(从 target_mac/
-        subnet 参数或全局 config 读),向后兼容旧测试与未迁移场景。
+        按 camera_id 从 cameras 行读 MAC/子网/discovery_enabled/凭证
+        （旧的全局 config 回退分支已删：多路化后所有调用方都带 camera_id）。
 
-        Args:
-            camera_id: 摄像头 id(多路);非空则从 cameras 行读配置。
-            target_mac: 目标 MAC(camera_id 空时用),None 则读 config。
-            subnet: 子网 CIDR(camera_id 空时用),None 则从 config 旧 IP 推断。
-            timeout: 总超时秒,None 则读 config discovery_timeout_seconds(默认 30)。
-
-        Returns: 找到的 IP,或 None(超时/无 MAC/无子网/discovery 关闭/db 未注入)。
+        Returns: 找到的 IP，或 None(无 id/无行/discovery 关闭/超时/无 MAC/无子网/db 未注入)。
         """
-        # —— 多路:按 camera_id 从 cameras 行读 ——
-        if camera_id:
-            if self._db is None:
-                return None
-            row = await self._db.cameras_get(camera_id)
-            if not row or not row.get("discovery_enabled", 1):
-                return None
-            target_mac = str(row.get("device_mac", "") or "")
-            subnet = str(row.get("discovery_subnet", "") or "").strip() or None
-            if not subnet:
-                # 从行内 ptz_ip 或 rtsp_url 推断子网
-                old_ip = str(row.get("ptz_ip", "") or "").strip()
-                if not old_ip:
-                    old_ip = self._extract_ip_from_rtsp_url(
-                        str(row.get("rtsp_url", "") or ""))
-                subnet = infer_subnet(old_ip)
-            if timeout is None:
-                timeout = float(get_config("vision.discovery_timeout_seconds", 30))
-            # 缓存凭证供 _probe_candidate 用(走 per-camera 路径)
-            self._probe_creds = (
-                int(row.get("ptz_port", 80)),
-                str(row.get("ptz_username", "")),
-                str(row.get("ptz_password", "")),
-            )
-        else:
-            # —— 旧逻辑:从参数/config 读(向后兼容)——
-            if target_mac is None:
-                target_mac = str(get_config("vision.device_mac", "") or "")
-            if subnet is None:
-                subnet = str(get_config("vision.discovery_subnet", "") or "").strip()
-            if not subnet:
-                old_ip = str(get_config("ptz.ip", "") or "").strip()
-                if not old_ip:
-                    old_ip = self._extract_ip_from_rtsp_url(
-                        str(get_config("vision.rtsp_url", "") or "")
-                    )
-                subnet = infer_subnet(old_ip)
-            if timeout is None:
-                timeout = float(get_config("vision.discovery_timeout_seconds", 30))
-            self._probe_creds = None   # _probe_candidate 走旧 config 路径
+        if not camera_id or self._db is None:
+            return None
+        row = await self._db.cameras_get(camera_id)
+        if not row or not row.get("discovery_enabled", 1):
+            return None
+        target_mac = str(row.get("device_mac", "") or "")
+        subnet = str(row.get("discovery_subnet", "") or "").strip() or None
+        if not subnet:
+            # 从行内 ptz_ip 或 rtsp_url 推断子网
+            old_ip = str(row.get("ptz_ip", "") or "").strip()
+            if not old_ip:
+                old_ip = self._extract_ip_from_rtsp_url(
+                    str(row.get("rtsp_url", "") or ""))
+            subnet = infer_subnet(old_ip)
+        if timeout is None:
+            timeout = float(get_config("vision.discovery_timeout_seconds", 30))
+        # 缓存凭证供 _probe_candidate 用(走 per-camera 路径)
+        self._probe_creds = (
+            int(row.get("ptz_port", 80)),
+            str(row.get("ptz_username", "")),
+            str(row.get("ptz_password", "")),
+        )
 
         if not normalize_mac(target_mac or ""):
             self._status = "error"
@@ -429,81 +402,43 @@ class CameraDiscoveryService:
         return urlunparse(parsed._replace(netloc=new_netloc))
 
     async def capture_mac_on_startup(self, camera_id: str = "") -> None:
-        """首次 MAC 捕获:有 IP 无 MAC 时,用现有 IP 读一次 MAC 写回。
-
-        Task 3 多路化:camera_id 非空 → 从 cameras 行读 IP/凭证,MAC 写回
-        该路 cameras 行;camera_id 空 → 旧逻辑(读/写 config.json)。
+        """首次 MAC 捕获:有 IP 无 MAC 时,用现有 IP 读一次 MAC 写回该路 cameras 行。
 
         在 bootstrap 启动时调用(后台遍历各路,不阻塞启动)。失败不影响启动
         —— 设备离线时下次掉线会 fallback 到子网全扫。
+        (旧的读写 config.json 分支已删：多路化后所有调用方都带 camera_id。)
         """
-        if camera_id and self._db is not None:
-            # —— 多路:从 cameras 行读,写回 cameras 行 ——
-            row = await self._db.cameras_get(camera_id)
-            if not row or not row.get("discovery_enabled", 1):
-                return
-            if normalize_mac(str(row.get("device_mac", "") or "")):
-                logger.info("capture_mac: cam %s device_mac already set, skip", camera_id)
-                return
-            ip = str(row.get("ptz_ip", "") or "").strip()
-            if not ip:
-                ip = self._extract_ip_from_rtsp_url(str(row.get("rtsp_url", "") or ""))
-            if not ip:
-                logger.info("capture_mac: cam %s no known IP, skip", camera_id)
-                return
-            port = int(row.get("ptz_port", 80))
-            user = str(row.get("ptz_username", ""))
-            pwd = str(row.get("ptz_password", ""))
-            if not user or not pwd:
-                logger.info("capture_mac: cam %s no ONVIF credentials, skip", camera_id)
-                return
-            try:
-                hardware_id = await asyncio.wait_for(
-                    self.read_device_hardware_id(ip, port, user, pwd), timeout=8.0)
-            except Exception as e:  # noqa: BLE001
-                logger.warning("capture_mac: cam %s failed: %s (non-fatal)", camera_id, e)
-                return
-            if hardware_id:
-                await self._db.cameras_update(camera_id, {"device_mac": hardware_id})
-                logger.info("capture_mac: cam %s stored device_mac=%s", camera_id, hardware_id)
-            else:
-                logger.warning("capture_mac: cam %s empty hardware id", camera_id)
+        if not camera_id or self._db is None:
             return
-
-        # —— 旧逻辑:读/写 config.json(向后兼容)——
-        if not bool(get_config("vision.discovery_enabled", False)):
+        row = await self._db.cameras_get(camera_id)
+        if not row or not row.get("discovery_enabled", 1):
             return
-        existing_mac = str(get_config("vision.device_mac", "") or "").strip()
-        if normalize_mac(existing_mac):
-            logger.info("capture_mac: device_mac already set (%s), skip", existing_mac)
+        if normalize_mac(str(row.get("device_mac", "") or "")):
+            logger.info("capture_mac: cam %s device_mac already set, skip", camera_id)
             return
-        # 现有 IP:优先 ptz.ip,其次 rtsp_url
-        ip = str(get_config("ptz.ip", "") or "").strip()
+        ip = str(row.get("ptz_ip", "") or "").strip()
         if not ip:
-            ip = self._extract_ip_from_rtsp_url(str(get_config("vision.rtsp_url", "") or ""))
+            ip = self._extract_ip_from_rtsp_url(str(row.get("rtsp_url", "") or ""))
         if not ip:
-            logger.info("capture_mac: no known IP, skip (will full-scan on disconnect)")
+            logger.info("capture_mac: cam %s no known IP, skip", camera_id)
             return
-        port = int(get_config("ptz.port", 80))
-        user = str(get_config("ptz.username", ""))
-        pwd_env = str(get_config("ptz.password_env", ""))
-        pwd = os.getenv(pwd_env, "") if pwd_env else ""
+        port = int(row.get("ptz_port", 80))
+        user = str(row.get("ptz_username", ""))
+        pwd = str(row.get("ptz_password", ""))
         if not user or not pwd:
-            logger.info("capture_mac: no ONVIF credentials, skip")
+            logger.info("capture_mac: cam %s no ONVIF credentials, skip", camera_id)
             return
         try:
             hardware_id = await asyncio.wait_for(
-                self.read_device_hardware_id(ip, port, user, pwd),
-                timeout=8.0,
-            )
+                self.read_device_hardware_id(ip, port, user, pwd), timeout=8.0)
         except Exception as e:  # noqa: BLE001
-            logger.warning("capture_mac: failed to read from %s: %s (non-fatal)", ip, e)
+            logger.warning("capture_mac: cam %s failed: %s (non-fatal)", camera_id, e)
             return
         if hardware_id:
-            update_config_section("vision", {"device_mac": hardware_id})
-            logger.info("capture_mac: stored device_mac=%s from %s", hardware_id, ip)
+            await self._db.cameras_update(camera_id, {"device_mac": hardware_id})
+            logger.info("capture_mac: cam %s stored device_mac=%s", camera_id, hardware_id)
         else:
-            logger.warning("capture_mac: device returned empty hardware id at %s", ip)
+            logger.warning("capture_mac: cam %s empty hardware id", camera_id)
 
     async def find_and_apply(self, camera_id: str = "", timeout: float | None = None) -> str | None:
         """顶层编排:find_camera → apply_found_ip。返回找到的 IP 或 None。

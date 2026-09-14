@@ -932,6 +932,7 @@ class TestProcessFrame:
     def test_process_frame_updates_state_jpeg_and_buffer(self):
         s = _stream()  # frame_interval_ms=0 → 每帧都进缓冲
         f = _frame(120)
+        s._viewers = 1  # 有观众才编码（按需编码契约）
         s._process_frame(f)
         st = s.get_state()
         assert st["camera_opened"] is True
@@ -948,11 +949,46 @@ class TestProcessFrame:
         """JPEG 编码失败 → 记日志直接返回,不覆盖旧缓存。"""
         monkeypatch.setattr(cam.cv2, "imencode", lambda *a, **k: (False, None))
         s = _stream()
+        s._viewers = 1  # 无观众时根本不进编码分支，本测试需要观众
         with s._lock:
             s._latest_jpeg = b"PREVIOUS"
         s._process_frame(_frame())
         assert s.get_jpeg() == b"PREVIOUS"
         assert s.get_state()["camera_opened"] is False
+
+    def test_process_frame_no_viewer_skips_encoding(self, monkeypatch):
+        """无观众 → 跳过亮度准备+JPEG 编码；状态/原始帧/缓冲照常更新。"""
+        encode_calls = []
+        real_imencode = cam.cv2.imencode
+
+        def spy(*a, **k):
+            encode_calls.append(True)
+            return real_imencode(*a, **k)
+
+        monkeypatch.setattr(cam.cv2, "imencode", spy)
+        s = _stream()
+        f = _frame(120)
+        s._process_frame(f)
+        assert encode_calls == []  # 编码被跳过
+        assert s.get_jpeg() is None  # _latest_jpeg 不产出
+        st = s.get_state()
+        assert st["camera_opened"] is True  # 状态照常
+        assert np.array_equal(s.get_latest_frame(), f)  # 原始帧照常供视觉用
+        assert s._buffer_queue.qsize() == 1  # 环形缓冲照常
+
+    def test_mjpeg_generator_tracks_viewers(self):
+        """观众计数：开始迭代 +1，关闭生成器归位——驱动按需编码。"""
+        s = _stream()
+        s._running = True
+        with s._lock:
+            s._latest_jpeg = b"JPEG1"
+            s._state.camera_opened = True
+        gen = s.mjpeg_generator()
+        assert s._viewers == 0  # 未迭代不算观众
+        next(gen)
+        assert s._viewers == 1
+        gen.close()
+        assert s._viewers == 0
 
     def test_process_frame_buffer_queue_full_drops_frame(self):
         """环形缓冲队满 → 丢帧不阻塞。"""

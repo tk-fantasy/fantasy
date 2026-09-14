@@ -3,12 +3,12 @@
  *
  * 状态条显示 chat 模型名（静态读 settings），悬停时懒加载测试连通性。
  * - chatModelName：从 /api/llm/settings 静态读，不耗 API（进页面就显示）
- * - llmStatus：悬停时才调 /api/llm/status 真实测试（含 4 个角色连通结果）
+ * - llmStatus：悬停时才调 /api/llm/status 真实测试（含 3 个角色连通结果）
  */
 import { ref } from 'vue'
 import { apiGet } from '../utils/api'
 
-// 状态条展示的 4 个角色标签（stt 语音专用，不在此列）
+// 状态条展示的 3 个角色标签（stt 语音专用，不在此列）
 export const ROLE_LABELS = { chat: '对话', vision: '视觉', embed: '向量' }
 
 export function useLlmStatus() {

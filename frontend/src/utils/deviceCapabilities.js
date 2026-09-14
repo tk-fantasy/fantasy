@@ -102,10 +102,3 @@ export function formatSliderValue(cap) {
   if (val == null || isNaN(val)) return '—'
   return Math.round(val) + (cap.unit || '')
 }
-
-export function toActualValue(cap, inputValue) {
-  if (cap.inputScale) {
-    return inputValue * cap.inputScale
-  }
-  return inputValue
-}

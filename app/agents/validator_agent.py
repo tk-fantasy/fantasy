@@ -82,6 +82,20 @@ _WILL_CLAIM_RE = re.compile(
     r"[^。！？,，；;]{0,6}?" + _VERB_G3
 )
 
+# 规则创建声明（创建关键词门控的配套核查）：回复声称"已创建规则/创建成功"。
+# 门控下若本轮没有调过 automation_rule_create（无关键词变体里该工具根本不存在，
+# 或工具层拒绝），这类声明必为幻觉。完成态框架参照 _DONE_CLAIM_RE：必须有
+# 已/成功/了 等完成助词，避免把「要创建规则可以说…」这类教学句误判。
+_RULE_CREATE_CLAIM_RE = re.compile(
+    r"已(?:经)?[^。！？,，；;]{0,8}?(?:创建|建立|新建|添加)(?:了)?"
+    r"|(?:创建|建立|新建|添加)(?:了|好|成功)[^。！？]{0,16}规则"
+    r"|(?:创建|建立|新建|添加)(?:了)?[^。！？]{0,10}规则[^。！？]{0,6}(?:成功|好了?)"
+    r"|规则[^。！？]{0,4}(?:创建|建立|新建|添加)(?:了)?(?:成功|好了?)"
+)
+# 泄漏形态：无创建权限的回合里，模型把创建工具调用当正文输出（打印工具名 + 参数
+# JSON）。工具名出现在回复里本身就是泄漏的铁证（本轮它不该知道这个工具）。
+_RULE_TOOL_LEAK_RE = re.compile(r"automation_rule_create")
+
 # 设备名词表：断言未匹配到实体时，名词出现说明说的是设备（幻觉信号），
 # 一个名词都没有更像闲聊（"方案已经设置好了"）。
 _DEVICE_NOUN_RE = re.compile(
@@ -566,6 +580,34 @@ class ValidatorAgent:
                 "请立即调用 get_entities 查看真实设备列表：若设备存在，"
                 "用 call_service 真实执行；若不存在，如实告知用户。\n"
                 "禁止编造 entity_id，禁止在未调用工具的情况下声称已完成。"
+            )
+        )
+
+    @staticmethod
+    def has_rule_create_claim(final_content: str) -> bool:
+        """回复是否泄漏了规则创建行为（确定性正则，门控配套核查用）。
+
+        两种形态都算：a) 完成态声称"已创建规则/创建成功"；b) 把创建工具调用当
+        正文输出（回复里出现工具名 automation_rule_create——无权限回合它不该
+        知道这个工具）。教学句「可以说『创建规则』」不会命中。
+        """
+        text = final_content or ""
+        return bool(_RULE_CREATE_CLAIM_RE.search(text) or _RULE_TOOL_LEAK_RE.search(text))
+
+    @staticmethod
+    def build_rule_create_claim_retry_message(claim_text: str) -> HumanMessage:
+        """声称已创建规则 / 泄漏创建工具文本的定向重写消息。"""
+        return HumanMessage(
+            content=(
+                f"你刚才回复「{claim_text}」，但本轮没有调用任何规则创建工具，"
+                "没有任何规则被创建——这个说法不属实，必须纠正。\n"
+                "请重新回复用户，按用户真实意图二选一：\n"
+                "1) 用户想立即执行设备操作：直接调用设备控制工具真实执行"
+                "（先 get_entities 确认实体，再 call_service），以工具返回为准；\n"
+                "2) 用户确实想创建自动化规则：如实告知用户，请其明确说"
+                "「创建规则：…」才会进入创建流程。\n"
+                "绝对不要在未调用规则创建工具的情况下声称已创建规则；"
+                "也不要在回复里模仿工具调用的格式或输出任何工具参数 JSON 文本。"
             )
         )
 

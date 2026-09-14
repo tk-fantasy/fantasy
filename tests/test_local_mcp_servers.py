@@ -8,7 +8,6 @@ import pytest
 from app.mcp.local_mcp_servers import (
     current_time_handler,
     describe_state_handler,
-    create_verify_condition_handler,
     create_verify_action_handler,
 )
 
@@ -50,83 +49,6 @@ class TestDescribeStateHandler:
         result = await describe_state_handler({}, session)
         assert result["visual_state"] == {"action": "idle", "feedback": "平静"}
 
-
-class TestVerifyConditionHandler:
-    @pytest.mark.asyncio
-    async def test_auto_detect_time(self):
-        camera_manager = MagicMock()
-        vision_client = MagicMock()
-        ha_client = MagicMock()
-        
-        handler = create_verify_condition_handler(vision_client, ha_client, camera_manager)
-        result = await handler({"condition": "现在是几点", "condition_type": "auto"}, None)
-        assert result["type"] == "time"
-        assert "current_time" in result
-
-    @pytest.mark.asyncio
-    async def test_auto_detect_weather(self):
-        camera_manager = MagicMock()
-        vision_client = MagicMock()
-        ha_client = MagicMock()
-
-        handler = create_verify_condition_handler(vision_client, ha_client, camera_manager)
-        from unittest.mock import patch
-        with patch("app.mcp.local_mcp_servers.get_weather_handler", new_callable=lambda: AsyncMock(return_value={"location": "上海", "weather": "晴"})):
-            result = await handler({"condition": "今天天气如何", "condition_type": "auto"}, None)
-        assert result["type"] == "weather"
-
-    @pytest.mark.asyncio
-    async def test_auto_detect_vision(self):
-        camera_manager = MagicMock()
-        camera_manager._active_display_id = ""  # MagicMock 默认属性是真值,显式置空
-        camera_manager.list_cameras.return_value = []
-        camera_manager.get_frame.return_value = None
-        vision_client = MagicMock()
-        ha_client = MagicMock()
-        
-        handler = create_verify_condition_handler(vision_client, ha_client, camera_manager)
-        result = await handler({"condition": "画面中有人", "condition_type": "auto"}, None)
-        assert result["type"] == "vision"
-        assert result["camera_connected"] is False
-
-    @pytest.mark.asyncio
-    async def test_auto_detect_device(self):
-        camera_manager = MagicMock()
-        vision_client = MagicMock()
-        ha_client = MagicMock()
-        ha_client.get_states = AsyncMock(return_value=[
-            {"entity_id": "light.bed", "state": "on", "attributes": {"friendly_name": "床头灯"}},
-        ])
-
-        handler = create_verify_condition_handler(vision_client, ha_client, camera_manager)
-        result = await handler({"condition": "设备状态是否开启", "condition_type": "auto"}, None)
-        assert result["type"] == "device"
-        assert "devices" in result
-
-    @pytest.mark.asyncio
-    async def test_explicit_time_type(self):
-        camera_manager = MagicMock()
-        vision_client = MagicMock()
-        ha_client = MagicMock()
-        
-        handler = create_verify_condition_handler(vision_client, ha_client, camera_manager)
-        result = await handler({"condition": "任意条件", "condition_type": "time"}, None)
-        assert result["type"] == "time"
-
-    @pytest.mark.asyncio
-    async def test_vision_with_camera_connected(self):
-        camera_manager = MagicMock()
-        camera_manager.list_cameras.return_value = [{"id": "cam_x"}]
-        camera_manager.get_frame.return_value = MagicMock()
-        vision_client = MagicMock()
-        vision_client.ask_about_frame = AsyncMock(return_value="是的，画面中有人")
-        ha_client = MagicMock()
-
-        handler = create_verify_condition_handler(vision_client, ha_client, camera_manager)
-        result = await handler({"condition": "画面中有人吗", "condition_type": "vision"}, None)
-        assert result["type"] == "vision"
-        assert result["camera_connected"] is True
-        assert "vision_judgment" in result
 
 
 class TestVerifyActionHandler:

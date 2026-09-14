@@ -127,8 +127,8 @@ _container = init_container(_services, metrics_service)
 _ha_controls_cache_ref = _container.ha_controls_cache_ref
 # 注入 catalog 刷新回调：set_entity_note 写完备注立即触发，
 # 让新备注进 _ha_controls_cache_ref，不必等后台 60 秒循环。
-# 用 lambda 延迟引用 _refresh_ha_catalog（它在模块后部定义，调用时才解析）。
-_container.catalog_refresh_fn = lambda: _refresh_ha_catalog()
+# 用 lambda 延迟引用 refresh_ha_catalog_debounced（它在模块后部定义，调用时才解析）。
+_container.catalog_refresh_fn = lambda: refresh_ha_catalog_debounced()
 # RAG 服务（索引在 lifespan 启动阶段后台构建）
 from .services.rag_service import RagService
 rag_service = RagService(base_dir=BASE_DIR, embed_client=embed_client)
@@ -168,6 +168,81 @@ async def _rebuild_agent() -> None:
     logger.info("Agent rebuilt with %d tools", len(langchain_tools))
 
 
+def _make_plugin_tool_handler(integration_layer, plugin_id: str, tool_name: str):
+    """构造插件 agent 工具的宿主侧 handler：动态解析进程 → RPC tools.call。
+
+    进程在调用时现查（不闭包 proc 对象）——插件崩溃重启后 supervisor 会换新
+    PluginProcess，闭包旧对象会永久失效。插件不可达返回 tool_error 风格 dict，
+    交由 dispatcher 失败重试回路处理（supervisor 同时在拉起插件）。
+    """
+    async def _handler(parameters: dict, session) -> dict:
+        layer = integration_layer or (
+            _container.integration_layer if _container is not None else None)
+        if layer is None:
+            return {"error": f"插件 {plugin_id} 未启用"}
+        proc = next((p for pid, p in layer.get_agent_tool_plugins() if pid == plugin_id), None)
+        if proc is None:
+            return {"error": f"插件 {plugin_id} 未运行，工具不可用",
+                    "hint": "请到集成管理页检查插件状态，或如实告知用户该功能暂不可用。"}
+        from app.integration.rpc_protocol import METHOD_TOOLS_CALL
+        context = {
+            "user_id": getattr(session, "user_id", "") or "",
+            "query": getattr(session, "current_query", "") or "",
+        }
+        try:
+            return await proc.call(METHOD_TOOLS_CALL,
+                                   {"name": tool_name, "arguments": parameters,
+                                    "context": context})
+        except Exception as exc:
+            logger.warning("插件工具调用失败 %s/%s: %s", plugin_id, tool_name, exc)
+            return {"error": f"插件 {plugin_id} 未响应（可能正在重启），请稍后重试",
+                    "hint": "不要编造结果；如仍失败请如实告知用户该功能暂不可用。"}
+
+    return _handler
+
+
+async def _sync_plugin_agent_tools(integration_layer=None) -> None:
+    """拉取所有声明 agent_tools 的存活插件的工具，注册进 mcp_client_manager 并重建 agent。
+
+    清旧 → 拉新 → 重建：先移除全部插件命名空间的旧工具（插件侧工具可能已变更），
+    再按 tools.list 的定义重新注册（client_id=plugin_id，全名 plugin___tool 与
+    现有约定一致），最后复用 _rebuild_agent 全链路（JSON Schema→args_schema、
+    error/hint 渲染白得）。需持有 _rebuild_lock。
+    """
+    layer = integration_layer or (
+        _container.integration_layer if _container is not None else None)
+    if layer is None:
+        return
+    async with _rebuild_lock:
+        for pid, _proc in layer.get_agent_tool_plugins():
+            mcp_client_manager.unregister_client(pid)
+        registered = 0
+        for pid, proc in layer.get_agent_tool_plugins():
+            from app.integration.rpc_protocol import METHOD_TOOLS_LIST
+            try:
+                result = await asyncio.wait_for(proc.call(METHOD_TOOLS_LIST, {}), timeout=10)
+            except Exception as exc:
+                logger.warning("拉取插件 %s 工具定义失败（跳过）: %s", pid, exc)
+                continue
+            from .mcp.mcp_client_manager import MCPTool
+            for tool in result.get("tools", []):
+                name = str(tool.get("name", "")).strip()
+                if not name:
+                    continue
+                mcp_client_manager.register_tool(MCPTool(
+                    client_id=pid,
+                    tool_name=name,
+                    description=str(tool.get("description", "")),
+                    parameters=tool.get("parameters") or {"type": "object", "properties": {}},
+                    handler=_make_plugin_tool_handler(layer, pid, name),
+                ))
+                registered += 1
+            logger.info("插件 %s 注入 %d 个 agent 工具", pid, len(result.get("tools", [])))
+        await _rebuild_agent()
+        if registered:
+            logger.info("插件工具装配完成，共 %d 个", registered)
+
+
 def sync_ha_runtime_refs(new_client, new_service) -> None:
     """ha_routes 保存 HA 配置热替换 client/service 后，同步各持有旧对象的组件。
 
@@ -191,6 +266,11 @@ def sync_ha_runtime_refs(new_client, new_service) -> None:
     cm = _services.get("camera_manager")
     if cm is not None:
         cm.set_ha_service(new_service)
+    des = getattr(_container, "device_event_service", None)
+    if des is not None:
+        # set_ha_service 一直存在但从未被接线：不接的话 HA 配置改一次，
+        # 设备事件流就持续挂在已 close 的旧 service 上直到重启。
+        des.set_ha_service(new_service)
     td = getattr(_container, "tool_deps", None)
     if td is not None:
         td.ha_service = new_service
@@ -275,15 +355,40 @@ async def _refresh_ha_catalog() -> None:
         logger.warning("HA catalog refresh failed", exc_info=True)
 
 
+_catalog_refresh_lock: asyncio.Lock | None = None
+_catalog_refresh_dirty = False
+
+
+async def refresh_ha_catalog_debounced() -> None:
+    """目录刷新的并发合并入口：刷新进行中只标脏，由持锁者完成后补刷一次。
+
+    三条触发路径（60s 循环 / 写操作回调 / 请求内同步刷）此前各自直发
+    _refresh_ha_catalog，连改 N 条备注 = N 个并发全量快照重建，只有最后一份
+    有意义。加锁 + 脏标记把 N 次合并成最多 2 次。
+    """
+    global _catalog_refresh_lock, _catalog_refresh_dirty
+    if _catalog_refresh_lock is None:
+        _catalog_refresh_lock = asyncio.Lock()
+    if _catalog_refresh_lock.locked():
+        _catalog_refresh_dirty = True
+        return
+    async with _catalog_refresh_lock:
+        while True:
+            _catalog_refresh_dirty = False
+            await _refresh_ha_catalog()
+            if not _catalog_refresh_dirty:
+                return
+
+
 async def _ha_catalog_refresh_loop() -> None:
     """后台定时刷新 HA 设备目录缓存(每 60 秒)。
 
-    _refresh_ha_catalog 内部已吞掉业务异常，循环里只需处理取消。
+    refresh_ha_catalog_debounced 内部已吞掉业务异常，循环里只需处理取消。
     """
     await asyncio.sleep(5)
     while True:
         try:
-            await _refresh_ha_catalog()
+            await refresh_ha_catalog_debounced()
         except asyncio.CancelledError:
             break
         await asyncio.sleep(60)
@@ -310,6 +415,12 @@ async def lifespan(_: FastAPI):
     _startup_progress.set("正在初始化数据库...")
     # 初始化数据库
     await Database.init()
+
+    # 登出黑名单回灌：JWT 密钥跨重启持久，已登出的 token 重启后必须继续被拒
+    from .core.auth import load_revoked_tokens
+    _revoked_loaded = await load_revoked_tokens()
+    if _revoked_loaded:
+        logger.info("Restored %d revoked-token records from KV", _revoked_loaded)
 
     # 异步加载 emoji 索引（不阻塞启动）
     _background_task_mgr.spawn(emoji_service.load_index_async(), name="emoji_index_load")
@@ -378,6 +489,9 @@ async def lifespan(_: FastAPI):
         ha_service=ha_service,
         ha_client_ref=_ha_client_ref,
         camera_manager=_services.get("camera_manager"),   # 唯一摄像头来源(多路)
+        rule_service=rule_service,
+        rule_registry_service=rule_registry_service,
+        automation_service=automation_service,
     )
     register_all_tools(tool_deps)
     # 挂到容器：sync_ha_runtime_refs 热替换 HA service 时同步 ToolDeps 持有的引用
@@ -413,6 +527,10 @@ async def lifespan(_: FastAPI):
                        "llm_chat_client": llm_chat_client,
                        "camera_manager": _services.get("camera_manager")},
         )
+        # 插件启停/重启后刷新其注入的 agent 工具（tools.list → MCPTool → rebuild agent）。
+        # 闭包传 layer：start() 时 _container.integration_layer 还未赋值。
+        integration_layer.on_plugin_tools_changed = (
+            lambda: _sync_plugin_agent_tools(integration_layer))
         try:
             await integration_layer.start()
             _container.integration_layer = integration_layer
@@ -430,7 +548,7 @@ async def lifespan(_: FastAPI):
         agent=langgraph_agent,
         ha_catalog_provider=_get_ha_device_catalog,
         ha_controls_provider=_get_ha_device_controls,
-        catalog_refresh_fn=_refresh_ha_catalog,  # controls 空时同步刷新,确保备注不缺位
+        catalog_refresh_fn=refresh_ha_catalog_debounced,  # controls 空时同步刷新,确保备注不缺位
         vision_service=vision_service,
         ha_service=ha_service,
         validator=ValidatorAgent(max_retries=1),
@@ -439,7 +557,10 @@ async def lifespan(_: FastAPI):
         camera_manager=_services.get("camera_manager"),   # Task 9:多路
         sink_manager=integration_layer.sink_manager if integration_layer else None,
     )
-    dispatcher._tools = langchain_tools  # 供 per-user agent 构建使用
+    # per-user agent 构建用工具列表：现转一遍（此时插件工具可能已在
+    # start() 触发的 _sync_plugin_agent_tools 里注册，本地 langchain_tools
+    # 是旧快照，直接用会漏插件工具）。
+    dispatcher._tools = convert_all_tools(mcp_client_manager)
     _container.dispatcher = dispatcher
 
     # 启动自动化评估（dhash 事件触发(仅视觉) + 视觉/非视觉双静默兜底）
@@ -492,7 +613,7 @@ async def lifespan(_: FastAPI):
     _container.device_event_service = DeviceEventService(ha_service=_container.ha_service)
     await _container.device_event_service.start()
 
-    # ── 家庭周报（默认关闭，weekly_report.enabled 开启）──
+    # ── 家庭周报（默认开启，weekly_report.enabled=false 关闭）──
     from .services.weekly_report_service import WeeklyReportService
     _container.weekly_report_service = WeeklyReportService(llm_chat_client=llm_chat_client)
     await _container.weekly_report_service.start()
@@ -640,7 +761,12 @@ async def lifespan(_: FastAPI):
     # 多路停止
     cm = _services.get("camera_manager")
     if cm is not None:
-        await _safe_stop("camera manager", asyncio.to_thread(cm.stop))
+        # cm.stop 是同步阻塞调用，包一层 async 统一走 _safe_stop
+        # （直接传 asyncio.to_thread(...) 协程对象的话，_safe_stop 里的
+        #   await fn() 会把协程当函数调用 → TypeError，停止流程被跳过）
+        async def _stop_camera_manager() -> None:
+            await asyncio.to_thread(cm.stop)
+        await _safe_stop("camera manager", _stop_camera_manager)
     # 回收 dispatcher 持有的所有 agent httpx 客户端（全局 + per-user），防连接池泄漏
     if dispatcher is not None:
         await _safe_stop("dispatcher clients", dispatcher.close_all_agent_clients)
@@ -780,6 +906,9 @@ async def api_token_guard(request, call_next):
             else:
                 # token 有效：执行路由。注意 call_next 必须在 try 之外，
                 # 否则路由本身的异常会被误吞成 401。
+                # 解码结果挂在 request.state，get_current_user 依赖直接复用，
+                # 省掉每请求第二次 JWT decode。
+                request.state.jwt_payload = payload
                 return await call_next(request)
 
     # 向后兼容：检查 APP_TOKEN（仅 header，compare_digest 防时序侧信道）

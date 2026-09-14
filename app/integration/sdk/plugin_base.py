@@ -1,6 +1,7 @@
 """IntegrationPlugin 基类 —— 插件进程内继承。"""
 
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Any, Awaitable, Callable
 
 from ..rpc_protocol import (
     METHOD_HOST_BROADCAST,
@@ -12,10 +13,14 @@ from ..rpc_protocol import (
     METHOD_HOST_HA_DEVICES,
     METHOD_HOST_HA_STATES,
     METHOD_HOST_LLM_CHAT,
+    METHOD_HOST_MODE_GET,
+    METHOD_HOST_MODE_SET,
     METHOD_INTERRUPT,
     METHOD_ROUTE,
     METHOD_SHUTDOWN,
     METHOD_SPEAK,
+    METHOD_TOOLS_CALL,
+    METHOD_TOOLS_LIST,
 )
 from .sink_base import OutputSink
 
@@ -26,7 +31,25 @@ _METHOD_CAPABILITY: dict[str, str] = {
     METHOD_SPEAK: "output_sink",
     METHOD_INTERRUPT: "output_sink",
     METHOD_ROUTE: "inbound_router",
+    METHOD_TOOLS_LIST: "agent_tools",
+    METHOD_TOOLS_CALL: "agent_tools",
 }
+
+
+@dataclass
+class ToolDefinition:
+    """插件向 LLM agent 注入的一个工具声明（agent_tools 能力）。
+
+    name/description/parameters 与 MCPTool 语义一致（parameters 为 JSON Schema）；
+    handler 在插件进程内执行，签名 ``(arguments, context) -> dict``：
+    - arguments：LLM 产出的工具参数（已按 parameters 校验形态由宿主侧 LangChain 层保证）
+    - context：精简会话上下文 {"user_id": str, "query": str}，不含会话历史
+    返回 dict 约定同宿主工具：{"error": ...} 为失败，可带 hint/candidates。
+    """
+    name: str
+    description: str
+    parameters: dict = field(default_factory=lambda: {"type": "object", "properties": {}})
+    handler: Callable[[dict, dict], Awaitable[dict]] | None = None
 
 
 class _HostHA:
@@ -57,6 +80,24 @@ class _HostLLM:
 
     async def chat(self, messages: list, timeout: float | None = None) -> dict:
         return await self._call(METHOD_HOST_LLM_CHAT, {"messages": messages, "timeout": timeout})
+
+
+class _HostMode:
+    """host.mode 子代理：读写全局聊天模式（integration.current_mode）。
+
+    manifest 声明 permissions=["mode"] 后可用。模式状态唯一存在于宿主，
+    插件只发切换请求，不保存状态（前端 UI 切换与插件切换写同一个值）。
+    """
+
+    def __init__(self, host_call) -> None:
+        self._call = host_call
+
+    async def set(self, mode: str) -> dict:
+        return await self._call(METHOD_HOST_MODE_SET, {"mode": mode})
+
+    async def get(self) -> str:
+        result = await self._call(METHOD_HOST_MODE_GET, {})
+        return str(result.get("mode", "aether"))
 
 
 class _HostCamera:
@@ -98,6 +139,7 @@ class HostProxy:
         self._call = host_call
         self.ha = _HostHA(host_call)
         self.llm = _HostLLM(host_call)
+        self.mode = _HostMode(host_call)
         self.camera = _HostCamera(host_call)
 
     async def broadcast(self, text: str, msg_id: str = "") -> dict:
@@ -117,6 +159,9 @@ class IntegrationPlugin:
         self.manifest: dict[str, Any] = {}
         self.sinks: list[OutputSink] = []
         self.routers: list[Any] = []  # list[InboundRouter]，用 Any 避免循环导入
+        # 插件向 LLM agent 注入的工具（agent_tools 能力）。
+        # 子类在 setup() 里构建；宿主经 tools.list 拉定义、tools.call 调执行。
+        self.tools: list[ToolDefinition] = []
         # 宿主反向调用代理：runtime 在 setup 前注入；未注入时为 None（旧部署兼容）。
         self.host: HostProxy | None = None
         # 插件自定义 RPC 方法表（method → handler）。
@@ -191,4 +236,19 @@ class IntegrationPlugin:
                 return {"error": "no router registered"}
             router = self.routers[0]
             return await router.route(text=params.get("text", ""))
+        if method == METHOD_TOOLS_LIST:
+            # 只回定义（name/description/parameters），handler 不可序列化也不外传
+            return {"tools": [
+                {"name": t.name, "description": t.description,
+                 "parameters": t.parameters}
+                for t in self.tools
+            ]}
+        if method == METHOD_TOOLS_CALL:
+            name = str(params.get("name", ""))
+            definition = next((t for t in self.tools if t.name == name), None)
+            if definition is None or definition.handler is None:
+                return {"error": f"unknown tool: {name}"}
+            arguments = params.get("arguments") or {}
+            context = params.get("context") or {}
+            return await definition.handler(arguments, context)
         return {"error": f"unknown method: {method}"}

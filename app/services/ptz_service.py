@@ -24,8 +24,6 @@ from typing import Any
 
 from urllib.parse import urlparse
 
-from ..core.config import get_config
-
 logger = logging.getLogger(__name__)
 
 
@@ -59,9 +57,10 @@ class PtzService:
     连接失败标记 _broken，下次调用自动重连，避免每条指令都吃超时。
     """
 
-    def __init__(self, camera_id: str = "", config: dict | None = None) -> None:
-        # Task 5:per-camera 参数化。config 非空时从 cameras 行读 ptz_* 字段;
-        # config=None 时回退读全局 get_config("ptz.*")(向后兼容旧单例)。
+    def __init__(self, camera_id: str, config: dict | None = None) -> None:
+        # per-camera 参数化：ptz_* 字段来自 cameras 行（ptz_registry 注入）。
+        # 旧的全局 get_config("ptz.*") 回退分支已删——config.json 的 ptz 段已移除，
+        # 未知 camera_id（行缺失）时 _enabled 恒 False，即"该路无 PTZ"。
         self.camera_id = camera_id
         self._config = config or {}
         self._cam = None
@@ -72,9 +71,7 @@ class PtzService:
         self._step_token = 0  # 最新步进序号；新 step 使进行中的旧 step 提前交权
 
     def _enabled(self) -> bool:
-        if self._config:
-            return bool(self._config.get("ptz_enabled", 0))
-        return bool(get_config("ptz.enabled", False))
+        return bool(self._config.get("ptz_enabled", 0))
 
     async def _ensure_connected(self) -> bool:
         """懒加载 + 断线重连。返回是否就绪。已连接直接返回 True。
@@ -83,20 +80,12 @@ class PtzService:
             return True
         if not self._enabled():
             return False
-        # Task 5:per-camera 从 config 读;旧路径从 get_config 读
-        if self._config:
-            ip = str(self._config.get("ptz_ip", ""))
-            port = int(self._config.get("ptz_port", 80))
-            user = str(self._config.get("ptz_username", ""))
-            pwd = str(self._config.get("ptz_password", ""))   # cameras 表存明文
-        else:
-            ip = str(get_config("ptz.ip", ""))
-            port = int(get_config("ptz.port", 80))
-            user = str(get_config("ptz.username", ""))
-            pwd_env = str(get_config("ptz.password_env", ""))
-            pwd = os.getenv(pwd_env, "") if pwd_env else ""
+        ip = str(self._config.get("ptz_ip", ""))
+        port = int(self._config.get("ptz_port", 80))
+        user = str(self._config.get("ptz_username", ""))
+        pwd = str(self._config.get("ptz_password", ""))   # cameras 表存明文
         if not ip:
-            logger.warning("PTZ ip not configured (cam=%s)", self.camera_id or "global")
+            logger.warning("PTZ ip not configured (cam=%s)", self.camera_id)
             return False
         try:
             import onvif
@@ -122,20 +111,17 @@ class PtzService:
             return False
 
     def _speed(self) -> float:
-        if self._config:
-            return max(0.1, min(1.0, float(self._config.get("ptz_speed", 0.5))))
-        return max(0.1, min(1.0, float(get_config("ptz.speed", 0.5))))
+        return max(0.1, min(1.0, float(self._config.get("ptz_speed", 0.5))))
 
     def notify_ip_changed(self, new_ip: str, camera_id: str = "") -> None:
         """通知 PTZ 摄像头 IP 已变(由 discovery 调用):作废缓存连接。
 
-        Task 3:加 camera_id 参数(过渡兼容,默认空串=旧行为)。完整 per-camera
-        PTZ 在 Task 5 PtzRegistry 处理。config.ptz.ip 已被 discovery 更新过
-        (写入内存 + 磁盘),这里只清掉旧 IP 建的 ONVIFCamera 缓存,下次
-        _ensure_connected 会读新 config 的 IP 懒重连。同步操作,不需锁。
+        IP 变更由 discovery 写回 cameras 行后通知；这里只清掉旧 IP 建的
+        ONVIFCamera 缓存,下次 _ensure_connected 会读行内新 IP 懒重连。
+        同步操作,不需锁。
         """
         logger.info("PTZ notified of IP change → %s (cam=%s), will reconnect",
-                    new_ip, camera_id or "global")
+                    new_ip, camera_id)
         self._cam = None
         self._ptz = None
         self._profile_token = None

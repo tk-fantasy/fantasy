@@ -8,6 +8,9 @@ extract_host_from_url 已在 test_ptz_config.py 覆盖，此处聚焦：
 
 onvif-zeep-async 4.x 的 ONVIFCamera 是 async API，ptz_service 全 async，
 service 方法（GetProfiles/ContinuousMove/Stop）也是 async，测试用 AsyncMock。
+
+构造统一走 _svc()：全局 config("ptz.*") 回退分支已删，PtzService 只认
+cameras 行的 ptz_* 字段（与 PtzRegistry 的注入方式一致）。
 """
 from __future__ import annotations
 
@@ -17,6 +20,20 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.services.ptz_service import PtzService, _DIRECTION_VECTORS, extract_host_from_url
+
+_BASE_CFG = {
+    "ptz_enabled": 1,
+    "ptz_ip": "10.0.0.1",
+    "ptz_port": 80,
+    "ptz_username": "u",
+    "ptz_password": "p",
+    "ptz_speed": 0.5,
+}
+
+
+def _svc(overrides: dict | None = None) -> PtzService:
+    cfg = {**_BASE_CFG, **(overrides or {})}
+    return PtzService("cam1", cfg)
 
 
 class TestDirectionVectors:
@@ -44,14 +61,14 @@ class TestMoveUnknownDirection:
 
     @pytest.mark.asyncio
     async def test_move_unknown_direction(self):
-        svc = PtzService()
+        svc = _svc()
         result = await svc.move("sideways")
         assert result["success"] is False
         assert "unknown direction" in result["error"]
 
     @pytest.mark.asyncio
     async def test_step_unknown_direction(self):
-        svc = PtzService()
+        svc = _svc()
         result = await svc.step("diagonal", 100)
         assert result["success"] is False
         assert "unknown direction" in result["error"]
@@ -62,37 +79,28 @@ class TestEnsureConnected:
 
     @pytest.mark.asyncio
     async def test_disabled_returns_false(self):
-        svc = PtzService()
-        with patch("app.services.ptz_service.get_config", return_value=False):
-            assert await svc._ensure_connected() is False
+        svc = _svc({"ptz_enabled": 0})
+        assert await svc._ensure_connected() is False
 
     @pytest.mark.asyncio
     async def test_no_ip_returns_false(self):
-        svc = PtzService()
-        cfg = {"ptz.enabled": True, "ptz.ip": "", "ptz.port": 80,
-               "ptz.username": "u", "ptz.password_env": "PWD"}
-        with patch("app.services.ptz_service.get_config", side_effect=lambda p, d=None: cfg.get(p, d)):
-            assert await svc._ensure_connected() is False
+        svc = _svc({"ptz_ip": ""})
+        assert await svc._ensure_connected() is False
 
     @pytest.mark.asyncio
     async def test_connect_failure_marks_broken(self):
-        svc = PtzService()
-        cfg = {"ptz.enabled": True, "ptz.ip": "10.0.0.1", "ptz.port": 80,
-               "ptz.username": "u", "ptz.password_env": "PWD"}
+        svc = _svc()
 
         onvif_mod = MagicMock()
         onvif_mod.ONVIFCamera = MagicMock(side_effect=Exception("connect fail"))
         onvif_mod.__file__ = "/fake/onvif/__init__.py"
-        with patch("app.services.ptz_service.get_config", side_effect=lambda p, d=None: cfg.get(p, d)), \
-             patch.dict("sys.modules", {"onvif": onvif_mod}):
+        with patch.dict("sys.modules", {"onvif": onvif_mod}):
             assert await svc._ensure_connected() is False
             assert svc._broken is True
 
     @pytest.mark.asyncio
     async def test_successful_connect(self):
-        svc = PtzService()
-        cfg = {"ptz.enabled": True, "ptz.ip": "10.0.0.1", "ptz.port": 80,
-               "ptz.username": "u", "ptz.password_env": "PWD"}
+        svc = _svc()
 
         # mock ONVIFCamera + media/ptz service（4.x service 方法是 async）
         profile = MagicMock()
@@ -107,17 +115,14 @@ class TestEnsureConnected:
         onvif_mod = MagicMock()
         onvif_mod.ONVIFCamera = MagicMock(return_value=cam)
         onvif_mod.__file__ = "/fake/onvif/__init__.py"
-        with patch("app.services.ptz_service.get_config", side_effect=lambda p, d=None: cfg.get(p, d)), \
-             patch.dict("sys.modules", {"onvif": onvif_mod}):
+        with patch.dict("sys.modules", {"onvif": onvif_mod}):
             assert await svc._ensure_connected() is True
             assert svc._broken is False
             assert svc._profile_token == "profile-0"
 
     @pytest.mark.asyncio
     async def test_no_profiles_marks_broken(self):
-        svc = PtzService()
-        cfg = {"ptz.enabled": True, "ptz.ip": "10.0.0.1", "ptz.port": 80,
-               "ptz.username": "u", "ptz.password_env": "PWD"}
+        svc = _svc()
 
         media = MagicMock()
         media.GetProfiles = AsyncMock(return_value=[])  # 无 profile
@@ -128,8 +133,7 @@ class TestEnsureConnected:
         onvif_mod = MagicMock()
         onvif_mod.ONVIFCamera = MagicMock(return_value=cam)
         onvif_mod.__file__ = "/fake/onvif/__init__.py"
-        with patch("app.services.ptz_service.get_config", side_effect=lambda p, d=None: cfg.get(p, d)), \
-             patch.dict("sys.modules", {"onvif": onvif_mod}):
+        with patch.dict("sys.modules", {"onvif": onvif_mod}):
             assert await svc._ensure_connected() is False
             assert svc._broken is True
 
@@ -145,9 +149,8 @@ class TestSpeedClamping:
         (2.0, 1.0),   # 超上限
     ])
     def test_speed_clamped(self, cfg_val, expected):
-        svc = PtzService()
-        with patch("app.services.ptz_service.get_config", return_value=cfg_val):
-            assert svc._speed() == expected
+        svc = _svc({"ptz_speed": cfg_val})
+        assert svc._speed() == expected
 
 
 class TestStop:
@@ -155,7 +158,7 @@ class TestStop:
 
     @pytest.mark.asyncio
     async def test_stop_not_connected(self):
-        svc = PtzService()
+        svc = _svc()
         with patch.object(svc, "_ensure_connected", new=AsyncMock(return_value=False)):
             result = await svc.stop()
             assert result["success"] is False
@@ -163,7 +166,7 @@ class TestStop:
 
     @pytest.mark.asyncio
     async def test_stop_connected_returns_success(self):
-        svc = PtzService()
+        svc = _svc()
         svc._ptz = MagicMock()
         svc._ptz.Stop = AsyncMock(return_value=None)
         svc._profile_token = "tok"
@@ -178,7 +181,7 @@ class TestMoveConnected:
 
     @pytest.mark.asyncio
     async def test_move_success(self):
-        svc = PtzService()
+        svc = _svc()
         svc._ptz = MagicMock()
         svc._ptz.ContinuousMove = AsyncMock(return_value=None)
         svc._ptz.Stop = AsyncMock(return_value=None)
@@ -196,7 +199,7 @@ class TestMoveConnected:
 
     @pytest.mark.asyncio
     async def test_move_failure_marks_broken(self):
-        svc = PtzService()
+        svc = _svc()
         svc._ptz = MagicMock()
         svc._ptz.ContinuousMove = AsyncMock(side_effect=Exception("move fail"))
         svc._ptz.Stop = AsyncMock(return_value=None)
@@ -215,7 +218,7 @@ class TestStep:
 
     @pytest.mark.asyncio
     async def test_step_success_short_duration(self):
-        svc = PtzService()
+        svc = _svc()
         svc._ptz = MagicMock()
         svc._ptz.ContinuousMove = AsyncMock(return_value=None)
         svc._ptz.Stop = AsyncMock(return_value=None)
@@ -232,7 +235,7 @@ class TestStep:
     @pytest.mark.asyncio
     async def test_step_interrupted_by_new_step(self):
         """新 step 到来 → 旧 step 提前交权，不发 Stop。"""
-        svc = PtzService()
+        svc = _svc()
         svc._ptz = MagicMock()
         svc._ptz.ContinuousMove = AsyncMock(return_value=None)
         svc._ptz.Stop = AsyncMock(return_value=None)
@@ -254,11 +257,11 @@ class TestStep:
 
 
 class TestNotifyIpChanged:
-    """notify_ip_changed: 作废缓存连接,下次 _ensure_connected 用新 config IP 重连。"""
+    """notify_ip_changed: 作废缓存连接,下次 _ensure_connected 用行内新 IP 重连。"""
 
     @pytest.mark.asyncio
     async def test_marks_broken_and_clears_connection(self):
-        svc = PtzService()
+        svc = _svc()
         # 模拟已有连接
         svc._cam = MagicMock()
         svc._ptz = MagicMock()

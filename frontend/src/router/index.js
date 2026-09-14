@@ -93,6 +93,7 @@ const routes = [
     path: '/operations',
     name: 'Operations',
     component: () => import('../views/OperationsView.vue'),
+    meta: { adminOnly: true },
   },
   {
     path: '/monitor',
@@ -122,9 +123,10 @@ const router = createRouter({
 let backendReady = false
 export function markBackendReady() { backendReady = true }
 
-// 路由守卫：未登录重定向到 /login；后端未就绪重定向到 /loading
+// 路由守卫：未登录重定向到 /login；后端未就绪重定向到 /loading；
+// adminOnly 路由仅管理员可达（手输 URL 也不放行）
 router.beforeEach((to, from, next) => {
-  const { isAuthenticated } = useAuth()
+  const { isAuthenticated, user } = useAuth()
 
   // 公开路由（不需要登录）
   const publicRoutes = ['Login']
@@ -146,6 +148,11 @@ router.beforeEach((to, from, next) => {
   // Loading 自身、Setup 等不需此后端就绪（Loading 就是来确认就绪的）。
   if (!backendReady && !['Loading', 'Setup', 'Landing'].includes(to.name)) {
     return next({ name: 'Loading', query: { redirect: to.fullPath } })
+  }
+
+  // 管理员专属路由：非管理员回聊天页
+  if (to.meta?.adminOnly && !user?.value?.is_admin) {
+    return next('/chat')
   }
 
   next()

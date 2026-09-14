@@ -67,16 +67,34 @@ def test_motion_triggers_automation_callback():
 
 
 def test_latest_jpeg_produced():
-    """注入帧 → MJPEG 用的最新 JPEG 帧生成。"""
+    """注入帧 → MJPEG 用的最新 JPEG 帧生成（有观众时）。"""
     stream = _make_stream(frame_interval_ms=0)
     stream.start()
     try:
+        stream._viewers = 1  # 有观众才编码（按需编码契约）
         stream.enqueue_frame(_frame(128))
         deadline = time.time() + 2
         while stream.get_jpeg() is None and time.time() < deadline:
             time.sleep(0.02)
         jpeg = stream.get_jpeg()
         assert jpeg is not None and jpeg[:2] == b"\xff\xd8"  # JPEG SOI
+    finally:
+        stream.stop()
+
+
+def test_no_viewer_skips_jpeg_encoding():
+    """无观众 → 注入帧只走采集/推理管线，不产出 JPEG（省 CPU）。"""
+    stream = _make_stream(frame_interval_ms=0)
+    stream.start()
+    try:
+        stream.enqueue_frame(_frame(128))
+        deadline = time.time() + 0.5
+        while time.time() < deadline and stream.get_state().get("camera_opened") is not True:
+            time.sleep(0.02)
+        # 管线在跑（状态已更新），但没人看 → 不编码
+        assert stream.get_state()["camera_opened"] is True
+        assert stream.get_latest_frame() is not None
+        assert stream.get_jpeg() is None
     finally:
         stream.stop()
 
