@@ -2052,9 +2052,9 @@ class TestMainMiddlewareAndSpa:
         # 存在的静态文件 → FileResponse
         resp = await main.spa_fallback("real.txt")
         assert resp.status_code == 200 and Path(resp.path).name == "real.txt"
-        # 不存在且无 index.html → 重定向 /landing
+        # 不存在且无 index.html → 重定向 /chat
         resp = await main.spa_fallback("missing-page")
-        assert resp.status_code == 307 and resp.headers["location"] == "/landing"
+        assert resp.status_code == 307 and resp.headers["location"] == "/chat"
 
     async def test_spa_fallback_serves_index(self, tmp_path, monkeypatch):
         import app.main as main

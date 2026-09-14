@@ -1250,4 +1250,4 @@ async def spa_fallback(full_path: str):
     if index_path.is_file():
         return FileResponse(index_path)
 
-    return RedirectResponse(url="/landing")
+    return RedirectResponse(url="/chat")

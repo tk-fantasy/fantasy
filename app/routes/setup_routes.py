@@ -21,7 +21,7 @@ router = APIRouter()
 
 @router.get("/")
 async def index() -> RedirectResponse:
-    return RedirectResponse(url="/landing")
+    return RedirectResponse(url="/chat")
 
 
 @router.get("/favicon.ico")
