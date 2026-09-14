@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from typing import Any
 
 # 插件进程能 import app.* 依赖 PYTHONPATH 包含项目根（容器内 /aether）
-from app.integration.sdk.plugin_base import IntegrationPlugin
+from app.integration.sdk.plugin_base import IntegrationPlugin, ToolDefinition
 from app.integration.sdk.router_base import InboundRouter
 from app.integration.sdk.sink_base import OutputSink
 
@@ -251,12 +251,60 @@ class XiaoAiPlugin(IntegrationPlugin):
         execute_mode = schema.get("execute_mode", {}).get("default", "speak")
 
         # Phase 3：HA 调用经反向 RPC 走宿主 ha_client（runtime 在 setup 前注入 host）。
-        # 凭证不再进插件进程；权限由 manifest permissions=["ha"] 声明，宿主校验。
+        # 凭证不再进插件进程；权限由 manifest permissions=["ha","mode"] 声明，宿主校验。
         self.ha_caller = self.host.ha
 
         self.resolver = XiaoAiResolver(self.ha_caller, entity_id)
         self.sinks = [XiaoAiSink(self.ha_caller, self.resolver, execute_mode)]
         self.routers = [XiaoAiRouter(self.ha_caller, self.resolver)]
+        self.tools = [ToolDefinition(
+            name="xiaoai_direct_mode",
+            description=(
+                "【小爱直通模式开关】用户想\"开启小爱直通模式/把说话交给小爱直接执行/切到小爱\""
+                "时传 action=enter；想\"退出直通/回到智能助手\"时传 action=exit"
+                "（普通模式下用户说退出也调本工具兜底，幂等）；action=status 查询当前模式。"
+                "进入前会先校验小爱音箱在线，离线会报错且不会进入直通。"
+            ),
+            parameters={"type": "object", "properties": {
+                "action": {"type": "string", "enum": ["enter", "exit", "status"],
+                           "description": "enter=进入直通, exit=退出直通, status=查询"},
+            }, "required": ["action"]},
+            handler=self._handle_direct_mode,
+        )]
+
+    async def _handle_direct_mode(self, arguments: dict, context: dict) -> dict:
+        """xiaoai_direct_mode 工具执行（插件进程内，经 host.mode 反向 RPC 切模式）。
+
+        模式状态唯一存在于宿主（integration.current_mode），插件只发切换请求；
+        enter 前置 resolve 校验——音箱不可用时不进入直通，避免用户说话无人应答。
+        """
+        action = str(arguments.get("action", "")).strip().lower()
+        if action not in ("enter", "exit", "status"):
+            return {"error": f"未知 action: {action}",
+                    "hint": "action 只能是 enter/exit/status。"}
+        if self.host is None:
+            return {"error": "宿主未注入反向调用代理，无法切换模式"}
+
+        # speaker 信息尽力附带：resolve 失败不阻塞 exit/status（enter 见下）
+        speaker = ""
+        try:
+            speaker = (await self.resolver.resolve()).slug
+        except XiaoAiResolveError as exc:
+            if action in ("enter", "status"):
+                return {"error": str(exc),
+                        "hint": "小爱音箱不可用；不要进入/查询直通，请如实告知用户检查音箱。"}
+
+        if action == "enter":
+            await self.host.mode.set("xiaoai_direct")
+            return {"ok": True, "mode": "xiaoai_direct", "speaker": speaker,
+                    "message": ("已进入小爱直通模式，后续内容将由小爱直接执行；"
+                                "说「退出直通」可返回智能助手")}
+        if action == "exit":
+            await self.host.mode.set("aether")
+            return {"ok": True, "mode": "aether", "speaker": speaker,
+                    "message": "已退出直通模式，继续由智能助手为你服务"}
+        mode = await self.host.mode.get()
+        return {"ok": True, "mode": mode, "speaker": speaker}
 
 
 if __name__ == "__main__":  # pragma: no cover — 真实 stdio 插件进程入口，由 slow e2e 覆盖

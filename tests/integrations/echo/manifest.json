@@ -1,7 +1,7 @@
 {
     "id": "echo",
     "name": "回声测试",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "aether_api_version": "1",
     "entry": "plugin.py",
     "capabilities": [
@@ -10,6 +10,13 @@
             "id": "echo_main",
             "priority": 100,
             "config_schema": {}
+        },
+        {
+            "type": "agent_tools",
+            "id": "echo_tools",
+            "priority": 0,
+            "config_schema": {}
         }
-    ]
+    ],
+    "permissions": ["mode"]
 }

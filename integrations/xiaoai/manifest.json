@@ -1,10 +1,10 @@
 {
     "id": "xiaoai",
     "name": "小爱音箱",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "aether_api_version": "1",
     "author": "Aether",
-    "description": "小爱 TTS 广播（Phase 3: 反向 RPC 调宿主 HA）",
+    "description": "小爱 TTS 广播 + 直通路由 + 直通模式开关工具（agent_tools 注入）",
     "entry": "plugin.py",
     "capabilities": [
         {
@@ -31,9 +31,15 @@
             "id": "xiaoai_direct",
             "priority": 50,
             "config_schema": {}
+        },
+        {
+            "type": "agent_tools",
+            "id": "xiaoai_tools",
+            "priority": 0,
+            "config_schema": {}
         }
     ],
-    "permissions": ["ha"],
+    "permissions": ["ha", "mode"],
     "secrets": [],
     "ui_contributions": [
         {

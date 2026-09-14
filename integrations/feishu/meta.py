@@ -1,8 +1,8 @@
 """飞书集成元信息（供插件管理页显示）。"""
 
 NAME = "飞书机器人"
-VERSION = "1.0.1"
-DESCRIPTION = "飞书聊天机器人（WebSocket 长连接，私聊/群聊 @机器人）"
+VERSION = "1.1.0"
+DESCRIPTION = "飞书聊天机器人（WebSocket 长连接，私聊/群聊 @机器人；告警/周报主动推送）"
 CAPABILITIES = ["host_integration"]  # 宿主侧集成（非子进程）
 
 # 管理页弹窗配置表单声明。secret 字段读取时脱敏回显、保存留空=保持原值；
@@ -31,5 +31,11 @@ CONFIG_SCHEMA = {
         "required": False,
         "label": "Encrypt Key",
         "placeholder": "未启用事件加密可留空",
+    },
+    "notify_chat_id": {
+        "type": "string",
+        "required": False,
+        "label": "推送目标 chat_id",
+        "placeholder": "可选：告警/周报主动推送目标；留空则推送到最近活跃会话",
     },
 }

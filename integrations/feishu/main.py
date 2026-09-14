@@ -26,6 +26,7 @@ _ENV_FALLBACK = {
     "app_secret": "FEISHU_APP_SECRET",
     "verification_token": "FEISHU_VERIFICATION_TOKEN",
     "encrypt_key": "FEISHU_ENCRYPT_KEY",
+    "notify_chat_id": "FEISHU_NOTIFY_CHAT_ID",
 }
 
 
@@ -47,6 +48,21 @@ def _read_config() -> tuple[dict, str]:
         cfg[key] = value
     source = "ui" if any(str(ui.get(k, "") or "").strip() for k in _ENV_FALLBACK) else "env"
     return cfg, source
+
+
+def _register_notifier(bot: "FeishuBot") -> None:
+    """把自己注册为宿主告警/周报的推送渠道（alert_service Notifier 协议）。
+
+    解耦方式：宿主核心零 import 本插件——插件自愿向核心单例 alert_service
+    注册（方向与子进程插件的反向 RPC 一致）。注册失败只降级为"无飞书推送"，
+    聊天与告警主流程都不受影响。stop() 时注销，热重启不残留死渠道。
+    """
+    try:
+        from app.services.alert_service import alert_service
+        alert_service.register_notifier("feishu", bot.notify)
+        logger.info("飞书已注册为告警/周报推送渠道")
+    except Exception:
+        logger.warning("飞书通知渠道注册失败（聊天功能不受影响）", exc_info=True)
 
 
 def start(dispatch_fn, loop):
@@ -71,9 +87,11 @@ def start(dispatch_fn, loop):
             app_secret=cfg["app_secret"],
             verification_token=cfg.get("verification_token", ""),
             encrypt_key=cfg.get("encrypt_key", ""),
+            notify_chat_id=cfg.get("notify_chat_id", ""),
         )
         _bot.start(dispatch_fn, loop)
         logger.info("飞书 WebSocket 长连接已启动（凭证来源: %s）: %s", source, cfg["app_id"][:10] + "...")
+        _register_notifier(_bot)
         return _bot
     except Exception:
         logger.exception("飞书长连接启动失败（non-fatal）")
@@ -83,6 +101,11 @@ def start(dispatch_fn, loop):
 def stop():
     """停止飞书长连接。"""
     global _bot
+    try:
+        from app.services.alert_service import alert_service
+        alert_service.unregister_notifier("feishu")
+    except Exception:
+        pass
     if _bot:
         _bot.stop()
         _bot = None
