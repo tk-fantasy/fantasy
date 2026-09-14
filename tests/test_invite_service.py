@@ -127,6 +127,40 @@ class TestRegistrationGate:
         assert ei.value.http_status == 404
 
 
+class TestInviteExpiry:
+    @pytest.mark.asyncio
+    async def test_create_invite_sets_24h_expiry(self):
+        db = _mock_db(user_count=1)
+        entry = await invite_service.create_invite(db, created_by="admin")
+        assert entry["expires_at"] - entry["created_at"] == invite_service._INVITE_TTL_MS
+
+    @pytest.mark.asyncio
+    async def test_expired_invite_rejected_with_unified_message(self):
+        """过期码与不存在的码同一句报错，不泄露状态侧信道。"""
+        db = _mock_db(user_count=1)
+        entry = await invite_service.create_invite(db, created_by="admin")
+        invites = json.loads(db._store[invite_service._KV_INVITE_CODES])
+        invites[0]["expires_at"] = invites[0]["created_at"] - 1000
+        db._store[invite_service._KV_INVITE_CODES] = json.dumps(invites)
+
+        with pytest.raises(AppException) as expired:
+            await invite_service.verify_registration_code(db, entry["code"], username="late")
+        with pytest.raises(AppException) as invalid:
+            await invite_service.verify_registration_code(db, "ZZZZ-ZZZZ", username="x")
+        assert expired.value.message == invalid.value.message
+        assert expired.value.http_status == 403
+
+    @pytest.mark.asyncio
+    async def test_legacy_invite_without_expiry_still_works(self):
+        """存量条目无 expires_at 字段 → 永不过期。"""
+        db = _mock_db(user_count=1)
+        entry = await invite_service.create_invite(db, created_by="admin")
+        invites = json.loads(db._store[invite_service._KV_INVITE_CODES])
+        del invites[0]["expires_at"]
+        db._store[invite_service._KV_INVITE_CODES] = json.dumps(invites)
+        await invite_service.verify_registration_code(db, entry["code"], username="mom")
+
+
 class TestRegisterRouteGating:
     """注册路由级：门控先于用户写入生效。"""
 

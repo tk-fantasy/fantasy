@@ -12,6 +12,7 @@
 
 码存储走 KV 表（auth_setup_code / auth_invite_codes），随 SQLite 持久化，
 不进 config.json（避免与配置读写锁纠缠）。
+邀请码签发后 24 小时未用自动失效（expires_at），存量无该字段的条目视为永不过期。
 """
 from __future__ import annotations
 
@@ -27,6 +28,9 @@ logger = logging.getLogger(__name__)
 
 _KV_SETUP_CODE = "auth_setup_code"
 _KV_INVITE_CODES = "auth_invite_codes"
+
+# 签发后有效期：到期未用的码自动失效，兜住"码泄露长期潜伏"（防当场泄露靠一次性+吊销）
+_INVITE_TTL_MS = 24 * 3600 * 1000
 
 # 去掉易混淆字符（0/O、1/I/L）的码表，8 位分两组，人工抄写不易错
 _CODE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ"
@@ -125,6 +129,9 @@ async def verify_registration_code(db: Database, code: str, username: str = "") 
             continue
         if entry.get("revoked_at") or entry.get("used_at"):
             break
+        expires_at = entry.get("expires_at") or 0
+        if expires_at and now_ms > expires_at:
+            break
         entry["used_by"] = username
         entry["used_at"] = now_ms
         await _save_invites(db, invites)
@@ -135,12 +142,14 @@ async def verify_registration_code(db: Database, code: str, username: str = "") 
 
 
 async def create_invite(db: Database, created_by: str, note: str = "") -> dict:
-    """管理员生成一枚一次性邀请码。"""
+    """管理员生成一枚一次性邀请码（签发后 24 小时未用自动过期）。"""
+    now_ms = int(time.time() * 1000)
     entry = {
         "code": _generate_code(),
         "note": note.strip(),
         "created_by": created_by,
-        "created_at": int(time.time() * 1000),
+        "created_at": now_ms,
+        "expires_at": now_ms + _INVITE_TTL_MS,
         "used_by": "",
         "used_at": 0,
         "revoked_at": 0,
