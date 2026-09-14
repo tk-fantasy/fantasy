@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **运维页邀请码二维码**（`OperationsView.vue` + npm `qrcode`）：未使用的码弹大图二维码，内容为注册深链 `{origin}/login?mode=register&code=X`——家人扫码点开直达注册页、码已填好；localhost 访问时警示"手机扫不开，请用局域网 IP"
 - **注册页深链填码**（`LoginView.vue`）：`?code=` 自动填入邀请码并切注册模式
 - **邀请码 24h 过期**（`invite_service.py`）：签发后 24 小时未用自动失效，兜住码泄露长期潜伏；过期与无效同一句报错维持无侧信道；存量无 `expires_at` 的码视为永不过期。设计文档：`docs/superpowers/specs/2026-09-14-invite-qr-design.md`
+- **修复深链被会话过期裸跳抹除**（`main.js`）：启动期 401 刷新失败时原逻辑无条件 `router.push('/login')`，会把深链 query 整个抹掉——扫码深链的目标设备恰是无会话设备，必中。已在登录页时跳过该跳转，保住 `?mode=register&code=`
 
 ### Fixed
 
