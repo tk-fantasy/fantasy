@@ -11,6 +11,7 @@ import { useEntityMeta } from '../composables/useEntityMeta'
 
 const devices = ref([])         // 设备分组（主数据源）
 const services = ref({})
+const statusEntities = ref([])  // 在场/环境/辅助状态实体（person/sun/calendar/input_* 等）
 const loading = ref(true)
 const searchQuery = ref('')
 const activeArea = ref('全部')
@@ -396,6 +397,32 @@ const stats = computed(() => ({
   total: devices.value.length,
 }))
 
+// ========================
+//  在场与环境（状态实体 person/sun/calendar/input_*）
+// ========================
+const STATUS_DOMAIN_ZH = {
+  person: '在家', device_tracker: '追踪', sun: '太阳', calendar: '日历',
+  input_boolean: '虚拟开关', input_number: '虚拟数值', timer: '计时器',
+  counter: '计数器', scene: '场景',
+}
+const STATUS_STATE_ZH = {
+  on: '开', off: '关', home: '在家', not_home: '离家',
+  above_horizon: '日间', below_horizon: '夜间',
+  idle: '空闲', active: '进行中', paused: '已暂停',
+  unavailable: '不可用', unknown: '未知', off_: '关',
+}
+
+function formatStatusState(ent) {
+  const raw = String(ent?.state ?? '')
+  return STATUS_STATE_ZH[raw] ?? raw
+}
+
+// 「活跃」高亮：开关 on / 人在家 / 日间 / 计时进行中
+function isStatusActive(ent) {
+  const s = String(ent?.state ?? '')
+  return s === 'on' || s === 'home' || s === 'above_horizon' || s === 'active'
+}
+
 // 设备图标：取第一个可控实体的 domain，否则第一个实体的 domain
 function deviceIconDomain(dev) {
   const ents = dev.entities || []
@@ -437,6 +464,7 @@ async function loadEntities() {
     ])
     devices.value = entitiesData.devices || []
     services.value = servicesData || {}
+    statusEntities.value = entitiesData.status_entities || []
   } catch (e) {
     console.error('Failed to load entities:', e)
   } finally {
@@ -454,6 +482,7 @@ async function refreshEntitiesQuiet() {
     const freshEntities = entitiesData.entities || entitiesData || []
     devices.value = entitiesData.devices || []
     services.value = servicesData || {}
+    statusEntities.value = entitiesData.status_entities || []
     if (selectedEntity.value) {
       const fresh = freshEntities.find(e => e.entity_id === selectedEntity.value.entity_id)
       if (fresh) {
@@ -692,21 +721,106 @@ const displayAttributes = computed(() => {
     }))
 })
 
-// 定时轮询：感知页面外的状态变化（HA App / 物理开关 / AI 聊天控制）
+// ========================
+//  HA 实体状态实时推送（/ws/events）+ 轮询兜底
+//  WS 在线时设备状态变化即时上屏，轮询降频到 5 分钟纯兜底（防漏）；
+//  WS 断线自动回退 15 秒轮询，恢复后重连。
+// ========================
 let entityPollTimer = null
+let eventsWs = null
+let eventsReconnectTimer = null
+let eventsDisposed = false
+
+function schedulePoll() {
+  if (entityPollTimer) clearInterval(entityPollTimer)
+  const wsLive = eventsWs && eventsWs.readyState === WebSocket.OPEN
+  entityPollTimer = setInterval(() => {
+    if (document.visibilityState === 'visible') refreshEntitiesQuiet()
+  }, wsLive ? 300000 : 15000)
+}
+
+// WS 推来的单实体状态变化：原地刷新设备树 / 状态实体 / 弹窗选中项
+function applyEntityState(payload) {
+  const { entity_id, state, attributes } = payload || {}
+  if (!entity_id) return
+  for (const dev of devices.value) {
+    for (const ent of dev.entities || []) {
+      if (ent.entity_id === entity_id) {
+        ent.state = state
+        if (attributes) ent.attributes = attributes
+      }
+    }
+  }
+  const se = statusEntities.value.find(e => e.entity_id === entity_id)
+  if (se) {
+    se.state = state
+    if (attributes) se.attributes = attributes
+  }
+  if (selectedEntity.value && selectedEntity.value.entity_id === entity_id) {
+    selectedEntity.value.state = state
+    if (attributes) selectedEntity.value.attributes = attributes
+  }
+}
+
+function connectEventsWs() {
+  if (eventsDisposed) return
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  // 鉴权靠同源 httpOnly cookie（同 /ws/chat），不在 URL 拼 token
+  eventsWs = new WebSocket(`${protocol}//${window.location.host}/ws/events`)
+
+  eventsWs.onopen = () => schedulePoll()   // 实时通道就绪：轮询降频
+  eventsWs.onmessage = (event) => {
+    try {
+      const msg = JSON.parse(event.data)
+      if (msg.type === 'entity_state') applyEntityState(msg)
+      else if (msg.type === 'ping') eventsWs.send(JSON.stringify({ type: 'pong' }))
+    } catch (e) {
+      console.warn('Events WS parse failed:', e)
+    }
+  }
+  eventsWs.onerror = () => { try { eventsWs.close() } catch {} }
+  eventsWs.onclose = async (e) => {
+    schedulePoll()                          // 通道断开：轮询回 15 秒
+    if (eventsDisposed) return
+    if (e.code === 1008) {
+      // access token 过期被踢：静默刷新 cookie 后重连（同 ChatView 策略）
+      try {
+        const res = await fetch('/api/auth/refresh', { method: 'POST', credentials: 'include' })
+        if (res.ok) {
+          eventsReconnectTimer = setTimeout(connectEventsWs, 500)
+          return
+        }
+      } catch (err) {
+        console.warn('Events WS reconnect refresh failed:', err)
+      }
+      window.dispatchEvent(new Event('aether:session-expired'))
+      return
+    }
+    eventsReconnectTimer = setTimeout(connectEventsWs, 5000)
+  }
+}
+
+function onVisibilityChange() {
+  // 回到页面：立即全量刷一次（补后台期间可能漏掉的 WS 推送间隙）
+  if (document.visibilityState === 'visible') refreshEntitiesQuiet()
+}
 
 onMounted(() => {
   loadEntities()
   loadEmojiPrefs()
   loadEntityNotes()
   loadEntityOperable()
-  entityPollTimer = setInterval(() => {
-    if (document.visibilityState === 'visible') refreshEntitiesQuiet()
-  }, 15000)
+  schedulePoll()
+  connectEventsWs()
+  document.addEventListener('visibilitychange', onVisibilityChange)
 })
 
 onUnmounted(() => {
+  eventsDisposed = true
   if (entityPollTimer) clearInterval(entityPollTimer)
+  if (eventsReconnectTimer) clearTimeout(eventsReconnectTimer)
+  if (eventsWs) { try { eventsWs.close() } catch {} }
+  document.removeEventListener('visibilitychange', onVisibilityChange)
 })
 </script>
 
@@ -731,8 +845,9 @@ onUnmounted(() => {
 
     <div v-if="loading" class="loading-state">加载中...</div>
 
-    <div v-else class="area-groups">
-      <div v-for="[area, items] in groupedDevices" :key="area" class="area-section">
+    <template v-else>
+      <div class="area-groups">
+        <div v-for="[area, items] in groupedDevices" :key="area" class="area-section">
         <h2 class="area-title" v-if="activeArea === '全部'">
           <span class="area-name">{{ area }}</span>
           <span class="area-count">{{ items.length }}</span>
@@ -766,10 +881,26 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <div v-if="groupedDevices.length === 0" class="empty-state empty-state--card">
-        {{ searchQuery || activeArea !== '全部' ? '未找到匹配的设备。' : '暂无设备数据。' }}
+        <div v-if="groupedDevices.length === 0" class="empty-state empty-state--card">
+          {{ searchQuery || activeArea !== '全部' ? '未找到匹配的设备。' : '暂无设备数据。' }}
+        </div>
       </div>
-    </div>
+
+      <!-- 在场与环境：person/sun/calendar/input_* 状态实体，WS 实时刷新 -->
+      <div v-if="statusEntities.length" class="status-section">
+        <h2 class="area-title">
+          <span class="area-name">在场与环境</span>
+          <span class="area-count">{{ statusEntities.length }}</span>
+        </h2>
+        <div class="status-grid">
+          <div v-for="ent in statusEntities" :key="ent.entity_id" class="status-card">
+            <span class="status-domain">{{ STATUS_DOMAIN_ZH[ent.domain] || ent.domain }}</span>
+            <span class="status-name" :title="ent.entity_id">{{ ent.name }}</span>
+            <span class="status-value" :class="{ on: isStatusActive(ent) }">{{ formatStatusState(ent) }}</span>
+          </div>
+        </div>
+      </div>
+    </template>
 
     <!-- Modal: 设备详情 -->
     <Teleport to="body">
@@ -1575,4 +1706,39 @@ onUnmounted(() => {
   gap: 6px;
   margin-top: 4px;
 }
+
+/* 在场与环境（状态实体 person/sun/calendar/input_*） */
+.status-section { margin-top: var(--space-24); }
+.status-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: var(--space-10);
+}
+.status-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-10) var(--space-12);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+}
+.status-domain {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+.status-name {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--color-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.status-value {
+  font-size: var(--text-base);
+  font-weight: var(--weight-semibold);
+  color: var(--color-text-tertiary);
+}
+.status-value.on { color: var(--color-primary); }
 </style>

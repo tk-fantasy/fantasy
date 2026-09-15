@@ -61,9 +61,17 @@ async def ha_entities(container: AppContainer = Depends(get_container)) -> ApiRe
         for dev in grouped.get("devices", []):
             for ent in dev.get("entities", []):
                 ent["_controls"] = controls_by_eid.get(ent["entity_id"], _rc(ent, raw_svc_defs))
+        # 在场/环境/辅助状态实体（person/sun/calendar/input_* 等）—独立分区，
+        # 不混入设备列表（可控性语义不同）；失败不阻断主列表
+        try:
+            status_entities = await container.ha_service.get_status_entities()
+        except Exception:  # noqa: BLE001
+            logger.warning("HA status entities failed", exc_info=True)
+            status_entities = []
         return ApiResponse(data={
             "entities": entities,
             "devices": grouped.get("devices", []),
+            "status_entities": status_entities,
             "count": len(entities),
         })
     except Exception as e:

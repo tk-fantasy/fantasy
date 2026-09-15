@@ -871,12 +871,13 @@ class FakeWS:
 
 
 def _handshake_msgs(ack_success=True):
+    err = {} if ack_success else {"error": {"code": "x"}}
     return [
         json.dumps({"type": "auth_required"}),
         json.dumps({"type": "auth_ok"}),
         json.dumps({"id": 7, "type": "event"}),  # 订阅 ack 前推送的缓存事件，应被跳过
-        json.dumps({"id": 1, "success": ack_success,
-                    **({} if ack_success else {"error": {"code": "x"}})}),
+        json.dumps({"id": 1, "success": ack_success, **err}),   # state_changed ack
+        json.dumps({"id": 2, "success": True}),                 # timer.finished ack
     ]
 
 

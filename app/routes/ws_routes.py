@@ -206,6 +206,38 @@ async def chat_ws(websocket: WebSocket):
         heartbeat_task.cancel()
 
 
+@router.websocket("/ws/events")
+async def events_ws(websocket: WebSocket):
+    """实时事件通道 — HA 实体状态推送（替代设备页高频轮询）。
+
+    与 /ws/chat 分离：这里客户端只收不发（除 pong），服务端把 DeviceEventService
+    的 state_changed 事件广播过来（payload {type: "entity_state", entity_id,
+    state, attributes}）。前端断线时回退轮询，连接生命周期内保持轻量。
+    """
+    from ..core import ws_registry
+    from ..main import _ws_verify_token, _ws_heartbeat
+    user_id = await _ws_verify_token(websocket)
+    if user_id is None:
+        return
+    await websocket.accept()
+    ws_registry.register_events(websocket)
+    heartbeat_task = asyncio.create_task(_ws_heartbeat(websocket))
+    try:
+        while True:
+            payload = await _receive_payload(websocket)
+            # 只期望心跳 pong，其余帧一律忽略（通道是单向推送）
+            if payload is not None and payload.get("type") not in ("pong",):
+                logger.debug("events_ws: 忽略非 pong 帧 %s", payload.get("type"))
+    except WebSocketDisconnect:
+        logger.info("Events websocket disconnected")
+    except RuntimeError:
+        # 连接已关后 receive_json 的表现之一（心跳/推送并发关闭场景）
+        logger.info("Events websocket closed")
+    finally:
+        ws_registry.unregister_events(websocket)
+        heartbeat_task.cancel()
+
+
 @router.websocket("/ws/doc/chat")
 async def doc_chat_ws(websocket: WebSocket):
     """WebSocket 文档助手端点 — RAG 流水线 + 流式推送。"""

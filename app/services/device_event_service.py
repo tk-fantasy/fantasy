@@ -1,10 +1,14 @@
-"""设备状态事件流 — 订阅 HA state_changed，节流聚合后落 family_events。
+"""设备状态事件流 — 订阅 HA state_changed，事件总线分发 + 节流聚合落 family_events。
 
 补齐状态变化事件链路：系统对 HA 是纯拉取（REST 快照 + 5s 缓存），物理侧
 真实状态变化（开关翻转、传感器波动、设备掉线）原本不可见。本服务经 HA
-WebSocket subscribe_events 订阅 state_changed，过滤/节流后走
-alert_service.record() 只落库不广播，成为家庭报告事件时间线与周报
-「设备动态」统计的数据源。
+WebSocket subscribe_events 订阅 state_changed，成为 HA→Aether 的唯一推送入口，
+四个消费方向：
+- 落库：过滤/节流后走 alert_service.record() 进 family_events（周报/时间线数据源）；
+- states 缓存增量更新：事件原地刷新 ha_service._states_cache，省一次全量拉取；
+- 前端实时推送：/ws/events 通道广播（sensor 数值类不推，交给兜底轮询）；
+- 内部订阅者：subscribe() 注册的组件回调（摄像头 HA 触发、presence/sun/helper
+  规则评估等），是阶段化接入 HA 事件的统一挂点。
 
 节流策略（高频传感器会稀释事件流——周报 LLM 输入与前端时间线都只取
 最近 500 条，不节流会把告警挤出窗口）：
@@ -21,7 +25,7 @@ import asyncio
 import json
 import logging
 import time
-from typing import Any
+from typing import Any, Callable
 
 from ..core.config import get_config
 
@@ -87,6 +91,35 @@ async def record_device_op(
         logger.warning("record_device_op failed (service=%s)", service, exc_info=True)
 
 
+class _Subscriber:
+    """内部订阅者：按 domain / entity_id / event_type 过滤的回调注册项。"""
+
+    __slots__ = ("callback", "domains", "entity_ids", "event_types", "name")
+
+    def __init__(
+        self,
+        callback: Callable[..., Any],
+        domains: frozenset[str] | set[str] | None,
+        entity_ids: frozenset[str] | set[str] | None,
+        event_types: frozenset[str] | set[str] | None,
+        name: str,
+    ) -> None:
+        self.callback = callback
+        self.domains = frozenset(domains) if domains else None
+        self.entity_ids = frozenset(entity_ids) if entity_ids else None
+        self.event_types = frozenset(event_types) if event_types else None
+        self.name = name
+
+    def matches(self, event_type: str, entity_id: str, domain: str) -> bool:
+        if self.event_types is not None and event_type not in self.event_types:
+            return False
+        if self.entity_ids is not None and entity_id and entity_id not in self.entity_ids:
+            return False
+        if self.domains is not None and domain and domain not in self.domains:
+            return False
+        return True
+
+
 class DeviceEventService:
     def __init__(self, ha_service: Any = None) -> None:
         self._ha_service = ha_service
@@ -94,9 +127,57 @@ class DeviceEventService:
         self._flush_task: asyncio.Task | None = None
         # entity_id -> {name, count, min, max, last, unit, flush_at}
         self._sensor_buffer: dict[str, dict[str, Any]] = {}
+        # 内部订阅者（事件总线挂点）：组件经 subscribe() 注册回调
+        self._subscribers: list[_Subscriber] = []
 
     def set_ha_service(self, ha_service: Any) -> None:
         self._ha_service = ha_service
+
+    # ------------------------------------------------------------------
+    # 事件总线：内部订阅 API
+    # ------------------------------------------------------------------
+
+    def subscribe(
+        self,
+        callback: Callable[..., Any],
+        *,
+        domains: set[str] | frozenset[str] | None = None,
+        entity_ids: set[str] | frozenset[str] | None = None,
+        event_types: set[str] | frozenset[str] | None = None,
+        name: str = "",
+    ) -> Callable[[], None]:
+        """注册事件回调，返回取消订阅函数。callback 收到 event dict：
+        {"event_type": "state_changed", "entity_id", "domain", "old_state", "new_state"}
+        或 {"event_type": "timer.finished", ...原始 data 字段}。
+
+        过滤参数 None 表示不限定；回调可以是同步或异步函数，异常各自隔离。
+        """
+        sub = _Subscriber(callback, domains, entity_ids, event_types, name or getattr(callback, "__name__", "sub"))
+        self._subscribers.append(sub)
+        logger.info("device event subscriber registered: %s", sub.name)
+
+        def _unsubscribe() -> None:
+            try:
+                self._subscribers.remove(sub)
+            except ValueError:
+                pass
+
+        return _unsubscribe
+
+    async def _dispatch(self, event: dict) -> None:
+        """分发给所有匹配的内部订阅者。单个订阅者异常不影响其余。"""
+        event_type = str(event.get("event_type", ""))
+        entity_id = str(event.get("entity_id", ""))
+        domain = str(event.get("domain", "") or entity_id.split(".", 1)[0])
+        for sub in list(self._subscribers):
+            if not sub.matches(event_type, entity_id, domain):
+                continue
+            try:
+                result = sub.callback(event)
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception:
+                logger.exception("event subscriber %s failed", sub.name)
 
     # ------------------------------------------------------------------
     # 生命周期
@@ -161,7 +242,11 @@ class DeviceEventService:
             backoff = min(backoff * 2, 300.0)
 
     async def _subscribe(self, ws: Any) -> None:
-        """认证 + 订阅 state_changed（握手模板同 ha_service._refresh_registry）。"""
+        """认证 + 订阅 state_changed 与 timer.finished（握手模板同 ha_service._refresh_registry）。
+
+        timer.finished 是 HA 事件（非实体状态），input_timer「N 秒自动关」类规则
+        靠它触发；订阅不存在的事件类型 HA 也接受，无 timer 实体时只是收不到帧。
+        """
         hello = json.loads(await ws.recv())
         if hello.get("type") != "auth_required":
             raise RuntimeError(f"unexpected HA handshake: {hello.get('type')}")
@@ -170,15 +255,22 @@ class DeviceEventService:
         result = json.loads(await ws.recv())
         if result.get("type") != "auth_ok":
             raise RuntimeError(f"HA WebSocket auth failed: {result}")
-        await ws.send(json.dumps({
-            "id": 1, "type": "subscribe_events", "event_type": "state_changed",
-        }))
-        while True:  # 等订阅 ack（HA 可能先推送缓存事件）
+        subscriptions = [
+            (1, "state_changed"),
+            (2, "timer.finished"),
+        ]
+        acked: set[int] = set()
+        for sid, event_type in subscriptions:
+            await ws.send(json.dumps({
+                "id": sid, "type": "subscribe_events", "event_type": event_type,
+            }))
+        while len(acked) < len(subscriptions):  # 等全部订阅 ack（HA 可能先推送缓存事件）
             msg = json.loads(await ws.recv())
-            if msg.get("id") == 1:
+            sid = msg.get("id")
+            if sid in {s for s, _ in subscriptions}:
                 if not msg.get("success", False):
                     raise RuntimeError(f"subscribe_events failed: {msg.get('error')}")
-                return
+                acked.add(sid)
 
     async def _consume(self, ws: Any) -> None:
         while True:
@@ -186,16 +278,18 @@ class DeviceEventService:
             if msg.get("type") != "event":
                 continue
             ev = msg.get("event") or {}
-            if ev.get("event_type") != "state_changed":
-                continue
+            event_type = ev.get("event_type", "")
             data = ev.get("data") or {}
             try:
-                await self._on_state_changed(
-                    str(data.get("entity_id", "")),
-                    data.get("old_state"), data.get("new_state"),
-                )
+                if event_type == "state_changed":
+                    await self._on_state_changed(
+                        str(data.get("entity_id", "")),
+                        data.get("old_state"), data.get("new_state"),
+                    )
+                elif event_type == "timer.finished":
+                    await self._on_timer_finished(data)
             except Exception:
-                logger.exception("state_changed handling failed")
+                logger.exception("%s handling failed", event_type or "event")
 
     # ------------------------------------------------------------------
     # 事件处理：过滤 + 分类节流
@@ -212,6 +306,8 @@ class DeviceEventService:
         if new_value == old_value:
             return  # 仅 attribute 变化（亮度微调等）不算家庭事件
         domain = entity_id.split(".", 1)[0]
+        # 事件总线：缓存增量 + 前端推送 + 内部订阅者（摄像头触发/规则触发挂点）
+        await self._fanout_state_change(entity_id, domain, old_state, new_state)
         name = self._friendly_name(new_state, entity_id)
         if new_value in ("unavailable", "unknown"):
             await self._record_state(entity_id, f"{name} 变为不可用")
@@ -221,6 +317,49 @@ class DeviceEventService:
             return
         if domain == _SENSOR_DOMAIN:
             self._buffer_sensor(entity_id, name, new_value, new_state.get("attributes") or {})
+
+    async def _on_timer_finished(self, data: dict) -> None:
+        """timer 倒计时结束事件：只进事件总线（订阅者），不落 family_events。"""
+        entity_id = str(data.get("entity_id", ""))
+        await self._dispatch({
+            "event_type": "timer.finished",
+            "entity_id": entity_id,
+            "domain": "timer",
+            **data,
+        })
+
+    async def _fanout_state_change(
+        self, entity_id: str, domain: str, old_state: Any, new_state: Any,
+    ) -> None:
+        """真实状态变化的三路分发：states 缓存增量 / 前端 /ws/events / 内部订阅者。"""
+        # 1) states 缓存增量更新：缓存有效时原地替换，事件持续流入则免全量拉取
+        try:
+            apply = getattr(self._ha_service, "apply_state_change", None)
+            if apply is not None:
+                apply(entity_id, new_state)
+        except Exception:  # noqa: BLE001
+            logger.debug("apply_state_change failed for %s", entity_id, exc_info=True)
+        # 2) 前端实时推送：sensor 数值类不推（高频噪声），交给兜底轮询
+        if domain != _SENSOR_DOMAIN:
+            try:
+                from ..core.ws_registry import push_to_events
+                await push_to_events({
+                    "type": "entity_state",
+                    "entity_id": entity_id,
+                    "domain": domain,
+                    "state": str(new_state.get("state", "")),
+                    "attributes": new_state.get("attributes") or {},
+                })
+            except Exception:  # noqa: BLE001
+                logger.debug("entity_state push failed for %s", entity_id, exc_info=True)
+        # 3) 内部订阅者（摄像头 HA 触发、presence/sun/helper 规则评估等）
+        await self._dispatch({
+            "event_type": "state_changed",
+            "entity_id": entity_id,
+            "domain": domain,
+            "old_state": old_state,
+            "new_state": new_state,
+        })
 
     def _buffer_sensor(
         self, entity_id: str, name: str, value: str, attributes: dict,

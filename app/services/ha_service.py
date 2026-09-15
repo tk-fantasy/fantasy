@@ -66,6 +66,34 @@ class HAService:
         周期内多规则共享一次 HA 拉取（命中缓存 0 网络开销）。"""
         return await self._get_states_cached()
 
+    def apply_state_change(self, entity_id: str, new_state: dict[str, Any]) -> None:
+        """用 WS state_changed 事件原地刷新 states 缓存（事件驱动增量更新）。
+
+        由 DeviceEventService 在每条真实状态变化时调用：缓存存在时替换对应
+        实体条目并续期时间戳——事件持续流入期间缓存保持新鲜，免 5s 全量拉取；
+        缓存已过期（None）时不重建，留给下次 _get_states_cached 全量拉取，
+        避免事件回放与全量快照交错产生旧数据覆盖新数据。
+        """
+        if self._states_cache is None or not entity_id:
+            return
+        try:
+            entry = {
+                "entity_id": entity_id,
+                "state": new_state.get("state"),
+                "attributes": new_state.get("attributes") or {},
+                "last_changed": new_state.get("last_changed"),
+                "last_updated": new_state.get("last_updated"),
+            }
+            for i, s in enumerate(self._states_cache):
+                if s.get("entity_id") == entity_id:
+                    self._states_cache[i] = entry
+                    break
+            else:
+                self._states_cache.append(entry)
+            self._states_cache_at = time.time()
+        except Exception:  # noqa: BLE001
+            logger.debug("apply_state_change failed for %s", entity_id, exc_info=True)
+
     async def _refresh_registry(self) -> None:
         """一次 WS 拉取 area/device/entity registry，填充四个缓存 map（60s TTL）。
 
@@ -200,6 +228,47 @@ class HAService:
         "sensor", "binary_sensor", "lock", "media_player", "vacuum",
         "valve", "water_heater", "siren", "alarm_control_panel",
     })
+
+    # 在场/环境/辅助类状态实体 domain：被 _DEVICE_DOMAINS 白名单天然排除，
+    # 但它们是最高频的自动化触发源（到家/日落/日历/虚拟开关）。单独成目录，
+    # 不混入设备列表——可控性语义不同（sun 只读、input_boolean 可控），
+    # AI 视图与闸门的口径在各自消费方单独接入，互不污染。
+    _STATUS_DOMAINS = frozenset({
+        "person", "device_tracker", "sun", "calendar",
+        "input_boolean", "input_number", "timer", "counter", "scene",
+    })
+
+    async def get_status_entities(self) -> list[dict[str, Any]]:
+        """在场/环境/辅助类状态实体（person/sun/calendar/input_*/scene 等）。
+
+        不要求分配区域（sun.sun 等内置实体无 area）；返回条目带 kind="status"
+        标记，供设备页「在场与环境」分区与事件触发源使用。
+        """
+        states = await self._get_states_cached()
+        area_map, entity_area_map = await self._get_area_maps_cached()
+        alias_map = await self._get_alias_map()
+        out: list[dict[str, Any]] = []
+        for state in states:
+            entity_id = state["entity_id"]
+            domain = entity_id.split(".")[0]
+            if domain not in self._STATUS_DOMAINS:
+                continue
+            area_id = entity_area_map.get(entity_id)
+            out.append({
+                "entity_id": entity_id,
+                "domain": domain,
+                "kind": "status",
+                "name": alias_map.get(entity_id)
+                    or state["attributes"].get("friendly_name", entity_id),
+                "state": state["state"],
+                "attributes": state["attributes"],
+                "area_id": area_id,
+                "area_name": area_map.get(area_id) if area_id else None,
+            })
+        # 稳定排序：person 优先（在场感知最高频），其余按名称
+        domain_order = {"person": 0, "device_tracker": 1, "sun": 2}
+        out.sort(key=lambda d: (domain_order.get(d["domain"], 9), d["name"]))
+        return out
 
     def _virtual_suppress_set(self, states_by_id: dict[str, dict]) -> set[str]:
         """返回应隐藏的模拟器实体集合。
