@@ -312,6 +312,13 @@ def _register_vision_chat(deps: ToolDeps) -> None:
             latest = deps.camera_manager.get_frame(used_camera_id)
             frames = [latest] if latest is not None else []
         if not frames:
+            # HA 路摄像头无常驻解码缓冲，现场经 camera_proxy 抓快照分析
+            try:
+                frames = await deps.camera_manager.fetch_camera_proxy_frames_for_camera(
+                    used_camera_id, 2)
+            except Exception:  # noqa: BLE001
+                frames = []
+        if not frames:
             return {"answer": "摄像头当前没有画面,无法分析。", "question": question, "has_frame": False}
         answer = await deps.vision_client.ask_about_frames(frames, question)
         return {"answer": answer, "question": question, "has_frame": True,

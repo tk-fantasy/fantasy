@@ -257,10 +257,12 @@ class Database:
                 motion_threshold           INTEGER DEFAULT 15,
                 motion_check_interval      REAL DEFAULT 1.0,
                 vision_min_infer_interval   REAL DEFAULT 8.0,
-                vision_max_idle_interval    REAL DEFAULT 120.0,
+                vision_max_idle_interval   REAL DEFAULT 120.0,
                 vision_use_img_count        INTEGER DEFAULT 3,
                 frame_interval_ms           INTEGER DEFAULT 1000,
                 display_enabled             INTEGER DEFAULT 1,
+                ha_camera_entity            TEXT DEFAULT '',
+                ha_motion_entity            TEXT DEFAULT '',
                 created_at      INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000),
                 updated_at      INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000)
             );
@@ -346,6 +348,10 @@ class Database:
         # family_events 加 actor 列（统计图数据基础：device_op 由 AI 还是手动触发，
         # 结构化字段替代解析中文 message 前缀）
         await _ensure_column("family_events", "actor", "actor TEXT DEFAULT ''")
+        # HA 分层路由（阶段2）：摄像头可选挂 HA 实体——ha_camera_entity 用于
+        # camera_proxy 抓帧/PTZ/在线状态，ha_motion_entity 用于运动触发订阅
+        await _ensure_column("cameras", "ha_camera_entity", "ha_camera_entity TEXT DEFAULT ''")
+        await _ensure_column("cameras", "ha_motion_entity", "ha_motion_entity TEXT DEFAULT ''")
         # 管理员分级（安全审计 2B）：旧库补 is_admin 列；无人是管理员时把
         # 最早注册的用户提升为管理员（存量部署的户主即首用户）
         await _ensure_column("users", "is_admin", "is_admin INTEGER NOT NULL DEFAULT 0")
@@ -515,6 +521,7 @@ class Database:
         "motion_hash_size", "motion_threshold", "motion_check_interval",
         "vision_min_infer_interval", "vision_max_idle_interval",
         "vision_use_img_count", "frame_interval_ms", "display_enabled",
+        "ha_camera_entity", "ha_motion_entity",
     )
 
     async def cameras_all(self) -> list[dict]:

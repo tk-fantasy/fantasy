@@ -50,6 +50,27 @@ async def create_camera(body: dict):
     return ApiResponse(data=_mask_camera(created))
 
 
+# 注意：必须注册在 /cameras/{camera_id} 之前，否则 "ha-entities" 会被当路径参数
+@router.get("/cameras/ha-entities")
+async def camera_ha_entities():
+    """HA 摄像头 / 运动传感器候选（/cameras 表单「HA 联动」下拉数据源）。
+
+    运动候选里 motion/occupancy/presence 类排前，门磁/窗磁等其余
+    binary_sensor 殿后（同样可当抓拍触发用，如「开门抓拍」）。
+    """
+    c = get_container()
+    try:
+        entities = await c.ha_service.get_entities_by_domains({"camera", "binary_sensor"})
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Home Assistant 连接失败: {e}")
+    cameras_ = [e for e in entities if e["domain"] == "camera"]
+    motions = [e for e in entities if e["domain"] == "binary_sensor"]
+    motion_cls = {"motion", "occupancy", "presence"}
+    motions.sort(key=lambda e: (
+        0 if e.get("device_class") in motion_cls else 1, e["name"]))
+    return ApiResponse(data={"cameras": cameras_, "motion_sensors": motions})
+
+
 @router.get("/cameras/{camera_id}")
 async def get_camera(camera_id: str):
     c = get_container()
@@ -94,9 +115,28 @@ async def test_stream(camera_id: str, body: dict):
     (worker 走 _resolve_rtsp_url 注入凭证 + 设了 OPENCV_FFMPEG_CAPTURE_OPTIONS)。
     """
     import os, time
+    import asyncio
     import cv2
     from ..core.net_guard import STREAM_SCHEMES, url_scheme_error
     base = str(body.get("rtsp_url", "")).strip()
+    # HA 实体试连分支：无 rtsp_url 且给了 ha_camera_entity → camera_proxy 拉一帧
+    # 即验证（HA 可达 + 实体存在 + 能出图），RTSP 探测逻辑完全不进。
+    ha_entity = str(body.get("ha_camera_entity", "") or "").strip()
+    if not base and ha_entity:
+        c = get_container()
+        cm = c.camera_manager
+        try:
+            frames = await asyncio.wait_for(
+                cm.fetch_camera_proxy_frames(ha_entity, 1), timeout=15.0)
+            ok = bool(frames)
+        except asyncio.TimeoutError:
+            ok = False
+        except Exception as e:  # noqa: BLE001
+            return ApiResponse(data={"ok": False, "error": f"HA 试连失败: {e}"})
+        return ApiResponse(data={
+            "ok": ok,
+            "error": "" if ok else "HA 实体拉不到画面（检查实体 ID 与摄像头在线状态）",
+        })
     if not base:
         return ApiResponse(data={"ok": False, "error": "rtsp_url 为空"})
     # scheme 白名单：rtsp/rtsps/rtmp/http/https。FFmpeg 还能打开 file:/concat:/

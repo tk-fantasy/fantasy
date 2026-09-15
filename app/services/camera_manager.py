@@ -58,8 +58,34 @@ class CameraManager:
         # plugin_id → 该插件注册的虚拟路信息 {camera_id, spec}
         self._virtual_cams: dict[str, dict] = {}
         self._loop: asyncio.AbstractEventLoop | None = None
+        # —— HA 分层路由（阶段2）：检测与触发外包给 HA ——
+        # 挂了 ha_camera_entity/ha_motion_entity 任一的路都登记在 _ha_rows
+        # camera_id -> row；反查索引用于事件总线回调定位摄像头
+        self._ha_rows: dict[str, dict] = {}           # camera_id -> row（含混合路）
+        self._ha_camera_entity_map: dict[str, str] = {}  # ha_camera_entity -> camera_id
+        self._motion_entity_map: dict[str, str] = {}  # ha_motion_entity -> camera_id
+        self._ha_availability: dict[str, bool] = {}   # camera_id -> HA 实体可用（事件+60s 兜底）
+        self._unsub_events = None                     # 事件总线订阅取消函数
+        self._avail_task: asyncio.Task | None = None  # 可用性兜底刷新循环
         if discovery_service is not None:
             discovery_service.set_on_ip_changed(self._on_camera_ip_changed)
+
+    def __getattr__(self, name: str):
+        """兼容单测 __new__ 绕过 __init__ 的轻量构造（本仓既定范式）。
+
+        仅对 HA 分层路由的状态属性生效：首次访问时在实例上补空容器，
+        不影响 __init__ 正常装配的实例，也未列名的属性照常抛 AttributeError。
+        """
+        if name in ("_ha_rows", "_ha_camera_entity_map", "_motion_entity_map",
+                    "_ha_availability"):
+            value: dict = {}
+            object.__setattr__(self, name, value)
+            return value
+        if name in ("_unsub_events", "_avail_task"):
+            object.__setattr__(self, name, None)
+            return None
+        raise AttributeError(
+            f"{type(self).__name__!s} object has no attribute {name!r}")
 
     # —— 后注入 setter(bootstrap 顺序兜底,见 Task 7)——
     def set_db(self, db) -> None:
@@ -96,14 +122,31 @@ class CameraManager:
                 continue
             stream = await self._spawn(row)
             # D4:只给第一个 display_enabled=1 的路起 AI 预览
-            if not display_activated and row.get("display_enabled", 1):
+            # （HA-only 路无常驻解码器，_spawn 返回 None，跳过预览）
+            if stream is not None and not display_activated and row.get("display_enabled", 1):
                 stream.start_display()
                 self._active_display_id = row["id"]
                 display_activated = True
+        # 首次播种 HA 路可用性（事件流入前的初值）+ 启动 60s 兜底刷新
+        await self._refresh_ha_availability()
+        if self._avail_task is None or self._avail_task.done():
+            self._avail_task = asyncio.create_task(
+                self._ha_availability_loop(), name="camera-ha-availability")
 
-    async def _spawn(self, row: dict) -> CameraStream:
-        """根据 cameras 行构造一路并启动 worker(抓帧 + 运动检测)。"""
+    async def _spawn(self, row: dict) -> CameraStream | None:
+        """根据 cameras 行构造一路并启动 worker(抓帧 + 运动检测)。
+
+        HA-only 路（挂 ha_camera_entity 且无 rtsp_url）不 spawn 常驻解码器：
+        抓帧走 camera_proxy、在线随 HA 实体——空 rtsp/usb 配置的 CameraStream
+        会去抓本机 /dev/video0，必须在这里拦下。返回 None 表示该路无 worker。
+        """
         cid = row["id"]
+        self._sync_ha_camera_row(row)
+        if self._is_ha_only(row):
+            logger.info(
+                "camera %s bound to HA entity %s (no resident decoder)",
+                cid, row.get("ha_camera_entity"))
+            return None
         stream = CameraStream(
             camera_id=cid,
             config=row,
@@ -260,6 +303,8 @@ class CameraManager:
                 "discovery_enabled": 0,
                 "ptz_enabled": 0,
                 "display_enabled": int(spec.get("display_enabled", 1)),
+                "ha_camera_entity": "",
+                "ha_motion_entity": "",
                 "plugin_id": pid,
                 "online": bool(st.get("camera_opened", False)),
                 "virtual": True,
@@ -277,6 +322,162 @@ class CameraManager:
                 s.stop()
             except Exception:
                 logger.exception("stop camera %s failed", getattr(s, "camera_id", "?"))
+        if self._avail_task is not None:
+            self._avail_task.cancel()
+            self._avail_task = None
+        if self._unsub_events is not None:
+            self._unsub_events()
+            self._unsub_events = None
+
+    # —— HA 分层路由（阶段2）——
+
+    @staticmethod
+    def _is_ha_only(row: dict) -> bool:
+        """挂了 ha_camera_entity 且无 rtsp_url：无本地取流需求的路。"""
+        return bool(str(row.get("ha_camera_entity") or "").strip()
+                    and not str(row.get("rtsp_url") or "").strip())
+
+    def _sync_ha_camera_row(self, row: dict) -> None:
+        """（重）登记/改绑一路的 HA 实体映射。实体字段可改，先清旧反查条目。"""
+        cid = row["id"]
+        prev = self._ha_rows.get(cid)
+        if prev is not None:
+            self._ha_camera_entity_map.pop(str(prev.get("ha_camera_entity") or ""), None)
+            self._motion_entity_map.pop(str(prev.get("ha_motion_entity") or ""), None)
+        cam_e = str(row.get("ha_camera_entity") or "").strip()
+        motion_e = str(row.get("ha_motion_entity") or "").strip()
+        if cam_e or motion_e:
+            self._ha_rows[cid] = row
+            if cam_e:
+                self._ha_camera_entity_map[cam_e] = cid
+                self._ha_availability.setdefault(cid, False)
+        else:
+            self._ha_rows.pop(cid, None)
+            self._ha_availability.pop(cid, None)
+        if motion_e:
+            self._motion_entity_map[motion_e] = cid
+
+    def _drop_ha_camera(self, camera_id: str) -> None:
+        prev = self._ha_rows.pop(camera_id, None)
+        if prev is not None:
+            self._ha_camera_entity_map.pop(str(prev.get("ha_camera_entity") or ""), None)
+            self._motion_entity_map.pop(str(prev.get("ha_motion_entity") or ""), None)
+        self._ha_availability.pop(camera_id, None)
+
+    def bind_event_service(self, des) -> None:
+        """挂接 HA 事件总线：binary_sensor 运动触发 + camera 实体可用性。
+
+        binary_sensor 只在真实翻转时收到事件（事件源已过滤 attribute-only），
+        流量低；映射命中在回调内查表，摄像头增删改无需重订订阅。
+        """
+        if des is None or self._unsub_events is not None:
+            return
+        self._unsub_events = des.subscribe(
+            self._on_ha_state_event, domains={"binary_sensor", "camera"},
+            name="camera-manager")
+
+    async def _on_ha_state_event(self, event: dict) -> None:
+        entity_id = str(event.get("entity_id", ""))
+        domain = str(event.get("domain", ""))
+        value = str((event.get("new_state") or {}).get("state", ""))
+        if domain == "binary_sensor":
+            if value == "on" and entity_id in self._motion_entity_map:
+                await self.on_ha_motion_trigger(entity_id)
+        elif domain == "camera":
+            cid = self._ha_camera_entity_map.get(entity_id)
+            if cid is not None:
+                self._ha_availability[cid] = value not in ("unavailable", "unknown", "")
+
+    async def _refresh_ha_availability(self) -> None:
+        """从 states 快照刷新 HA 路可用性（启动播种 + 60s 兜底，WS 事件掉线自愈）。"""
+        if not self._ha_camera_entity_map or self._ha_service is None:
+            return
+        states = await self._ha_service.get_states_snapshot()
+        by_id = {s.get("entity_id"): str(s.get("state", "")) for s in states}
+        for entity_id, cid in self._ha_camera_entity_map.items():
+            value = by_id.get(entity_id)
+            if value is not None:
+                self._ha_availability[cid] = value not in ("unavailable", "unknown")
+
+    async def _ha_availability_loop(self) -> None:
+        while True:
+            await asyncio.sleep(60)
+            try:
+                await self._refresh_ha_availability()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                logger.debug("ha availability refresh failed", exc_info=True)
+
+    async def fetch_camera_proxy_frames(self, entity_id: str, n: int = 1) -> list:
+        """经 HA /api/camera_proxy 连抓 n 帧（JPEG → ndarray）。失败返回 []。
+
+        单帧分析一张快照就够；n>1 时帧间隔 0.25s 给画面留变化空间。
+        """
+        import cv2
+        import numpy as np
+        client = getattr(self._ha_service, "_client", None)
+        if client is None or not hasattr(client, "camera_proxy"):
+            return []
+        frames = []
+        for i in range(max(1, n)):
+            try:
+                jpeg = await client.camera_proxy(entity_id)
+                img = cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+                if img is not None:
+                    frames.append(img)
+            except Exception:  # noqa: BLE001
+                logger.warning("camera_proxy fetch failed for %s", entity_id, exc_info=True)
+                break
+            if i < n - 1:
+                await asyncio.sleep(0.25)
+        return frames
+
+    async def fetch_camera_proxy_frames_for_camera(self, camera_id: str, n: int = 2) -> list:
+        """按 camera_id 经 HA 抓帧（该路须挂 ha_camera_entity）。未挂/失败返回 []。
+
+        供 vision_chat 聊天问图与规则评估取帧用——调用方不必自己查行取实体。
+        """
+        row = self._ha_rows.get(camera_id) or {}
+        entity = str(row.get("ha_camera_entity") or "").strip()
+        if not entity:
+            return []
+        return await self.fetch_camera_proxy_frames(entity, n)
+
+    async def _fetch_eval_frames(self, camera_id: str) -> list:
+        """评估取帧分层：挂 ha_camera_entity 优先 camera_proxy，失败/未挂回退常驻流。"""
+        row = self._ha_rows.get(camera_id) or {}
+        try:
+            n = max(1, min(3, int(row.get("vision_use_img_count") or 3)))
+        except (TypeError, ValueError):
+            n = 3
+        frames = await self.fetch_camera_proxy_frames_for_camera(camera_id, n)
+        if frames:
+            return frames
+        # proxy 失败 → 常驻解码流兜底（混合路的 RTSP 还活着就继续服务）
+        return self.get_recent_frames(camera_id, 3)
+
+    async def on_ha_motion_trigger(self, motion_entity: str) -> None:
+        """HA binary_sensor 运动事件路径：与本地 dHash 在同一节流闸与评估入口汇合。
+
+        在事件总线回调（主循环协程）执行。双触发源（HA 事件 + 本地 dHash）
+        共用 _last_trigger_at 漏桶——先到者放行，后到者在窗口内被丢弃，
+        下游 request_automation_eval 完全一致，零改动。
+        """
+        camera_id = self._motion_entity_map.get(motion_entity)
+        if camera_id is None:
+            return
+        now = time.time()
+        if now - self._last_trigger_at.get(camera_id, 0.0) < self._min_trigger_interval:
+            return
+        self._last_trigger_at[camera_id] = now
+        frames = await self._fetch_eval_frames(camera_id)
+        if not frames:
+            logger.warning(
+                "HA motion trigger for %s: no frames (proxy and resident stream both empty)",
+                camera_id)
+            return
+        await self.request_automation_eval(camera_id, frames)
 
     # —— CRUD(转发 DB + 增删 stream)——
     async def create_camera(self, data: dict) -> dict:
@@ -287,13 +488,16 @@ class CameraManager:
             await self._spawn(data)
         return data
 
-    # 影响取流连接的字段：变了必须重建 worker 才生效(worker 构造时缓存这些值)
+    # 影响取流连接的字段：变了必须重建 worker 才生效(worker 构造时缓存这些值)。
+    # ha_camera_entity/ha_motion_entity 不动 RTSP 连接，但决定「spawn 还是 HA-only」
+    # 与实体映射表，重建路径统一处理最简单（混合路偶发多一次重连，可接受）。
     _STREAM_FIELDS = frozenset({
         "enabled", "source_type", "usb_index",
         "rtsp_url", "rtsp_username", "rtsp_password",
         "motion_hash_size", "motion_threshold", "motion_check_interval",
         "vision_min_infer_interval", "vision_max_idle_interval",
         "vision_use_img_count", "frame_interval_ms",
+        "ha_camera_entity", "ha_motion_entity",
     })
 
     async def update_camera(self, camera_id: str, fields: dict) -> dict:
@@ -329,6 +533,9 @@ class CameraManager:
         row = await self._db.cameras_get(camera_id)
         if row and row.get("enabled", 1):
             await self._spawn(row)
+        else:
+            # 禁用/删除：HA 实体映射一并清掉（事件回调不再命中）
+            self._drop_ha_camera(camera_id)
         return row
 
     async def delete_camera(self, camera_id: str) -> bool:
@@ -340,6 +547,7 @@ class CameraManager:
                 logger.exception("stop stream %s on delete failed", camera_id)
         if self._active_display_id == camera_id:
             self._active_display_id = None
+        self._drop_ha_camera(camera_id)
         return await self._db.cameras_delete(camera_id)
 
     # —— AI 预览单例(D4)——
@@ -444,12 +652,21 @@ class CameraManager:
 
     def get_state(self, camera_id: str) -> dict:
         s = self._streams.get(camera_id)
-        if s is None:
-            # stream 不存在（删除中/重建窗口）也补 camera_opened 键：调用方
-            # （告警监控）用 st.get("camera_opened") 判在线，缺键同样按离线
-            # 记拍，显式补上语义一致且不依赖 get() 的 None 隐式回退。
-            return {"camera_id": camera_id, "online": False, "camera_opened": False}
-        return s.get_state()
+        if s is not None:
+            return s.get_state()
+        # HA-only 路（无常驻解码器）：camera_opened 语义映射为 HA 实体可用性，
+        # 告警监控（alert_service 连续 2 拍离线报警/恢复补发）零改动即覆盖 HA 路。
+        row = self._ha_rows.get(camera_id)
+        if row is not None and self._is_ha_only(row):
+            online = self._ha_availability.get(camera_id, False)
+            return {
+                "camera_id": camera_id, "online": online,
+                "camera_opened": online, "source": "ha",
+            }
+        # stream 不存在（删除中/重建窗口）也补 camera_opened 键：调用方
+        # （告警监控）用 st.get("camera_opened") 判在线，缺键同样按离线
+        # 记拍，显式补上语义一致且不依赖 get() 的 None 隐式回退。
+        return {"camera_id": camera_id, "online": False, "camera_opened": False}
 
     def list_cameras(self) -> list[dict]:
         """供工具注入:含 id/name/area/online。"""
@@ -464,6 +681,17 @@ class CameraManager:
                 # CameraState 无 online 字段，只有 camera_opened。
                 # 原 st.get("online") 恒 False（MCP 工具拿到永远离线），
                 # 与 cameras_all() 对齐改用 camera_opened 推断。
+                "online": bool(st.get("camera_opened", False)),
+            })
+        # HA-only 路无 stream，单独补录（在线随 HA 实体可用性）
+        for cid, row in self._ha_rows.items():
+            if cid in self._streams:
+                continue  # 混合路已在上面
+            st = self.get_state(cid)
+            out.append({
+                "id": cid,
+                "name": row.get("name", cid),
+                "area": row.get("area", ""),
                 "online": bool(st.get("camera_opened", False)),
             })
         return out

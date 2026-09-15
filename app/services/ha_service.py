@@ -288,6 +288,33 @@ class HAService:
             return set(present)
         return set()
 
+    async def get_entities_by_domains(self, domains: set[str]) -> list[dict[str, Any]]:
+        """按 domain 集合拉轻量实体目录（不要求 area，不带 controls）。
+
+        供摄像头 HA 实体选择（camera/binary_sensor）等表单场景使用；
+        与 get_all_devices（可控设备目录）/get_status_entities（状态实体目录）
+        是并列的第三个视图，互不影响。
+        """
+        states = await self._get_states_cached()
+        alias_map = await self._get_alias_map()
+        out: list[dict[str, Any]] = []
+        for state in states:
+            entity_id = state["entity_id"]
+            domain = entity_id.split(".")[0]
+            if domain not in domains:
+                continue
+            attrs = state.get("attributes") or {}
+            out.append({
+                "entity_id": entity_id,
+                "domain": domain,
+                "name": alias_map.get(entity_id)
+                    or attrs.get("friendly_name", entity_id),
+                "state": state["state"],
+                "device_class": attrs.get("device_class"),
+            })
+        out.sort(key=lambda e: (e["domain"], e["name"]))
+        return out
+
     async def get_all_devices(self) -> list[dict[str, Any]]:
         """获取所有设备（含区域信息）。
 

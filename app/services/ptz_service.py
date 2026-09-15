@@ -73,6 +73,40 @@ class PtzService:
     def _enabled(self) -> bool:
         return bool(self._config.get("ptz_enabled", 0))
 
+    def _ha_entity(self) -> str:
+        """HA 路生效条件：PTZ 总开关开 + 摄像头挂了 HA 实体。
+
+        HA 路优先（纯服务调用，免本地 ONVIF 握手），本地 ONVIF 封装兜底
+        （HA 服务不可用/集成未装时自动落回，对外签名不变）。
+        """
+        entity = str(self._config.get("ha_camera_entity") or "").strip()
+        return entity if (self._enabled() and entity) else ""
+
+    async def _ha_ptz(self, vec: tuple[float, float] | None) -> bool:
+        """经 HA onvif.ptz 服务发云台指令。vec=None 表示 Stop（pan/tilt/zoom 归零）。
+
+        返回 False（HA 不可用/服务不存在/调用失败）时调用方回退本地 ONVIF。
+        onvif.ptz 的 pan/tilt 是 ContinuousMove 语义（-1~1），与本地封装同构。
+        """
+        entity = self._ha_entity()
+        client = ptz_registry.ha_client()
+        if not entity or client is None:
+            return False
+        try:
+            data: dict[str, Any] = {}
+            if vec is None:
+                data = {"tilt": 0.0, "pan": 0.0, "zoom": 0.0}
+            else:
+                spd = self._speed()
+                data = {"tilt": vec[1] * spd, "pan": vec[0] * spd}
+            await client.call_service("onvif", "ptz", entity_id=entity, data=data)
+            return True
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "PTZ via HA service failed (cam=%s), falling back to local ONVIF",
+                self.camera_id, exc_info=True)
+            return False
+
     async def _ensure_connected(self) -> bool:
         """懒加载 + 断线重连。返回是否就绪。已连接直接返回 True。
         调用方须持有 self._lock（避免与其它 ONVIF 调用并发建连）。"""
@@ -150,6 +184,11 @@ class PtzService:
         vec = _DIRECTION_VECTORS.get(direction)
         if vec is None:
             return {"success": False, "error": f"unknown direction: {direction}"}
+        # HA 服务路径优先（同锁串行，防与本地路径的 Stop 交错）
+        if self._ha_entity():
+            async with self._lock:
+                if await self._ha_ptz(vec):
+                    return {"success": True, "direction": direction, "via": "ha"}
         async with self._lock:
             if not await self._ensure_connected():
                 return {"success": False, "error": "PTZ not connected"}
@@ -164,11 +203,25 @@ class PtzService:
 
     async def stop(self) -> dict:
         """停止转动。松开按钮或紧急停转时调用。"""
+        if self._ha_entity():
+            async with self._lock:
+                if await self._ha_ptz(None):
+                    return {"success": True, "via": "ha"}
         async with self._lock:
             if not await self._ensure_connected():
                 return {"success": False, "error": "PTZ not connected"}
             await self._stop_locked()
             return {"success": True}
+
+    async def _wait_step_window(self, token: int, duration_ms: int) -> bool:
+        """等待步进窗口。返回 True=被新 step 打断（不再发 Stop）。锁外执行。"""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + max(0.0, duration_ms) / 1000.0
+        while loop.time() < deadline:
+            if self._step_token != token:
+                return True
+            await asyncio.sleep(0.02)
+        return False
 
     async def step(self, direction: str, duration_ms: int) -> dict:
         """步进：ContinuousMove 一小段后自动 Stop，实现"按一下动一下"。
@@ -180,6 +233,20 @@ class PtzService:
         vec = _DIRECTION_VECTORS.get(direction)
         if vec is None:
             return {"success": False, "error": f"unknown direction: {direction}"}
+        # HA 服务路径优先：move → 等窗口 → stop，与本地路径同构
+        if self._ha_entity():
+            async with self._lock:
+                started = await self._ha_ptz(vec)
+            if started:
+                self._step_token += 1
+                token = self._step_token
+                if await self._wait_step_window(token, duration_ms):
+                    return {"success": True, "interrupted": True, "via": "ha"}
+                async with self._lock:
+                    if self._step_token == token:
+                        await self._ha_ptz(None)
+                return {"success": True, "via": "ha"}
+            # HA 失败 → 落回本地 ONVIF
         async with self._lock:
             if not await self._ensure_connected():
                 return {"success": False, "error": "PTZ not connected"}
@@ -195,12 +262,8 @@ class PtzService:
             self._step_token += 1
             token = self._step_token
         # 锁外等待步进时长；新 step 到来则提前交权，不再发 Stop
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + max(0.0, duration_ms) / 1000.0
-        while loop.time() < deadline:
-            if self._step_token != token:
-                return {"success": True, "interrupted": True}
-            await asyncio.sleep(0.02)
+        if await self._wait_step_window(token, duration_ms):
+            return {"success": True, "interrupted": True}
         async with self._lock:
             if self._step_token == token:
                 await self._stop_locked()
@@ -213,11 +276,21 @@ class PtzRegistry:
 
     camera_routes 用 await registry.get(camera_id, row) 拿到该路的 PtzService;
     discovery IP 变更时 registry.notify_ip_changed 通知该路重连。
+    ha_client 经 set_ha_client 注入（启动时 + HA 配置热替换时同步），
+    PtzService 在调用时实时取——实例不持有 client，热替换天然生效。
     """
 
     def __init__(self) -> None:
         self._by_cam: dict[str, PtzService] = {}
         self._lock = asyncio.Lock()
+        self._ha_client: Any = None
+
+    def set_ha_client(self, client: Any) -> None:
+        """HA client 热注入/热替换（main 启动 + sync_ha_runtime_refs 调用）。"""
+        self._ha_client = client
+
+    def ha_client(self) -> Any:
+        return self._ha_client
 
     async def get(self, camera_id: str, config: dict) -> PtzService:
         async with self._lock:
@@ -225,6 +298,9 @@ class PtzRegistry:
             if svc is None:
                 svc = PtzService(camera_id=camera_id, config=config)
                 self._by_cam[camera_id] = svc
+            else:
+                # 配置行可能已更新（如新挂/改绑 HA 实体），刷新引用
+                svc._config = config or {}
             return svc
 
     def notify_ip_changed(self, camera_id: str, new_ip: str) -> None:

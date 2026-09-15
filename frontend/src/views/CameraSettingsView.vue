@@ -10,6 +10,7 @@ import { ref, onMounted, computed } from 'vue'
 import { useCamera } from '../composables/useCamera'
 import BaseToggle from '../components/BaseToggle.vue'
 import FlowSelect from '../components/FlowSelect.vue'
+import { apiGet } from '../utils/api'
 
 const {
   cameras, areas, loading,
@@ -36,6 +37,23 @@ function blankCamera() {
     motion_hash_size: 16, motion_threshold: 15, motion_check_interval: 1.0,
     vision_min_infer_interval: 8.0, vision_max_idle_interval: 120.0,
     vision_use_img_count: 3, frame_interval_ms: 1000, display_enabled: 1,
+    ha_camera_entity: '', ha_motion_entity: '',
+  }
+}
+
+// —— HA 联动候选实体（camera / binary_sensor，惰性加载一次）——
+const haCandidates = ref({ cameras: [], motion_sensors: [] })
+let haCandidatesLoaded = false
+async function loadHaCandidates() {
+  if (haCandidatesLoaded) return
+  try {
+    const data = await apiGet('/api/cameras/ha-entities')
+    haCandidates.value = data || { cameras: [], motion_sensors: [] }
+    haCandidatesLoaded = true
+  } catch (e) {
+    // HA 未配置/不可达：datalist 为空，实体 ID 仍可手填
+    console.warn('load HA entity candidates failed:', e)
+    haCandidatesLoaded = true
   }
 }
 
@@ -48,12 +66,14 @@ function startCreate() {
   editingFocuses.value = []
   newFocusText.value = ''
   testResult.value = null
+  loadHaCandidates()
 }
 
 async function startEdit(cam) {
   // 拷贝一份,避免直接改列表数据
   editing.value = { ...cam }
   testResult.value = null
+  loadHaCandidates()
   try {
     editingFocuses.value = await loadFocuses(cam.id) || []
   } catch (e) {
@@ -125,6 +145,12 @@ function sectionFields(key) {
     if (e.rtsp_password) f.rtsp_password = e.rtsp_password
     return f
   }
+  if (key === 'ha') {
+    return {
+      ha_camera_entity: (e.ha_camera_entity || '').trim(),
+      ha_motion_entity: (e.ha_motion_entity || '').trim(),
+    }
+  }
   if (key === 'usb') {
     return { source_type: e.source_type, usb_index: e.usb_index }
   }
@@ -156,6 +182,7 @@ async function tryTestStream() {
       rtsp_url: editing.value.rtsp_url,
       rtsp_username: editing.value.rtsp_username,
       rtsp_password: editing.value.rtsp_password,
+      ha_camera_entity: editing.value.ha_camera_entity || '',
     })
     testResult.value = res
   } catch (e) {
@@ -269,9 +296,11 @@ const areaOptions = computed(() => [
           <div class="cam-card-meta">
             <span v-if="cam.area">📍 {{ cam.area }}</span>
             <span v-if="cam.device_mac">MAC {{ cam.device_mac }}</span>
-            <span v-if="cam.source_type === 'rtsp'">{{ cam.rtsp_url }}</span>
+            <span v-if="cam.ha_camera_entity">HA {{ cam.ha_camera_entity }}</span>
+            <span v-if="cam.source_type === 'rtsp' && cam.rtsp_url">{{ cam.rtsp_url }}</span>
             <span v-else-if="cam.source_type === 'test'">视频源由测试插件推送（/camera 面板管理）</span>
-            <span v-else>USB #{{ cam.usb_index }}</span>
+            <span v-else-if="cam.source_type === 'usb'">USB #{{ cam.usb_index }}</span>
+            <span v-else-if="cam.ha_camera_entity">无本地取流（HA 快照）</span>
           </div>
         </div>
         <div class="cam-card-actions">
@@ -355,12 +384,15 @@ const areaOptions = computed(() => [
                   <input v-model="editing.rtsp_password" type="password" class="cam-input" :placeholder="isEdit ? '留空不改' : '摄像头密码'" />
                 </div>
                 <div class="cam-field test-row">
-                  <button class="btn-test" :disabled="testing || !editing.rtsp_url" @click="tryTestStream">
+                  <button class="btn-test" :disabled="testing || (!editing.rtsp_url && !editing.ha_camera_entity)" @click="tryTestStream">
                     {{ testing ? '测试中...' : '试连' }}
                   </button>
                   <span v-if="testResult?.ok" class="test-ok">✅ 连接成功</span>
                   <span v-else-if="testResult && !testResult.ok" class="test-fail">❌ {{ testResult.error }}</span>
                 </div>
+                <p v-if="editing.ha_camera_entity" class="cam-hint">
+                  已挂 HA 实体：RTSP 仅用于实时预览（MJPEG）与本地兜底，可留空。
+                </p>
               </section>
 
               <!-- USB -->
@@ -375,6 +407,37 @@ const areaOptions = computed(() => [
                   <label>设备序号</label>
                   <input v-model.number="editing.usb_index" type="number" class="cam-input narrow" placeholder="0" />
                 </div>
+              </section>
+
+              <!-- HA 联动（可选）：检测与触发外包给 HA -->
+              <section class="cam-section">
+                <div class="cam-section-head">
+                  <h3 class="cam-section-title">HA 联动（可选）</h3>
+                  <button v-if="isEdit" class="btn-section-save" :disabled="sectionBusy === 'ha'" @click="saveSection('ha')">
+                    {{ sectionBusy === 'ha' ? '保存中...' : sectionSaved === 'ha' ? '已保存 ✓' : '保存' }}
+                  </button>
+                </div>
+                <p class="cam-hint">
+                  挂载 Home Assistant 实体后，运动触发 / AI 抓帧 / 云台 / 在线检测交给 HA
+                  （Frigate、ONVIF、门磁等任何产生 binary_sensor 的集成都行）；两个都留空则完全走本地解码。
+                </p>
+                <div class="cam-field">
+                  <label>HA 摄像头实体（抓帧 / 云台 / 在线）</label>
+                  <input v-model.trim="editing.ha_camera_entity" class="cam-input" list="ha-camera-entities" placeholder="camera.xxx（下拉选择或手填）" />
+                  <datalist id="ha-camera-entities">
+                    <option v-for="e in haCandidates.cameras" :key="e.entity_id" :value="e.entity_id">{{ e.name }}（{{ e.state }}）</option>
+                  </datalist>
+                </div>
+                <div class="cam-field">
+                  <label>HA 运动传感器实体（触发视觉推理）</label>
+                  <input v-model.trim="editing.ha_motion_entity" class="cam-input" list="ha-motion-entities" placeholder="binary_sensor.xxx（motion / 门磁等）" />
+                  <datalist id="ha-motion-entities">
+                    <option v-for="e in haCandidates.motion_sensors" :key="e.entity_id" :value="e.entity_id">{{ e.name }}（{{ e.state }}）</option>
+                  </datalist>
+                </div>
+                <p v-if="editing.ha_camera_entity && !editing.rtsp_url" class="cam-hint warn">
+                  未填 RTSP：不启动本地常驻解码，实时预览（MJPEG）不可用；AI 抓帧走 HA 快照。
+                </p>
               </section>
 
               <!-- PTZ 云台 -->
@@ -446,6 +509,14 @@ const areaOptions = computed(() => [
 </template>
 
 <style scoped>
+.cam-hint {
+  margin: 0 0 var(--space-6);
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  line-height: 1.6;
+}
+.cam-hint.warn { color: var(--color-warning, #b8860b); }
+
 .cameras-list {
   display: flex;
   flex-direction: column;

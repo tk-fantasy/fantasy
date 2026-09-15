@@ -185,6 +185,22 @@ class HomeAssistantClient:
         response.raise_for_status()
         return response.json()
 
+    # ============ 摄像头 ============
+
+    async def camera_proxy(self, entity_id: str) -> bytes:
+        """抓取 HA 摄像头当前帧（JPEG bytes）。
+
+        GET /api/camera_proxy/{entity_id}：HA 侧生成快照，单帧分析一张 JPEG
+        就够，Aether 不再需要为触发/推理维护常驻解码器。部分集成会 302 到
+        带签名 token 的临时 URL，按请求级 follow_redirects 跟随（共享 client
+        默认不跟随，不影响其他调用）。
+        """
+        client = await self._get_client()
+        response = await client.get(
+            f"/api/camera_proxy/{entity_id}", timeout=15.0, follow_redirects=True)
+        response.raise_for_status()
+        return response.content
+
     # ============ 实体注册表写操作 ============
 
     async def update_entity_name(

@@ -278,6 +278,8 @@ def sync_ha_runtime_refs(new_client, new_service) -> None:
         # set_ha_service 一直存在但从未被接线：不接的话 HA 配置改一次，
         # 设备事件流就持续挂在已 close 的旧 service 上直到重启。
         des.set_ha_service(new_service)
+    from .services.ptz_service import ptz_registry
+    ptz_registry.set_ha_client(new_client)
     td = getattr(_container, "tool_deps", None)
     if td is not None:
         td.ha_service = new_service
@@ -652,8 +654,14 @@ async def lifespan(_: FastAPI):
         camera_manager.set_automation_service(automation_service)
         automation_service.set_camera_manager(camera_manager)
         discovery_service.set_db(Database.get())
+        # HA PTZ 服务路径的 client 注入（配置热替换经 sync_ha_runtime_refs 同步）
+        from .services.ptz_service import ptz_registry as _ptz_registry
+        _ptz_registry.set_ha_client(ha_client)
         try:
             await camera_manager.initialize()
+            # 阶段2 HA 分层路由：摄像头挂 HA 实体（binary_sensor 运动 / camera 可用性）
+            # 经事件总线回调触发，与本地 dHash 在 manager 内同一节流闸汇合
+            camera_manager.bind_event_service(_container.device_event_service)
             # 应用全局预览开关初始状态(用户在 /camera 关过则重启后仍保持关闭)
             if not bool(get_config("automation.camera_vl_display_enabled", True)):
                 camera_manager.set_camera_vl_display_enabled(False)
