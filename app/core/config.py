@@ -100,17 +100,19 @@ def _load_file_config() -> dict[str, Any]:
 
 
 def _load_env_override() -> dict[str, Any]:
+    """空值视为未设置：`.env.example` 的占位（如 `HA_TOKEN=`）不得冲掉
+    用户/向导已保存的配置（全新安装死锁 F4 的根因）。"""
     override: dict[str, Any] = {"llm": {}, "ha": {}}
     if "LLM_ENABLED" in os.environ:
         override["llm"]["enabled"] = os.getenv("LLM_ENABLED", "0") == "1"
-    if "LLM_BASE_URL" in os.environ:
+    if os.getenv("LLM_BASE_URL"):
         override["llm"]["base_url"] = os.getenv("LLM_BASE_URL")
-    if "LLM_MODEL" in os.environ:
+    if os.getenv("LLM_MODEL"):
         override["llm"]["chat_model"] = os.getenv("LLM_MODEL")
     # HA 连接：容器部署时用服务名（如 http://homeassistant:8123）覆盖 config.json 里的 localhost
-    if "HA_URL" in os.environ:
+    if os.getenv("HA_URL"):
         override["ha"]["url"] = os.getenv("HA_URL")
-    if "HA_TOKEN" in os.environ:
+    if os.getenv("HA_TOKEN"):
         override["ha"]["token"] = os.getenv("HA_TOKEN")
     return override
 

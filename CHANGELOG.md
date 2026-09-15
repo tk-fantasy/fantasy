@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **注册页深链填码**（`LoginView.vue`）：`?code=` 自动填入邀请码并切注册模式
 - **邀请码 24h 过期**（`invite_service.py`）：签发后 24 小时未用自动失效，兜住码泄露长期潜伏；过期与无效同一句报错维持无侧信道；存量无 `expires_at` 的码视为永不过期。设计文档：`docs/superpowers/specs/2026-09-14-invite-qr-design.md`
 - **全新环境模拟验证揪出三处问题并修复**：① 签发接口未接收请求体，运维页的邀请码备注被静默丢弃（`auth_routes.create_invite` 新增 `AuthInviteCreateRequest`）；② 户主注册完成后 8011 进度页仍残留显示已作废的安装码（注册路由即时清除 `setup_code` 展示，不再等重启）；③ 部署指南从未提及 `.env` 与 `MQTT_PASSWORD` 必填，照文档做的新用户必然卡在 mosquitto 启动失败（补「首次部署前」步骤）
+- **修复全新安装设置向导死锁（模拟环境验证发现）**：`_load_env_override` 把"存在但为空"的环境变量（`.env.example` 的 `HA_TOKEN=`/`LLM_BASE_URL=` 等占位）当作覆盖值，向导每次保存的 HA token 被空值立即冲掉，`setup_complete` 永远无法达成——照文档新装的用户**永远出不了设置向导**。修复后空值视为未设置；非空 env 覆盖语义不变
+- **修复回滚 HTTP 的失效文档**：镜像已内置 TLS 入口，仅删 compose 挂载会回退到镜像内置 TLS 启动而非 HTTP，正确做法是覆盖 `entrypoint` 直启 uvicorn（HTTPS 指南与 compose 注释同步修正）
 - **修复深链被会话过期裸跳抹除**（`main.js`）：启动期 401 刷新失败时原逻辑无条件 `router.push('/login')`，会把深链 query 整个抹掉——扫码深链的目标设备恰是无会话设备，必中。已在登录页时跳过该跳转，保住 `?mode=register&code=`
 
 ### Removed

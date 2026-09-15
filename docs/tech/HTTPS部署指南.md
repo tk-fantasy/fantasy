@@ -141,10 +141,18 @@ certutil -user -delstore Root "Aether Local Root CA"  # 删除（回滚时）
 
 ## 回滚到 HTTP
 
-删掉 `docker-compose.yml` 里 aether 服务的 `entrypoint:` 覆盖与 `./certs`、入口脚本两处挂载，然后：
+镜像已内置 TLS 入口（`ENTRYPOINT /usr/local/bin/entrypoint_tls.sh`），**仅删掉 compose 的
+entrypoint 覆盖与挂载会回退到镜像内置的 TLS 启动**而非 HTTP。正确做法是把 aether 服务的
+`entrypoint:` 覆盖为直启 uvicorn（绕过 TLS 包装）：
+
+```yaml
+entrypoint: ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8010"]
+```
+
+然后：
 
 ```bash
 docker compose up -d aether
 ```
 
-即恢复原 HTTP 部署（镜像未变，无需 rebuild）。
+即恢复 HTTP 部署（镜像未变，无需 rebuild）。

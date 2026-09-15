@@ -72,7 +72,8 @@ services:
     # TLS 由 uvicorn 直接终结。入口脚本（从宿主挂载，随仓库更新、无需重建镜像）：
     # certs/ 缺失时生成临时自签证书兜底，已有证书原样使用——离线升级
     # （load 新镜像 tag 到 latest）后 TLS 配置同样不受镜像内容影响。
-    # 回滚 HTTP：删掉本 entrypoint 与下方 certs 挂载，docker compose up -d 即可。
+    # 回滚 HTTP：镜像内置 TLS 入口，仅删挂载会回退到镜像内置 TLS 启动；需把 entrypoint
+# 覆盖为直启 uvicorn（详见 docs/tech/HTTPS部署指南.md 的「回滚到 HTTP」）。
     entrypoint: ["sh", "/aether/entrypoint_tls.sh"]
     ports:
       # 主服务（API + WebSocket + 前端 SPA）。8010 从此只讲 HTTPS：
