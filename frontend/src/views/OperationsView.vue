@@ -8,6 +8,7 @@
  */
 import { ref, computed, onMounted } from 'vue'
 import { apiGet, apiPost, apiDelete } from '../utils/api'
+import AdvancedModal from '../components/AdvancedModal.vue'
 import QRCode from 'qrcode'
 import {
   buildInviteRegisterLink,
@@ -580,19 +581,18 @@ function fmtMs(ms) {
       </div>
     </section>
 
-    <!-- 邀请码二维码弹窗（挂在区块外，避免被表格溢出裁剪） -->
-    <div v-if="qrShow" class="modal-mask" @click.self="qrShow = false">
-      <div class="modal-card invite-qr-modal">
-        <h3 class="modal-title">扫码注册</h3>
-        <p class="invite-qr-code">{{ qrCodeText }}</p>
-        <img v-if="qrDataUrl" :src="qrDataUrl" alt="邀请码二维码" class="invite-qr-img" />
-        <p class="op-muted invite-qr-link">{{ qrLink }}</p>
-        <div v-if="qrLoopbackWarn" class="op-message error">
-          当前是 localhost 地址，手机扫码打不开。请用局域网 IP（如 http://192.168.x.x:8010）访问本页后重新打开。
-        </div>
+    <!-- 邀请码二维码弹窗（复用全局流光 Modal 外壳，挂在区块外避免被表格溢出裁剪） -->
+    <AdvancedModal v-if="qrShow" title="扫码注册" @close="qrShow = false">
+      <div class="invite-qr-code">{{ qrCodeText }}</div>
+      <img v-if="qrDataUrl" :src="qrDataUrl" alt="邀请码二维码" class="invite-qr-img" />
+      <p class="op-muted invite-qr-link">{{ qrLink }}</p>
+      <div v-if="qrLoopbackWarn" class="op-message error">
+        当前是 localhost 地址，手机扫码打不开。请用局域网 IP（如 http://192.168.x.x:8010）访问本页后重新打开。
+      </div>
+      <div class="invite-qr-actions">
         <button class="btn-primary" @click="qrShow = false">关闭</button>
       </div>
-    </div>
+    </AdvancedModal>
 
     <!-- 版本与升级 -->
     <section class="setting-section">
@@ -944,30 +944,7 @@ function fmtMs(ms) {
   transition: width 0.3s;
 }
 
-/* 邀请码二维码弹窗 */
-.modal-mask {
-  position: fixed;
-  inset: 0;
-  z-index: 100;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(0, 0, 0, 0.5);
-}
-
-.modal-card {
-  background: var(--color-surface, #fff);
-  border-radius: 12px;
-  padding: 24px;
-  text-align: center;
-  max-width: 90vw;
-}
-
-.modal-title {
-  margin: 0 0 12px;
-  font-size: var(--text-lg, 18px);
-}
-
+/* 邀请码二维码弹窗内容（外壳复用全局 AdvancedModal 流光样式） */
 .invite-qr-code {
   font-size: 1.4rem;
   font-weight: 600;
@@ -985,6 +962,10 @@ function fmtMs(ms) {
 .invite-qr-link {
   word-break: break-all;
   margin: 12px 0;
+}
+
+.invite-qr-actions {
+  margin-top: var(--space-12);
 }
 .upload-text { font-size: var(--text-xs); color: var(--color-text-secondary); }
 .diag-table-wrap { margin-top: var(--space-8); overflow-x: auto; }
