@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **8011 启动页升级**（`startup_progress.py`）：浏览器访问 `/` 或 `/progress` 从裸 JSON 改为极简页——安装码大字 + `segno` 服务端渲染的二维码 SVG（微信/相机扫码即读码，免人工抄写）；`/api/startup-progress` JSON 契约不动；segno 缺失/渲染失败降级纯文字，进度服务永不 500
 - **运维页邀请码二维码**（`OperationsView.vue` + npm `qrcode`）：未使用的码弹大图二维码，内容为注册深链 `{origin}/login?mode=register&code=X`——家人扫码点开直达注册页、码已填好；localhost 访问时警示"手机扫不开，请用局域网 IP"
 - **注册页深链填码**（`LoginView.vue`）：`?code=` 自动填入邀请码并切注册模式
+- **邀请码记录删除/清理**（`invite_service.remove_invite` + `DELETE /auth/invites/{code}/purge`）：已使用/已吊销/已过期的记录可在运维页一键删除，列表不再只进不出；仍有效的码拒绝直接删除（409，须先吊销留痕）
 - **邀请码 24h 过期**（`invite_service.py`）：签发后 24 小时未用自动失效，兜住码泄露长期潜伏；过期与无效同一句报错维持无侧信道；存量无 `expires_at` 的码视为永不过期。设计文档：`docs/superpowers/specs/2026-09-14-invite-qr-design.md`
 - **全新环境模拟验证揪出三处问题并修复**：① 签发接口未接收请求体，运维页的邀请码备注被静默丢弃（`auth_routes.create_invite` 新增 `AuthInviteCreateRequest`）；② 户主注册完成后 8011 进度页仍残留显示已作废的安装码（注册路由即时清除 `setup_code` 展示，不再等重启）；③ 部署指南从未提及 `.env` 与 `MQTT_PASSWORD` 必填，照文档做的新用户必然卡在 mosquitto 启动失败（补「首次部署前」步骤）
 - **修复全新安装设置向导死锁（模拟环境验证发现）**：`_load_env_override` 把"存在但为空"的环境变量（`.env.example` 的 `HA_TOKEN=`/`LLM_BASE_URL=` 等占位）当作覆盖值，向导每次保存的 HA token 被空值立即冲掉，`setup_complete` 永远无法达成——照文档新装的用户**永远出不了设置向导**。修复后空值视为未设置；非空 env 覆盖语义不变

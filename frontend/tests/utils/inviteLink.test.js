@@ -3,7 +3,8 @@ import {
   buildInviteRegisterLink,
   isLoopbackHost,
   inviteRemainMs,
-  formatRemainMs
+  formatRemainMs,
+  inviteIsDead
 } from '../../src/utils/inviteLink'
 
 describe('buildInviteRegisterLink', () => {
@@ -38,5 +39,17 @@ describe('inviteRemainMs / formatRemainMs', () => {
     expect(formatRemainMs(25 * 3600000)).toBe('25 小时')
     expect(formatRemainMs(-1)).toBe('已过期')
     expect(formatRemainMs(null)).toBe('')
+  })
+})
+
+describe('inviteIsDead', () => {
+  it('已使用/已吊销/已过期视为终结，活跃码不算', () => {
+    const now = Date.now()
+    expect(inviteIsDead({ used_at: 1 })).toBe(true)
+    expect(inviteIsDead({ revoked_at: 1 })).toBe(true)
+    expect(inviteIsDead({ expires_at: now - 1 })).toBe(true)
+    expect(inviteIsDead({ used_at: 0, revoked_at: 0, expires_at: now + 60000 })).toBe(false)
+    expect(inviteIsDead({})).toBe(false)
+    expect(inviteIsDead(null)).toBe(false)
   })
 })

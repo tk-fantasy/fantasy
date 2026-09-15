@@ -177,3 +177,32 @@ async def revoke_invite(db: Database, code: str) -> None:
             logger.info("Invite code revoked: %s", normalized)
             return
     raise AppException("邀请码不存在", code="invite_not_found", http_status=404)
+
+
+async def remove_invite(db: Database, code: str) -> None:
+    """删除一条已终结（已使用/已吊销/已过期）的邀请码记录。
+
+    仍有效的码不允许直接删——删除等于无痕抹掉一张活票，必须先吊销留痕。
+    """
+    normalized = _normalize(code)
+    invites = await _load_invites(db)
+    now_ms = int(time.time() * 1000)
+    for i, entry in enumerate(invites):
+        if _normalize(entry.get("code")) != normalized:
+            continue
+        expires_at = entry.get("expires_at") or 0
+        dead = bool(
+            entry.get("used_at")
+            or entry.get("revoked_at")
+            or (expires_at and now_ms > expires_at)
+        )
+        if not dead:
+            raise AppException(
+                "邀请码仍有效，请先吊销再删除",
+                code="invite_active", http_status=409,
+            )
+        invites.pop(i)
+        await _save_invites(db, invites)
+        logger.info("Invite record removed: %s", normalized)
+        return
+    raise AppException("邀请码不存在", code="invite_not_found", http_status=404)

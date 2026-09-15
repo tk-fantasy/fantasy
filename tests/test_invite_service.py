@@ -127,6 +127,55 @@ class TestRegistrationGate:
         assert ei.value.http_status == 404
 
 
+class TestInviteRemoval:
+    @pytest.mark.asyncio
+    async def test_remove_revoked_record(self):
+        """已吊销的记录可整条删除。"""
+        db = _mock_db(user_count=1)
+        entry = await invite_service.create_invite(db, created_by="admin")
+        await invite_service.revoke_invite(db, entry["code"])
+        await invite_service.remove_invite(db, entry["code"])
+        assert await invite_service.list_invites(db) == []
+
+    @pytest.mark.asyncio
+    async def test_remove_expired_record(self):
+        db = _mock_db(user_count=1)
+        entry = await invite_service.create_invite(db, created_by="admin")
+        invites = json.loads(db._store[invite_service._KV_INVITE_CODES])
+        invites[0]["expires_at"] = invites[0]["created_at"] - 1000
+        db._store[invite_service._KV_INVITE_CODES] = json.dumps(invites)
+        await invite_service.remove_invite(db, entry["code"])
+        assert await invite_service.list_invites(db) == []
+
+    @pytest.mark.asyncio
+    async def test_remove_used_record(self):
+        db = _mock_db(user_count=1)
+        entry = await invite_service.create_invite(db, created_by="admin")
+        await invite_service.verify_registration_code(db, entry["code"], username="mom")
+        await invite_service.remove_invite(db, entry["code"])
+        assert await invite_service.list_invites(db) == []
+
+    @pytest.mark.asyncio
+    async def test_remove_active_code_rejected_409(self):
+        """仍有效的码不允许直接删——必须先吊销留痕。"""
+        db = _mock_db(user_count=1)
+        entry = await invite_service.create_invite(db, created_by="admin")
+        with pytest.raises(AppException) as ei:
+            await invite_service.remove_invite(db, entry["code"])
+        assert ei.value.http_status == 409
+        # 吊销后即可删除
+        await invite_service.revoke_invite(db, entry["code"])
+        await invite_service.remove_invite(db, entry["code"])
+        assert await invite_service.list_invites(db) == []
+
+    @pytest.mark.asyncio
+    async def test_remove_unknown_code_404(self):
+        db = _mock_db(user_count=1)
+        with pytest.raises(AppException) as ei:
+            await invite_service.remove_invite(db, "NOPE-NOPE")
+        assert ei.value.http_status == 404
+
+
 class TestInviteExpiry:
     @pytest.mark.asyncio
     async def test_create_invite_sets_24h_expiry(self):

@@ -14,7 +14,8 @@ import {
   buildInviteRegisterLink,
   isLoopbackHost,
   inviteRemainMs,
-  formatRemainMs
+  formatRemainMs,
+  inviteIsDead
 } from '../utils/inviteLink'
 
 const STATUS_META = {
@@ -376,6 +377,17 @@ function inviteUsable(it) {
   return !it.used_at && !it.revoked_at && (remain === null || remain > 0)
 }
 
+// 清理已终结的记录（已使用/已吊销/已过期）
+async function removeInvite(it) {
+  if (!window.confirm(`删除邀请码 ${it.code} 的记录？此操作不可恢复。`)) return
+  try {
+    await apiDelete(`/api/auth/invites/${encodeURIComponent(it.code)}/purge`)
+    await loadInvites()
+  } catch (e) {
+    inviteMessage.value = e?.message || '删除失败'
+  }
+}
+
 // --------------- 邀请码二维码（扫码直达预填码的注册页） ---------------
 const qrShow = ref(false)
 const qrDataUrl = ref('')
@@ -573,6 +585,11 @@ function fmtMs(ms) {
                   class="btn-link danger"
                   @click="revokeInvite(it.code)"
                 >吊销</button>
+                <button
+                  v-if="inviteIsDead(it)"
+                  class="btn-link danger"
+                  @click="removeInvite(it)"
+                >删除</button>
               </td>
             </tr>
           </tbody>

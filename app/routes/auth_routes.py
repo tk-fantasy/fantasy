@@ -225,6 +225,16 @@ async def revoke_invite(
     return ApiResponse(data={"revoked": True, "code": code})
 
 
+@router.delete("/auth/invites/{code}/purge")
+async def purge_invite(
+    code: str,
+    current_user: dict = Depends(get_current_admin),
+) -> ApiResponse[dict]:
+    """删除一条已终结（已使用/已吊销/已过期）的邀请码记录（管理员）。"""
+    await invite_service.remove_invite(Database.get(), code)
+    return ApiResponse(data={"removed": True, "code": code})
+
+
 @router.post("/auth/setup-code/regenerate")
 async def regenerate_setup_code(
     current_user: dict = Depends(get_current_admin),
