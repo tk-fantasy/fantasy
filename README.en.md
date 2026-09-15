@@ -126,14 +126,14 @@ AI replies stream token-by-token, like a person typing. Markdown rendering with 
 - **🔌 MCP tool ecosystem** — Built-in weather / web search / device-control tools, plus external MCP servers and integration plugins (including model-family adapter plugins).
 - **🔐 JWT auth + independent config** — Sessions use JWT, LLM keys are managed independently with isolated sessions, one-click clear of conversation history.
 - **🛠️ Operations center** — Diagnostic package export, deployment health check, backup/restore, one-click upgrade-pack export & side-load install — all operations in one place without SSH access.
-- **👑 Admin tiering** — First registered user becomes admin automatically; dangerous endpoints (plugin upload/ops/etc.) require admin privileges.
+- **👑 Admin tiering + gated registration** — First registered user (with the **setup code** from the deploy log or `http://localhost:8011/progress`) becomes admin automatically; afterwards registration is by **one-time invite codes** only (issued from the Operations center, 24h expiry, QR deep-link for family to scan straight into a pre-filled signup page). Dangerous endpoints (plugin upload/ops/etc.) require admin privileges.
 
 ## Architecture & ports
 
 | Service | Port | Purpose |
 |---------|------|---------|
 | Aether app | `8010` | FastAPI main service (REST + WebSocket + SPA hosting) |
-| Startup progress | `8011` | Cold-start progress endpoint, polled by the loading page before 8010 is up |
+| Startup progress | `8011` | Loopback-only, lives for the whole process: cold-start progress JSON + the first-deploy setup-code page (big code + QR, cleared once the owner registers) |
 | Home Assistant | `8123` | The smart-home brain; Aether drives it via REST API |
 | Mosquitto MQTT | `1884` | Virtual-device simulator → HA message channel |
 | Vite dev server | `5173` | Frontend dev only; production serves built assets from 8010 |

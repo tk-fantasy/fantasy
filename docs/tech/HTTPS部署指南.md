@@ -22,7 +22,7 @@
 
 - 一律使用 `https://`，如 `https://<局域网IP>:8010`、`https://<Tailscale IP>:8010`（Tailscale）。
   **旧的 `http://` 地址会直接连接失败**（同一端口无法同时讲两种协议）。
-- 浏览器打开 `/` 会 307 跳转到 `/landing`——这是 `app/routes/setup_routes.py` 的原有路由设计，与 HTTPS 无关。
+- 浏览器打开 `/` 会 307 跳转到 `/chat`（未登录由前端路由守卫引到 `/login`），与 HTTPS 无关。
 - Cookie 的 `Secure` 标志自动跟随（`app/core/auth.py` 的 `is_secure_request`），无需配置。
 
 ## 证书管理
@@ -77,6 +77,37 @@ certutil -user -delstore Root "Aether Local Root CA"  # 删除（回滚时）
 
 无法导入 CA 的设备只能每次点「继续前往」；个别老旧设备的内置浏览器连 TLS 版本都过新
 支持不了，属设备限制。
+
+## 免费真证书路线：DuckDNS + Let's Encrypt（推荐家用）
+
+自签路线的警告靠「设备导入 CA」消除；若不想逐台导入（尤其微信内置浏览器对自签证书
+直接红字提示「隐私泄露风险」、不提供「继续前往」入口），可换公信证书，全免费：
+
+1. **注册 DuckDNS**：github/google 账号登录 duckdns.org，建一个子域
+   （如 `zhangjia-aether.duckdns.org`），记下页面顶部的 token。
+2. **把域名指向服务器局域网 IP**（家人手机解析到的就是它）：
+   ```
+   https://www.duckdns.org/update?domains=zhangjia-aether&token=<token>&ip=192.168.0.129
+   ```
+   浏览器返回 `OK` 即生效。
+3. **acme.sh 签发**（DNS 验证，无需公网端口、无需备案）：
+   ```bash
+   export DuckDNS_Token="<token>"
+   acme.sh --issue --dns dns_duckdns -d zhangjia-aether.duckdns.org
+   ```
+4. **装进 certs/ 并配自动续期**：
+   ```bash
+   acme.sh --install-cert -d zhangjia-aether.duckdns.org      --fullchain-file certs/aether.crt --key-file certs/aether.key      --reloadcmd "docker compose restart aether"
+   ```
+   acme.sh 的 cron 每 60 天左右自动续签并重启容器，一次配置永久无感。
+
+注意：
+
+- 证书签给域名，**访问局域网 IP 仍会警告**——签发后全家统一使用域名地址
+  （`https://zhangjia-aether.duckdns.org:8010`）；运维页生成的注册二维码自动跟随
+  当前访问地址，用域名打开即产出域名深链。
+- 此路线下「设备导入 rootCA」不再需要；原 `aether.crt/aether.key` 被自动续期覆盖，
+  `gen_https_cert.sh` 自签路线保留作无域名时的兜底。
 
 ## 命令行访问注意事项
 

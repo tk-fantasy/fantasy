@@ -703,6 +703,6 @@ WebSocket token 校验顺序：query `token` → `aether_token` cookie → `X-AP
 
 ---
 
-## 15. 启动期 8011 端口
+## 15. 8011 启动进度端口（常驻）
 
-冷启动期间（LLM 客户端初始化较慢），`scripts/startup_progress.py` 在 **8011** 端口提供临时的启动进度服务，前端轮询展示进度。主服务（8010）就绪后该服务自动退出。详见《系统健康检查指南》。
+冷启动期间（LLM 客户端初始化较慢），`app/startup_progress.py` 在 **8011** 端口提供启动进度服务，前端轮询展示进度。该服务**随进程常驻**：就绪后承载首次部署安装码页——浏览器访问 `/` 或 `/progress` 返回 HTML（安装码大字 + 二维码，户主注册完成即清码）；`/api/startup-progress` 保持 JSON 契约。仅绑本机回环（容器部署经 compose 映射）。详见《系统健康检查指南》。
