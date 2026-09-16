@@ -1615,7 +1615,7 @@ def _register_ha_device_history(deps: ToolDeps) -> None:
         if client is None or not hasattr(client, "logbook"):
             return tool_error("HA 客户端不可用", hint="Home Assistant 未配置或不可达，如实告知用户。")
         from datetime import datetime, timedelta
-        start = (datetime.now() - timedelta(hours=hours)).isoformat()
+        start = (datetime.now().astimezone() - timedelta(hours=hours)).isoformat()
         try:
             entries = await client.logbook(entity_id, timestamp=start)
         except Exception as exc:  # noqa: BLE001

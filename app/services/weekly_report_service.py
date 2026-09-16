@@ -220,7 +220,7 @@ class WeeklyReportService:
             logger.debug("weekly report: HA snapshot failed", exc_info=True)
             return ""
         configured = get_config("report.ha_stat_entities", {}) or {}
-        start = (datetime.now() - timedelta(days=7)).isoformat()
+        start = (datetime.now().astimezone() - timedelta(days=7)).isoformat()
         parts: list[str] = []
         for cls in ("temperature", "humidity", "energy"):
             entities = [str(e).strip() for e in (configured.get(cls) or [])

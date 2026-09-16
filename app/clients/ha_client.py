@@ -201,29 +201,52 @@ class HomeAssistantClient:
         response.raise_for_status()
         return response.content
 
-    # ============ HA 原生自动化配置（阶段5）============
+    # ============ HA 原生自动化配置（阶段5；适配 HA 2026.x）============
 
     async def list_automations(self) -> list[dict[str, Any]]:
-        """列出 HA 原生自动化配置（含 id/alias/trigger/condition/action）。"""
-        client = await self._get_client()
-        response = await client.get("/api/config/automation/config", timeout=15.0)
-        response.raise_for_status()
-        return response.json()
+        """列出 HA 原生自动化。
 
-    async def create_automation(self, config: dict[str, Any]) -> dict[str, Any]:
-        """创建 HA 原生自动化（POST /api/config/automation/config）。
-
-        config 为 HA automation schema（alias/trigger/condition/action...），
-        返回含新自动化的 id。
+        HA 2026 起没有「列出全部 config」的端点（WS config/automation/config/*
+        命令已移除），automations 本身就是实体——从 /api/states 按 domain=automation
+        取，friendly_name=alias、attributes.id 是 config id（删除用）。
         """
         client = await self._get_client()
-        response = await client.post(
-            "/api/config/automation/config", json=config, timeout=15.0)
+        response = await client.get("/api/states", timeout=15.0)
         response.raise_for_status()
-        return response.json()
+        out = []
+        for s in response.json():
+            entity_id = str(s.get("entity_id", "") or "")
+            if not entity_id.startswith("automation."):
+                continue
+            attrs = s.get("attributes") or {}
+            out.append({
+                "id": str(attrs.get("id") or entity_id.split(".", 1)[1]),
+                "entity_id": entity_id,
+                "alias": str(attrs.get("friendly_name") or entity_id),
+                "state": s.get("state"),
+                "last_triggered": attrs.get("last_triggered"),
+            })
+        return out
+
+    async def create_automation(
+        self, config: dict[str, Any], automation_id: str = "",
+    ) -> dict[str, Any]:
+        """创建 HA 原生自动化。
+
+        REST 只接受路径带显式 id（POST /api/config/automation/config/{id}，
+        HA 2026 起无免 id 创建端点），缺省生成 uuid hex。返回 {id, result}。
+        """
+        import uuid as _uuid
+        automation_id = automation_id or _uuid.uuid4().hex
+        client = await self._get_client()
+        response = await client.post(
+            f"/api/config/automation/config/{automation_id}",
+            json=config, timeout=15.0)
+        response.raise_for_status()
+        return {"id": automation_id, "result": (response.json() or {}).get("result", "")}
 
     async def delete_automation(self, automation_id: str) -> None:
-        """删除 HA 原生自动化。不存在时 HA 返回 404，调用方决定是否容忍。"""
+        """删除 HA 原生自动化（按 config id）。不存在时 HA 返回 404。"""
         client = await self._get_client()
         response = await client.delete(
             f"/api/config/automation/config/{automation_id}", timeout=15.0)
@@ -237,19 +260,22 @@ class HomeAssistantClient:
     ) -> list[dict[str, Any]]:
         """查询 HA logbook（设备级操作史：谁在何时开了灯/关了门）。
 
-        entity_id 为空查全屋；timestamp/end_time 为 ISO8601 时间窗。
+        HA 2026 起按实体的路径形式（/api/logbook/{entity_id}）已失效，统一
+        根路径 + entity_id 查询参数过滤。timestamp/end_time 为 ISO8601。
         返回 [{when, name, entity_id, message, context_user_id?}, ...]，
         时间升序——Aether 自家的 family_events 只有自家操作，HA 侧的
         App/自动化/家庭成员操作史都在这里。
         """
         client = await self._get_client()
-        path = "/api/logbook" + (f"/{entity_id}" if entity_id else "")
         params: dict[str, str] = {}
+        if entity_id:
+            params["entity_id"] = entity_id
         if timestamp:
             params["timestamp"] = timestamp
         if end_time:
             params["end_time"] = end_time
-        response = await client.get(path, params=params or None, timeout=15.0)
+        response = await client.get(
+            "/api/logbook", params=params or None, timeout=15.0)
         response.raise_for_status()
         return response.json()
 

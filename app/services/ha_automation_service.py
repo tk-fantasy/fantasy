@@ -210,7 +210,7 @@ class HaAutomationService:
         return {"id": automation_id, "alias": config["alias"]}
 
     async def list_automations(self) -> list[dict]:
-        """HA 自动化列表（轻量化：id/alias/最后触发时间/动作数）。"""
+        """HA 自动化列表（轻量化；数据来自 automation 实体，见 ha_client）。"""
         client = self._ha_client
         if client is None or not hasattr(client, "list_automations"):
             return []
@@ -223,10 +223,9 @@ class HaAutomationService:
             {
                 "id": str(a.get("id", "")),
                 "alias": str(a.get("alias", "") or "(未命名)"),
-                "description": str(a.get("description", "") or ""),
+                "entity_id": str(a.get("entity_id", "")),
+                "state": a.get("state", ""),
                 "last_triggered": a.get("last_triggered"),
-                "actions_count": len(a.get("action") or a.get("actions") or []),
-                "triggers_count": len(a.get("trigger") or a.get("triggers") or []),
             }
             for a in items or []
         ]

@@ -158,17 +158,18 @@ class TestWriteAndManage:
         assert config["trigger"][0]["platform"] == "state"
 
     async def test_list_lightweight(self):
+        """HA 2026 起 automations 是实体：列表数据来自 domain=automation 的 states。"""
         client = MagicMock()
         client.list_automations = AsyncMock(return_value=[
-            {"id": "a1", "alias": "晨灯", "description": "",
-             "last_triggered": "2026-09-15T06:30:00",
-             "action": [{"action": "light.turn_on"}],
-             "trigger": [{"platform": "time"}]},
+            {"id": "a1", "entity_id": "automation.chen_deng", "alias": "晨灯",
+             "state": "on", "last_triggered": "2026-09-15T06:30:00"},
         ])
         svc = HaAutomationService(rule_service=MagicMock(), ha_client_ref=[client])
         items = await svc.list_automations()
         assert items[0]["id"] == "a1"
-        assert items[0]["actions_count"] == 1 and items[0]["triggers_count"] == 1
+        assert items[0]["alias"] == "晨灯"
+        assert items[0]["entity_id"] == "automation.chen_deng"
+        assert items[0]["last_triggered"] == "2026-09-15T06:30:00"
 
     async def test_delete(self):
         client = MagicMock()

@@ -20,7 +20,8 @@ from app.services.weekly_report_service import WeeklyReportService
 
 
 class TestLogbookClient:
-    async def test_logbook_url_and_params(self):
+    async def test_logbook_entity_as_query_param(self):
+        """HA 2026：按实体的路径形式已失效，entity_id 走查询参数。"""
         from app.clients.ha_client import HomeAssistantClient
         requests = []
 
@@ -43,15 +44,17 @@ class TestLogbookClient:
             "lock.front_door", timestamp="2026-09-14T00:00:00")
         assert entries[0]["name"] == "Front Door"
         url, params = requests[0]
-        assert url.split("?")[0].endswith("/api/logbook/lock.front_door")
+        assert url.split("?")[0].endswith("/api/logbook")
+        assert params["entity_id"] == "lock.front_door"
         assert params["timestamp"] == "2026-09-14T00:00:00"
         await client._client.aclose()
 
-    async def test_logbook_no_entity_uses_root(self):
+    async def test_logbook_no_entity_no_param(self):
         from app.clients.ha_client import HomeAssistantClient
 
         def handler(request: httpx.Request) -> httpx.Response:
             assert str(request.url).endswith("/api/logbook")
+            assert "entity_id" not in dict(request.url.params)
             return httpx.Response(200, json=[])
 
         import asyncio as _asyncio

@@ -997,7 +997,7 @@ onUnmounted(() => {
             <div v-for="a in haAutomations" :key="a.id"
                  class="setting-row" style="border-bottom: 1px solid var(--color-border, #eee); padding: 6px 0;">
               <span style="flex: 1; font-size: 13px;">{{ a.alias }}
-                <span class="label-desc">{{ a.actions_count }} 个动作</span>
+                <span class="label-desc">{{ a.state === 'on' ? '启用中' : '已停用' }}</span>
               </span>
               <button class="btn-test" @click="removeHaAutomation(a.id, a.alias)">删除</button>
             </div>

@@ -672,7 +672,7 @@ async def ha_logbook(
     """查 HA logbook 设备操作史（前端设备详情/家庭报告数据源）。"""
     from datetime import datetime, timedelta
     try:
-        start = (datetime.now() - timedelta(hours=hours)).isoformat()
+        start = (datetime.now().astimezone() - timedelta(hours=hours)).isoformat()
         entries = await container.ha_client.logbook(entity_id, timestamp=start)
     except Exception as e:  # noqa: BLE001
         raise AppException(f"Home Assistant 连接失败: {e}", code="ha_error", http_status=502)

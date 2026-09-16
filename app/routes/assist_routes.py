@@ -48,8 +48,8 @@ async def assist_status() -> ApiResponse[dict]:
         "component_deployed": deployed,
         "token_configured": bool(APP_TOKEN),
         "ready": deployed and bool(APP_TOKEN),
-        "hint": ("组件随仓库分发（aether-ha 容器挂载 ha_config）；重启 HA 后在"
-                 "「设备与服务 → 添加集成 → Aether」填地址与 Token，"
+        "hint": ("组件随仓库分发（源码检查；容器内以 HA 里能否添加集成为准）。"
+                 "重启 HA 后在「设备与服务 → 添加集成 → Aether」填地址与 Token，"
                  "再到「语音助手」把对话引擎选成 Aether。"
                  if deployed and APP_TOKEN else
                  "组件文件缺失或 APP_TOKEN 未设置，参见组件 README。"),

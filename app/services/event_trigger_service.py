@@ -143,7 +143,10 @@ class EventTriggerService:
         client = getattr(self._ha_service, "_client", None)
         if client is None or not hasattr(client, "calendar_events"):
             return
-        now = now or datetime.now()
+        # 全程 tz-aware：HA calendar 接口要求带时区 ISO，moment 对比也用 aware
+        now = now or datetime.now().astimezone()
+        if now.tzinfo is None:
+            now = now.astimezone()
         window_start = now - timedelta(seconds=_CALENDAR_POLL_SECONDS + 60)
         entities = self._calendar_entities()
         for entity_id in entities:
@@ -184,8 +187,8 @@ class EventTriggerService:
                 moment = datetime.fromisoformat(str(marker))
             except ValueError:
                 continue
-            if moment.tzinfo is not None:  # HA dateTime 带时区偏移，与本地 naive now 归一
-                moment = moment.astimezone().replace(tzinfo=None)
+            if moment.tzinfo is None:  # HA dateTime 正常带时区；缺时区按本地补齐
+                moment = moment.astimezone()
             elapsed = (now - moment).total_seconds()
             if not (0 <= elapsed <= window):
                 continue
