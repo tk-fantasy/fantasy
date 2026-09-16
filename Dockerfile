@@ -34,7 +34,12 @@ RUN sed -i "s@http://deb.debian.org@http://mirrors.tuna.tsinghua.edu.cn@g" /etc/
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 10001 aether \
     && mkdir -p /aether/app/data /aether/logs /aether/backups /aether/app/sg/output /aether/certs \
-    && chown -R aether:aether /aether/app/data /aether/logs /aether/backups /aether/app/sg/output /aether/certs
+    && chown -R aether:aether /aether/app/data /aether/logs /aether/backups /aether/app/sg/output /aether/certs \
+    # /aether 目录本身交给 aether：atomic_write 在该目录落 config.json.tmp、
+    # 备份 config.json.bak，write_secrets 写 /aether/.env——目录属 root 时
+    # 这些写入全部 EACCES（管理页保存配置 500 的根因）。只 chown 目录本身
+    # （不递归），应用代码保持 root 属主，进程不可改写自身代码。
+    && chown aether:aether /aether
 
 WORKDIR /aether
 
@@ -56,6 +61,12 @@ COPY version.json ./
 
 # 拷贝集成插件目录（插件子进程 spawn 时读取 manifest 与入口脚本）
 COPY integrations/ ./integrations/
+
+# Assist 对接组件副本（阶段7）：/api/assist/status 的 component_deployed 检查
+# 读仓库内 ha_config/custom_components/aether_conversation；部署上真正生效的
+# 是 aether-ha 容器挂载的宿主 ha_config 目录（同源），此处副本保证容器内
+# 状态检测自洽，组件也随镜像分发。
+COPY ha_config/custom_components/aether_conversation/ ./ha_config/custom_components/aether_conversation/
 
 # 拷贝文档（RAG 服务读取 docs/ 做知识库索引）
 COPY docs/ ./docs/

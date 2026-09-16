@@ -43,8 +43,14 @@ config.json.bak
 Thumbs.db
 
 # ===== 非 app 运行时所需的内容（侧车容器/文档/测试/脚本）=====
-# HA 与 MQTT 的配置由各自的侧车容器挂载，Aether 应用镜像不需要
-ha_config/
+# HA 与 MQTT 的配置由各自的侧车容器挂载，Aether 应用镜像不需要；
+# 例外：aether_conversation 组件副本随 Aether 镜像分发（Dockerfile COPY，
+# /api/assist/status 的 component_deployed 检测读它）。注意 Docker 规则：
+# 父目录整体排除后无法用 ! 重新包含，故排除用 ha_config/* 逐级通配。
+ha_config/*
+!ha_config/custom_components
+ha_config/custom_components/*
+!ha_config/custom_components/aether_conversation
 mosquitto/
 # 文档、代办、迁移脚本不属于运行时
 # （docs/ 除外 —— RAG 服务需要读 docs/ 做知识库索引）
