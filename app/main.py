@@ -294,6 +294,9 @@ def sync_ha_runtime_refs(new_client, new_service) -> None:
         ets.set_ha_service(new_service)
     if automation_service is not None:
         automation_service.set_ha_service(new_service)
+    has_ = getattr(_container, "ha_automation_service", None)
+    if has_ is not None:
+        has_.set_refs(new_client)
 
 
 # ============ 公共工具函数 ============
@@ -651,6 +654,11 @@ async def lifespan(_: FastAPI):
         ha_service=_container.ha_service, automation_service=automation_service)
     _container.event_trigger_service.bind(_container.device_event_service)
     await _container.event_trigger_service.start()
+
+    # ── HA 原生自动化生成（阶段5）：聊天一句话写进 HA，复用规则系统目录/校验 ──
+    from .services.ha_automation_service import HaAutomationService
+    _container.ha_automation_service = HaAutomationService(
+        rule_service=_services.get("rule_service"), ha_client_ref=[ha_client])
 
     # ── 家庭周报（默认开启，weekly_report.enabled=false 关闭）──
     from .services.weekly_report_service import WeeklyReportService

@@ -22,6 +22,8 @@ logger = logging.getLogger(__name__)
 PENDING_TTL_SECONDS = 600
 
 KIND_AUTOMATION_RULE = "automation_rule"
+# 阶段5：HA 原生自动化的两段式确认（草稿结构不同：alias/trigger/condition/actions）
+KIND_HA_AUTOMATION = "ha_automation"
 
 
 def pending_store(session: Any) -> dict:

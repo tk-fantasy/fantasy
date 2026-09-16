@@ -201,6 +201,34 @@ class HomeAssistantClient:
         response.raise_for_status()
         return response.content
 
+    # ============ HA 原生自动化配置（阶段5）============
+
+    async def list_automations(self) -> list[dict[str, Any]]:
+        """列出 HA 原生自动化配置（含 id/alias/trigger/condition/action）。"""
+        client = await self._get_client()
+        response = await client.get("/api/config/automation/config", timeout=15.0)
+        response.raise_for_status()
+        return response.json()
+
+    async def create_automation(self, config: dict[str, Any]) -> dict[str, Any]:
+        """创建 HA 原生自动化（POST /api/config/automation/config）。
+
+        config 为 HA automation schema（alias/trigger/condition/action...），
+        返回含新自动化的 id。
+        """
+        client = await self._get_client()
+        response = await client.post(
+            "/api/config/automation/config", json=config, timeout=15.0)
+        response.raise_for_status()
+        return response.json()
+
+    async def delete_automation(self, automation_id: str) -> None:
+        """删除 HA 原生自动化。不存在时 HA 返回 404，调用方决定是否容忍。"""
+        client = await self._get_client()
+        response = await client.delete(
+            f"/api/config/automation/config/{automation_id}", timeout=15.0)
+        response.raise_for_status()
+
     # ============ 日历 ============
 
     async def calendar_events(

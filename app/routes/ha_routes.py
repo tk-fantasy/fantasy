@@ -627,3 +627,37 @@ async def set_unique_settings(payload: UniqueSettingsRequest) -> ApiResponse[dic
             "guidelines_custom": bool(guidelines_cfg),
         }
     )
+
+
+# —— HA 原生自动化管理（阶段5：运维页展示 + 删除；创建走聊天两段式确认）——
+
+
+@router.get("/ha/automations")
+async def list_ha_automations(
+    container: AppContainer = Depends(get_container),
+) -> ApiResponse[list[dict]]:
+    """列出 HA 原生自动化（轻量：id/alias/最后触发时间/动作数）。"""
+    svc = getattr(container, "ha_automation_service", None)
+    if svc is None:
+        raise AppException("HA 自动化服务未就绪", code="ha_automation_unavailable", http_status=503)
+    try:
+        items = await svc.list_automations()
+    except Exception as e:  # noqa: BLE001
+        raise AppException(f"Home Assistant 连接失败: {e}", code="ha_error", http_status=502)
+    return ApiResponse(data=items)
+
+
+@router.delete("/ha/automations/{automation_id}")
+async def delete_ha_automation(
+    automation_id: str,
+    container: AppContainer = Depends(get_container),
+    _admin: dict = Depends(get_current_admin),
+) -> ApiResponse[dict]:
+    """删除 HA 原生自动化（管理员）。"""
+    svc = getattr(container, "ha_automation_service", None)
+    if svc is None:
+        raise AppException("HA 自动化服务未就绪", code="ha_automation_unavailable", http_status=503)
+    result = await svc.delete(automation_id)
+    if result.get("error"):
+        raise AppException(result["error"], code="ha_automation_delete_failed", http_status=502)
+    return ApiResponse(data=result)

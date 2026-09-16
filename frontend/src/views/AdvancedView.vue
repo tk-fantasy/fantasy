@@ -3,7 +3,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import FlowSelect from '../components/FlowSelect.vue'
 import AdvancedModal from '../components/AdvancedModal.vue'
 import BaseToggle from '../components/BaseToggle.vue'
-import { apiGet, apiPost } from '../utils/api'
+import { apiGet, apiPost, apiDelete } from '../utils/api'
 
 // ===== Modal 管理 =====
 const activeModal = ref(null) // 'weather' | 'exa' | 'camparams' | 'ha' | 'unique' | 'keys' | 'automation'
@@ -23,6 +23,33 @@ const modalTitle = computed(() => {
 
 function openModal(section) {
   activeModal.value = section
+  // HA 弹窗打开时顺带拉原生自动化列表（聊天创建的落点，运维侧可见可删）
+  if (section === 'ha') loadHaAutomations()
+}
+
+// ===== HA 原生自动化（阶段5：列表 + 删除；创建走聊天 ha_automation_create）=====
+const haAutomations = ref([])
+const haAutomationsLoading = ref(false)
+
+async function loadHaAutomations() {
+  haAutomationsLoading.value = true
+  try {
+    haAutomations.value = await apiGet('/api/ha/automations') || []
+  } catch (e) {
+    haAutomations.value = []  // HA 未配置/不可达时静默收起
+  } finally {
+    haAutomationsLoading.value = false
+  }
+}
+
+async function removeHaAutomation(id, alias) {
+  if (!confirm(`删除 HA 自动化「${alias}」？`)) return
+  try {
+    await apiDelete(`/api/ha/automations/${id}`)
+    await loadHaAutomations()
+  } catch (e) {
+    alert('删除失败: ' + (e?.message || e))
+  }
 }
 
 function closeModal() {
@@ -942,6 +969,25 @@ onUnmounted(() => {
           <button class="btn-primary" @click="saveHa" :disabled="haSaving">
             {{ haSaving ? '保存中...' : '保存' }}
           </button>
+        </div>
+
+        <!-- HA 原生自动化：聊天创建（ha_automation_create）的落点，运维侧可见可删 -->
+        <div class="setting-row" style="flex-direction: column; align-items: stretch;">
+          <label class="setting-label">
+            <span class="label-text">HA 原生自动化</span>
+            <span class="label-desc">在聊天里说「在 HA 里建个自动化…」创建；此处可查看/删除</span>
+          </label>
+          <div v-if="haAutomationsLoading" class="label-desc">加载中...</div>
+          <template v-else-if="haAutomations.length">
+            <div v-for="a in haAutomations" :key="a.id"
+                 class="setting-row" style="border-bottom: 1px solid var(--color-border, #eee); padding: 6px 0;">
+              <span style="flex: 1; font-size: 13px;">{{ a.alias }}
+                <span class="label-desc">{{ a.actions_count }} 个动作</span>
+              </span>
+              <button class="btn-test" @click="removeHaAutomation(a.id, a.alias)">删除</button>
+            </div>
+          </template>
+          <div v-else class="label-desc">暂无 HA 原生自动化</div>
         </div>
       </div>
 

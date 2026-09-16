@@ -290,7 +290,9 @@ class RuleService:
                 hints.append(f"家里没有与描述相关的设备，现有可控设备: {listed}")
         return "\n".join(hints)
 
-    async def _prepare_rule_context(self, filter_text: str, user_id: str = "") -> dict:
+    async def _prepare_rule_context(
+        self, filter_text: str, user_id: str = "", system_template: str | None = None,
+    ) -> dict:
         """加载 HA 数据并构造规则解析 system prompt。
 
         build_rule（新建）和 revise_rule（修改）共用此方法，避免重复。
@@ -369,8 +371,12 @@ class RuleService:
         else:
             device_list_text = "(暂无可用设备)"
 
-        from .prompt_service import RULE_SYSTEM_PROMPT_TEMPLATE
-        system_prompt = RULE_SYSTEM_PROMPT_TEMPLATE.format(
+        # system_template 注入点：HaAutomationService（阶段5）复用同一套目录装配，
+        # 换 HA 自动化语法的模版；缺省仍是 Aether 规则模版
+        if system_template is None:
+            from .prompt_service import RULE_SYSTEM_PROMPT_TEMPLATE
+            system_template = RULE_SYSTEM_PROMPT_TEMPLATE
+        system_prompt = system_template.format(
             controls_text=controls_text,
             device_list_text=device_list_text,
         )

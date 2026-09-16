@@ -79,6 +79,49 @@ RULE_SYSTEM_PROMPT_TEMPLATE = (
 )
 
 
+# ============ HA 原生自动化生成 Prompt（阶段5：聊天写进 Home Assistant）===========
+# 动作格式与 Aether 规则同构（domain/service/entity_id/data），复用 rule_service
+# 的防幻觉校验链；trigger/condition 用 HA 经典语法（platform 键）。
+HA_AUTOMATION_PROMPT_TEMPLATE = (
+    "你是 Home Assistant 原生自动化生成器。把用户的一句话解析成 HA 自动化 JSON。\n"
+    "只返回 JSON，不要 markdown，不要解释。\n\n"
+    "输出字段:\n"
+    '  "alias": 自动化简短名称,\n'
+    '  "description": 一句话描述（可空字符串）,\n'
+    '  "trigger": HA 触发器数组（经典语法，每项必含 "platform" 键）,\n'
+    '  "condition": HA 条件数组（可为空数组 []）,\n'
+    '  "actions": 动作数组，每项 {{"domain","service","entity_id","data"}},\n'
+    '  "action_descriptions": 每个动作的中文描述数组,\n\n'
+    "trigger 常用 platform（只选用户明确提到的，不要画蛇添足）:\n"
+    '- state: {{"platform": "state", "entity_id": "person.xxx", "to": "home"}}（到家/离家）\n'
+    '- sun: {{"platform": "sun", "event": "sunset"}}（日落；日出用 sunrise）\n'
+    '- time: {{"platform": "time", "at": "22:30:00"}}（固定时刻）\n'
+    '- time_pattern: {{"platform": "time_pattern", "hours": "/2"}}（周期）\n'
+    '- calendar: {{"platform": "calendar", "entity_id": "calendar.xxx", "event": "start"}}\n'
+    '- numeric_state: {{"platform": "numeric_state", "entity_id": "sensor.xxx", "above": 30}}\n'
+    "condition 常用（条件不止一个触发场景时才加，通常留空）:\n"
+    '- {{"condition": "state", "entity_id": "sun.sun", "state": "below_horizon"}}（天黑）\n'
+    '- {{"condition": "time", "after": "20:00:00"}}\n\n'
+    "动作格式说明:\n"
+    '- domain/service: 严格从下面设备可控项中读取\n'
+    '- entity_id: 从设备列表括号中取完整 entity_id\n'
+    '- data: 有 param 行的用 param 名作 key、用户要求的值作 value；动作类型写 {{}}。\n\n'
+    "### 示例\n"
+    "用户说「我到家就开玄关灯，天黑才开」→\n"
+    '{{"alias": "到家开玄关灯", "trigger": [{{"platform": "state", "entity_id": "person.zhang", "to": "home"}}], '
+    'condition": [{{"condition": "state", "entity_id": "sun.sun", "state": "below_horizon"}}], '
+    'actions": [{{"domain": "light", "service": "turn_on", "entity_id": "light.hall", "data": {{}}}}]}}\n\n'
+    "设备可控项（直接用于动作，不要编造）:\n"
+    "{controls_text}\n\n"
+    "设备 entity_id 对照:\n"
+    "{device_list_text}\n\n"
+    "重要规则：\n"
+    "- trigger 至少 1 项；用户没提触发时机就输出带 error 字段说明缺少触发条件。\n"
+    "- data 的值必须是纯数字或纯字符串，不加单位。\n"
+    "- 不要添加用户没有提到的动作或条件。"
+)
+
+
 # ============ 规则解释 Prompt（plan 模式）===========
 RULE_EXPLAIN_PROMPT = (
     "你是家庭自动化规则讲解员。用户把一条已有规则的 JSON 给你，并问一个关于这条规则的问题。"
@@ -137,6 +180,12 @@ GUIDELINES = (
     "automation_rule_confirm 这组工具——定时任务（scheduled_task_*）是另一套系统，"
     "scene 是场景，都不是自动化规则；http_request 直连 HA 会被内网防护拦截。"
     "规则列表结果里每条 actions 已含控制的设备 entity_id 和设备名，如实转述。\n"
+    "- 【HA 原生自动化】用户明确要在 Home Assistant 里建自动化（「在 HA 里建个自动化」"
+    "「帮我写个 HA 自动化：我到家开玄关灯」）或要管理 HA 已有自动化（列表/删除）时，"
+    "用 ha_automation_create / ha_automation_list / ha_automation_delete 这组工具，"
+    "产物直接落进 HA（可在 HA 界面管理）。与 Aether 自动化规则的分工：纯设备联动"
+    "（触发→动作，无视觉/无冷却要求）优先落 HA；需要看摄像头画面判断、需要冷却防重触、"
+    "或需要 AI 理解复杂条件的才用 automation_rule_*。\n"
     "- 工具调用必须走 tool_call 机制，不要在回复文本里写 JSON 代码块模拟工具调用。\n"
     "\n"
     "## 诚实\n"

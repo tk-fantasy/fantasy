@@ -21,6 +21,7 @@ from .services.entity_controls import resolve_controls, controls_to_text
 from .services.control_probe import call_with_probe
 from .services.pending_rules import (
     KIND_AUTOMATION_RULE,
+    KIND_HA_AUTOMATION,
     PENDING_TTL_SECONDS,
     confirm_pending,
     locate_pending,
@@ -276,6 +277,8 @@ def register_all_tools(deps: ToolDeps) -> None:
     _register_scene_tools(deps)
     # 9. 自动化规则管理（对话建规则=两段式确认，查询/删除/手动触发直达）
     _register_automation_rule_tools(deps)
+    # 10. HA 原生自动化管理（聊天写进 Home Assistant，两段式确认）
+    _register_ha_automation_tools(deps)
 
 
 # ---------------------------------------------------------------------------
@@ -1424,6 +1427,162 @@ def _register_automation_rule_tools(deps: ToolDeps) -> None:
             "type": "object",
             "properties": {"rule_id": {"type": "string", "description": "规则 ID"}},
             "required": ["rule_id"],
+        },
+        handler=delete_handler,
+    ))
+
+
+# ---------------------------------------------------------------------------
+# HA 原生自动化工具 — 聊天一句话写进 Home Assistant（阶段5，两段式确认）
+# ---------------------------------------------------------------------------
+
+def _register_ha_automation_tools(deps: ToolDeps) -> None:
+    """注册 HA 原生自动化聊天工具。
+
+    与 automation_rule_* 的分工（GUIDELINES 同口径）：纯设备联动落 HA
+    （HA 界面可管理），视觉/AI 判定/冷却语义落 Aether 规则。
+    """
+
+    def _svc():
+        from .container import get_container
+        c = get_container()
+        return getattr(c, "ha_automation_service", None)
+
+    async def create_handler(parameters: dict, session) -> dict:
+        svc = _svc()
+        if svc is None:
+            return tool_error("HA 自动化服务未就绪", hint="请如实告知用户稍后再试。")
+        text = str(parameters.get("text", "")).strip()
+        if not text:
+            return tool_error("text 不能为空", hint="传用户的原话，如「在 HA 里建个自动化：我到家开玄关灯」。")
+        user_id = getattr(session, "user_id", "") or ""
+        result = await svc.build_from_text(text, user_id=user_id)
+        if result.get("error"):
+            return tool_error(
+                result["error"],
+                hint="如实告知用户解析失败；缺少触发条件时请用户补充触发时机。",
+                candidates=result.get("validation_errors") or None,
+            )
+        draft = result["draft"]
+        pending_id = uuid4().hex[:12]
+        pending_store(session)[pending_id] = {
+            "kind": KIND_HA_AUTOMATION, "draft": draft, "created_at": time.time(),
+        }
+        note = ("自动化尚未写入 Home Assistant。简要复述触发条件/动作要点，明确告知"
+                "「确认后才生效」；用户说「确认」调 ha_automation_confirm。"
+                "不要说成已经创建好了。")
+        if draft.get("auto_corrections"):
+            fixes = "、".join(
+                f"「{c.get('from')}」→「{c.get('to_name')}」"
+                for c in draft["auto_corrections"])
+            note += f"注意：设备已自动替换为最接近的真实设备：{fixes}，复述时必须点明。"
+        return {
+            "status": "pending_confirm",
+            "pending_id": pending_id,
+            "draft": {
+                "alias": draft["alias"],
+                "description": draft.get("description", ""),
+                "trigger": draft["trigger"],
+                "condition": draft.get("condition") or [],
+                "actions": [
+                    a.get("mcp_tool_input", {}) for a in draft["actions"]
+                ],
+                "action_descriptions": draft.get("action_descriptions") or [],
+            },
+            "expire_minutes": PENDING_TTL_SECONDS // 60,
+            "note": note,
+        }
+
+    async def confirm_handler(parameters: dict, session) -> dict:
+        svc = _svc()
+        if svc is None:
+            return tool_error("HA 自动化服务未就绪", hint="请如实告知用户稍后再试。")
+        pending_id, entry, err = locate_pending(
+            session, str(parameters.get("pending_id", "")).strip(), KIND_HA_AUTOMATION)
+        if entry is None or pending_id is None:
+            return tool_error(err, hint="10 分钟有效；请用户重新描述需求重建。")
+        result = await svc.create(entry["draft"])
+        if result.get("error"):
+            return tool_error(result["error"], hint="写入 HA 失败，如实告知用户；可稍后重试确认。")
+        # 写入成功才弹出草稿（防止重复确认）
+        pending_store(session).pop(pending_id, None)
+        return {
+            "success": True,
+            "id": result.get("id", ""),
+            "alias": result.get("alias", ""),
+            "summary": f"HA 自动化「{result.get('alias')}」已写入 Home Assistant，可在 HA 界面管理。",
+        }
+
+    async def list_handler(parameters: dict, session) -> dict:
+        svc = _svc()
+        if svc is None:
+            return tool_error("HA 自动化服务未就绪", hint="请如实告知用户稍后再试。")
+        items = await svc.list_automations()
+        return {"automations": items, "count": len(items)}
+
+    async def delete_handler(parameters: dict, session) -> dict:
+        svc = _svc()
+        if svc is None:
+            return tool_error("HA 自动化服务未就绪", hint="请如实告知用户稍后再试。")
+        automation_id = str(parameters.get("automation_id", "")).strip()
+        if not automation_id:
+            return tool_error("automation_id 不能为空",
+                              hint="先调 ha_automation_list 获取 ID。")
+        result = await svc.delete(automation_id)
+        if result.get("error"):
+            return tool_error(result["error"], hint="先调 ha_automation_list 确认存在。")
+        return {"success": True, "id": automation_id}
+
+    deps.mcp_client_manager.register_tool(MCPTool(
+        client_id="local",
+        tool_name="ha_automation_create",
+        description=(
+            "【创建 HA 原生自动化-第一步】用户明确要在 Home Assistant 里建自动化时调用"
+            "（如「在 HA 里建个自动化：我到家开玄关灯」「帮我写个 HA 自动化」）。"
+            "与 automation_rule_create 的分工：纯设备联动（触发→动作，无视觉/无冷却要求）"
+            "落 HA；需要看摄像头画面判断、需要冷却防重触或复杂 AI 条件才用 automation_rule_create。"
+            "本工具只解析不写入：返回 pending_confirm JSON，必须先复述要点并说清"
+            "「确认后才生效」，确认走 ha_automation_confirm。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {"text": {"type": "string", "description": "用户描述的原话"}},
+            "required": ["text"],
+        },
+        handler=create_handler,
+    ))
+    deps.mcp_client_manager.register_tool(MCPTool(
+        client_id="local",
+        tool_name="ha_automation_confirm",
+        description=(
+            "【确认写入 HA 自动化-第二步】用户明确确认后调用，把待确认草稿写入 "
+            "Home Assistant。只报结果要点。返回「不存在或已过期」时可能是用户已在"
+            "别处确认过，如实说明即可，不要重复创建。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "pending_id": {"type": "string", "description": "create 返回的 ID（记得就传）"},
+            },
+            "required": [],
+        },
+        handler=confirm_handler,
+    ))
+    deps.mcp_client_manager.register_tool(MCPTool(
+        client_id="local",
+        tool_name="ha_automation_list",
+        description="【列出 HA 原生自动化】用户要看 Home Assistant 里已有的自动化时调用。",
+        parameters={"type": "object", "properties": {}},
+        handler=list_handler,
+    ))
+    deps.mcp_client_manager.register_tool(MCPTool(
+        client_id="local",
+        tool_name="ha_automation_delete",
+        description="【删除 HA 原生自动化】用户要删除某条 Home Assistant 自动化时调用。",
+        parameters={
+            "type": "object",
+            "properties": {"automation_id": {"type": "string", "description": "自动化 ID"}},
+            "required": ["automation_id"],
         },
         handler=delete_handler,
     ))
