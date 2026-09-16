@@ -14,12 +14,16 @@ from ..utils.async_utils import TaskManager
 
 logger = logging.getLogger(__name__)
 
+# 规则类型全集（阶段4 扩展）。time/weather=静默循环评估；vision=画面评估；
+# presence/sun/calendar/helper=HA 事件驱动评估（EventTriggerService 触发）。
+RULE_TYPES = ("time", "weather", "vision", "presence", "sun", "calendar", "helper")
+# 事件驱动的类型子集
+EVENT_RULE_TYPES = ("presence", "sun", "calendar", "helper")
+
 
 @dataclass
 class AutomationRule:
     id: str
-    trigger: dict
-    conditions: list[dict]                               # 已废弃（僵尸字段）：评估器只读 condition: str；仅为存量数据 round-trip 保留，勿新增消费
     actions: list[dict]
     summary: str
     enabled: bool
@@ -27,7 +31,7 @@ class AutomationRule:
     updated_at: int
     name: str = ""                                       # 规则名称
     condition: str = ""                                  # 自然语言条件,如"桌子上有鼠标"
-    type: str = "vision"                                 # 规则类型 time/weather/vision；老规则按 condition 猜
+    type: str = "vision"                                 # 规则类型，见 RULE_TYPES；老规则按 condition 猜
     action_descriptions: list[str] = field(default_factory=list)  # 动作的人类可读描述
     cooldown_seconds: int = 5                            # 防重复触发冷却（数据类兜底默认；实际由 config automation.default_cooldown_seconds 驱动）
     last_triggered_at: float = 0.0                       # 上次触发时间(秒级)
@@ -38,8 +42,6 @@ class AutomationRule:
         return {
             "id": self.id,
             "name": self.name,
-            "trigger": self.trigger,
-            "conditions": self.conditions,
             "condition": self.condition,
             "type": self.type,
             "actions": self.actions,
@@ -67,12 +69,27 @@ class RuleRegistryService:
     def _guess_type(condition: str) -> str:
         """老规则无 type 时按 condition 关键词猜路由类型。
 
-        顺序：视觉词→vision；雨/温/天气→weather；点/时/早/晚/夜→time；兜底 vision。
-        「沾视觉一律 vision」：条件涉及画面可见事件就走 VL，time/weather 仅限纯时间/天气条件。
+        顺序：在场/太阳/日历/helper 事件词（阶段4）→对应类型；视觉词→vision；
+        雨/温/天气→weather；点/时/早/晚/夜→time；兜底 vision。
+        事件词前置：「全家人离家后」含「人」但语义是在场事件，vision 词
+        只做兜底（「画面里有人」不含事件词，仍正确落到 vision）。
         """
         text = (condition or "").strip()
         if not text:
             return "vision"
+        # helper 词最特异性（「离家开关」含 presence 词「离家」，必须先判）
+        helper_words = ("虚拟开关", "计时器", "倒计时", "离家开关")
+        if any(w in text for w in helper_words):
+            return "helper"
+        presence_words = ("到家", "回家", "离家", "在家", "出门", "下班")
+        if any(w in text for w in presence_words):
+            return "presence"
+        sun_words = ("日出", "日落", "天黑", "天亮", "黄昏")
+        if any(w in text for w in sun_words):
+            return "sun"
+        calendar_words = ("日历", "会议", "日程", "课程表")
+        if any(w in text for w in calendar_words):
+            return "calendar"
         vision_words = ("看", "画面", "桌", "人", "坐", "站", "床", "沙发", "屏幕", "键", "鼠", "猫", "书", "杯")
         if any(w in text for w in vision_words):
             return "vision"
@@ -97,8 +114,6 @@ class RuleRegistryService:
                     self._rules.append(
                         AutomationRule(
                             id=item.get("id") or str(uuid.uuid4()),
-                            trigger=item.get("trigger", {}),
-                            conditions=item.get("conditions", []),
                             actions=item.get("actions", []),
                             summary=item.get("summary", ""),
                             enabled=bool(item.get("enabled", True)),
@@ -161,8 +176,6 @@ class RuleRegistryService:
         now = int(time.time() * 1000)
         normalized = AutomationRule(
             id=str(rule.get("id") or uuid.uuid4()),
-            trigger=rule.get("trigger", {}),
-            conditions=rule.get("conditions", []),
             actions=rule.get("actions", []),
             summary=rule.get("summary", ""),
             enabled=True,

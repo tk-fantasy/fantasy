@@ -289,6 +289,11 @@ def sync_ha_runtime_refs(new_client, new_service) -> None:
     # 天气降级链的 HA 兜底数据源同步热替换
     from .services import weather_service as _ws
     _ws.set_ha_service(new_service)
+    ets = getattr(_container, "event_trigger_service", None)
+    if ets is not None:
+        ets.set_ha_service(new_service)
+    if automation_service is not None:
+        automation_service.set_ha_service(new_service)
 
 
 # ============ 公共工具函数 ============
@@ -640,6 +645,13 @@ async def lifespan(_: FastAPI):
     _container.device_event_service = DeviceEventService(ha_service=_container.ha_service)
     await _container.device_event_service.start()
 
+    # ── 事件驱动规则触发（阶段4）：presence/sun/helper 订阅 + calendar 轮询 ──
+    from .services.event_trigger_service import EventTriggerService
+    _container.event_trigger_service = EventTriggerService(
+        ha_service=_container.ha_service, automation_service=automation_service)
+    _container.event_trigger_service.bind(_container.device_event_service)
+    await _container.event_trigger_service.start()
+
     # ── 家庭周报（默认开启，weekly_report.enabled=false 关闭）──
     from .services.weekly_report_service import WeeklyReportService
     _container.weekly_report_service = WeeklyReportService(llm_chat_client=llm_chat_client)
@@ -786,6 +798,8 @@ async def lifespan(_: FastAPI):
     if _container.device_event_service is not None:
         # stop 内会把传感器聚合缓冲尽力落库，须在 DB 关闭前
         await _safe_stop("device event service", _container.device_event_service.stop)
+    if _container.event_trigger_service is not None:
+        await _safe_stop("event trigger service", _container.event_trigger_service.stop)
     # 集成插件平台停止（停止所有插件子进程）
     if _container.integration_layer is not None:
         await _safe_stop("integration layer", _container.integration_layer.stop)

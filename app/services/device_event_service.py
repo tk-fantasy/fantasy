@@ -32,11 +32,13 @@ from ..core.config import get_config
 logger = logging.getLogger(__name__)
 
 # 即时记录的 domain：状态翻转低频且有家庭语义（谁开了灯/门锁了/到家了）
+# sun 每天两次翻转（日间/夜间）家庭语义强（阶段4）；calendar 的日程驱动走
+# EventTriggerService 轮询，state 翻转噪声大不落时间线
 _INSTANT_DOMAINS = frozenset({
     "light", "switch", "cover", "lock", "fan", "climate", "humidifier",
     "media_player", "vacuum", "water_heater", "button", "input_boolean",
     "siren", "valve", "remote", "number", "select",
-    "binary_sensor", "person", "device_tracker",
+    "binary_sensor", "person", "device_tracker", "sun",
 })
 _SENSOR_DOMAIN = "sensor"
 
@@ -51,6 +53,7 @@ _STATE_ZH = {
     "active": "工作中", "cleaning": "清扫中", "returning": "回充中",
     "triggered": "已触发", "problem": "异常", "ok": "正常", "detected": "检测到",
     "clear": "无异常", "connected": "已连接", "disconnected": "已断开",
+    "above_horizon": "日间", "below_horizon": "夜间",
 }
 
 
@@ -311,6 +314,11 @@ class DeviceEventService:
         name = self._friendly_name(new_state, entity_id)
         if new_value in ("unavailable", "unknown"):
             await self._record_state(entity_id, f"{name} 变为不可用")
+            return
+        if domain in ("person", "device_tracker"):
+            # 在场事件动态文案：到家/离家（比「在家」更贴近事件语义，周报可读性更好）
+            verb = "到家" if new_value == "home" else ("离家" if new_value == "not_home" else _state_zh(new_value))
+            await self._record_state(entity_id, f"{name} {verb}")
             return
         if domain in _INSTANT_DOMAINS:
             await self._record_state(entity_id, f"{name} {_state_zh(new_value)}")

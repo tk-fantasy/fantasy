@@ -24,17 +24,25 @@ RULE_SYSTEM_PROMPT_TEMPLATE = (
     "只返回 JSON，不要 markdown，不要解释。\n\n"
     "输出字段:\n"
     '  "name": 规则简短名称,\n'
-    '  "type": （必填，不可省略、不可留空）触发条件类型，三选一："time" | "weather" | "vision"，\n'
+    '  "type": （必填，不可省略、不可留空）触发条件类型，七选一："time" | "weather" | "vision" '
+    '| "presence" | "sun" | "calendar" | "helper"，\n'
     '  "condition": 用一句自然语言描述触发条件,\n'
     '  "actions": 动作数组,每个动作包含 mcp_tool_name 和 mcp_tool_input,\n'
     '  "action_descriptions": 每个动作的中文描述数组,\n'
     '  "cooldown_seconds": 防重复触发的冷却秒数(默认10),\n'
     '  "summary": 规则总结。\n\n'
     "type 判定规则（只能选一个，决定了评估方式和成本）：\n"
-    "- time：条件只跟时间/时刻有关，如「晚上10点」「日出时」「每小时的整点」。\n"
+    "- time：条件只跟时间/时刻有关，如「晚上10点」「每小时的整点」。\n"
     "- weather：条件只跟天气有关，如「下雨时」「气温高于30度」「阴天」。\n"
     "- vision：条件需要看摄像头画面才能判断，如「检测到有人」「桌子上出现杯子」「猫在沙发上」。\n"
-    "  只要条件涉及画面里能看到的事物，一律 vision，不要选 time/weather。\n\n"
+    "  只要条件涉及画面里能看到的事物，一律 vision，不要选 time/weather。\n"
+    "- presence：条件跟家庭成员在家/离家/到家有关，由 Home Assistant 的 person/device_tracker\n"
+    "  在场感知事件触发，如「我到家时」「家里没人时」「全家人都离家后」。\n"
+    "- sun：条件跟日出/日落/天黑/天亮有关，由太阳位置翻转触发，如「日落后」「天黑时」。注意\n"
+    "  「晚上10点」是 time 不是 sun——sun 只用于日出日落本身。\n"
+    "- calendar：条件跟某个日历日程的开始/结束有关，如「日历上会议开始时提醒」「早课结束后」。\n"
+    "- helper：条件跟 HA 虚拟开关（input_boolean）翻转或计时器（timer）倒计时结束有关，\n"
+    "  如「离家开关打开时全屋关灯」「计时器 10 秒结束后自动关灯」。\n\n"
     "动作格式说明:\n"
     '- mcp_tool_name: 必须是 "ha_devices___call_service"\n'
     '- mcp_tool_input: {{"domain": "域", "service": "服务名", "entity_id": "实体id", "data": {{...}}}}\n'
@@ -54,7 +62,11 @@ RULE_SYSTEM_PROMPT_TEMPLATE = (
     "type 判定示例：\n"
     "  「如果晚上10点了就关灯」→ type=time（条件只跟时刻有关）\n"
     "  「如果下雨就关窗户」→ type=weather（条件只跟天气有关）\n"
-    "  「如果检测到有人就开灯」→ type=vision（要看画面判断）\n\n"
+    "  「如果检测到有人就开灯」→ type=vision（要看画面判断）\n"
+    "  「我到家时打开玄关灯」→ type=presence（在场感知事件触发）\n"
+    "  「日落后开玄关灯」→ type=sun（太阳位置翻转触发）\n"
+    "  「日历上会议开始前提醒我」→ type=calendar（日程事件触发）\n"
+    "  「离家开关打开时全屋关灯」→ type=helper（虚拟开关/计时器触发）\n\n"
     "设备可控项（直接用于 call_service，不要编造）：\n"
     "{controls_text}\n\n"
     "设备 entity_id 对照:\n"
@@ -74,7 +86,9 @@ RULE_EXPLAIN_PROMPT = (
     "规则字段含义：\n"
     "- name: 规则名\n"
     "- condition: 触发条件（自然语言描述，如「摄像头检测到有人时」）\n"
-    "- type: 规则类型。time=按时间触发，weather=按天气触发，vision=按摄像头视觉判断触发\n"
+    "- type: 规则类型。time=按时间触发，weather=按天气触发，vision=按摄像头视觉判断触发，\n"
+    "    presence=家庭成员到家/离家事件触发，sun=日出日落触发，calendar=日历日程开始/结束触发，\n"
+    "    helper=HA 虚拟开关翻转或计时器结束触发\n"
     "- actions: 触发后执行的动作列表。每个动作的 mcp_tool_input 里有 domain/service/entity_id/data\n"
     "- cooldown_seconds: 防重复触发的冷却秒数（同一条件触发后，多久内不再重复触发）\n"
     "- summary: 规则的一句话总结\n"

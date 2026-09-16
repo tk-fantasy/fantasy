@@ -14,6 +14,13 @@ logger = logging.getLogger(__name__)
 
 _EVAL_TIMEOUT_SECONDS = 60
 
+# 走 chat LLM 条件判定的规则类型（无帧）：time/weather 由静默循环评估，
+# presence/sun/calendar/helper（阶段4 事件驱动类型）由 EventTriggerService 触发。
+# 其余类型（vision）走 VL 画面评估。
+_CONTEXT_RULE_TYPES = frozenset({
+    "time", "weather", "presence", "sun", "calendar", "helper",
+})
+
 
 class AutomationService:
     def __init__(
@@ -48,11 +55,20 @@ class AutomationService:
         """注入 CameraManager（虚拟摄像头演练开关查询用）。"""
         self._camera_manager = cm
 
+    def set_ha_service(self, ha_service) -> None:
+        """HA service 热替换（sync_ha_runtime_refs 调用）。
+
+        设备门控与条件上下文都持有 service 引用；不重绑的话 HA 配置改一次，
+        评估管道就持续读已 close 的旧 client 直到重启。
+        """
+        self._ha_service = ha_service
+
     async def evaluate(
         self,
         frames: list | None = None,
         camera_id: str = "",
         rule_types: tuple[str, ...] | None = None,
+        event_context: dict | None = None,
     ) -> list[dict]:
         """评估所有规则（async）——按 type 路由 + 设备状态门控。
 
@@ -61,10 +77,13 @@ class AutomationService:
         规则的 camera_id 非空且与传入 camera_id 不匹配 → 跳过。
 
         评估管道拆分:rule_types 限定本轮评估的规则类型(None=全部,向后兼容)。
-        运动触发与视觉静默兜底传 ("vision",),非视觉静默循环传 ("time","weather")。
+        运动触发与视觉静默兜底传 ("vision",),非视觉静默循环传 ("time","weather"),
+        事件驱动触发（EventTriggerService）传 ("presence",)/("sun",)/... 并可带
+        event_context（如「张三 到家」），注入条件判定的环境信息。
 
         路由（替代旧全局 use_context_only）：
-          - type=time/weather → chat LLM（_evaluate_context_only，按时间+天气，无需帧）
+          - type in _CONTEXT_RULE_TYPES（time/weather/presence/sun/calendar/helper）
+            → chat LLM（_evaluate_context_only，按环境信息，无需帧）
           - type=vision        → VL（evaluate_condition，带 frames）；无帧则跳过该组
         设备状态门控（评估前）：动作蕴含目标态，cheap HA 查当前态，所有动作已在目标态
         → 跳过整条规则（0 LLM、0 action）。这是「窗帘保持关着 → 0 调用」的来源——设备
@@ -78,7 +97,7 @@ class AutomationService:
         counted_types = rule_types if rule_types is not None else ("vision", "time", "weather")
         if "vision" in counted_types:
             self._vision_eval_count += 1
-        if "time" in counted_types or "weather" in counted_types:
+        if counted_types and set(counted_types) & _CONTEXT_RULE_TYPES:
             self._context_eval_count += 1
 
         # 一次性拉 HA 状态快照（5s 缓存，命中 0 网络），供设备门控复用
@@ -130,7 +149,7 @@ class AutomationService:
                 gated_count += 1
                 logger.debug("Rule '%s' skipped: device already in target state", rule.get("name", ""))
                 continue
-            if rtype in ("time", "weather"):
+            if rtype in _CONTEXT_RULE_TYPES:
                 chat_rules.append(rule)
             else:  # vision / 未知 → VL
                 vl_rules.append(rule)
@@ -140,7 +159,7 @@ class AutomationService:
                         len(rules), skipped_count, gated_count)
             return applied
 
-        context_info = await self._build_condition_context()
+        context_info = await self._build_condition_context(event_context, state_map=state_map)
         has_vl = bool(frames) and self._vision_service is not None
         logger.info("Evaluating: %d chat-rule(s), %d vision-rule(s), %d frames, has_vl=%s (gated=%d)",
                     len(chat_rules), len(vl_rules), len(frames) if frames else 0, has_vl, gated_count)
@@ -508,13 +527,26 @@ class AutomationService:
             logger.warning("Context-only evaluation failed", exc_info=True)
         return 0
 
-    async def _build_condition_context(self) -> str:
-        """获取当前时间+天气，拼成简短上下文供 VL 模型判断条件。
+    async def _build_condition_context(
+        self, event_context: dict | None = None, state_map: dict | None = None,
+    ) -> str:
+        """获取当前时间+天气+在场/太阳环境，拼成简短上下文供条件判定。
 
         任何步骤失败静默降级，不阻塞评估。
         天气结果缓存 60s，避免频繁请求外部 API。
+        event_context（阶段4）：事件驱动触发带来的即时事件描述（如「张三 到家」），
+        附在开头优先级最高；在场成员/太阳状态常驻注入，让 time/sun/presence 规则的
+        组合条件（「到家且天黑」）可判定。state_map：evaluate 已拉的快照直接复用，
+        省一次拉取；None 时（独立调用）自行拉。
         """
         parts: list[str] = []
+
+        # 事件上下文（触发事件本体，最高优先级）
+        if event_context:
+            for v in event_context.values():
+                text = str(v).strip()
+                if text:
+                    parts.append(text)
 
         # 时间：零成本，每次实时获取
         try:
@@ -526,6 +558,35 @@ class AutomationService:
             )
         except Exception:
             logger.debug("Failed to get time for condition context", exc_info=True)
+
+        # 在场/太阳环境态（阶段4）：优先复用 evaluate 的快照
+        snapshot: list | None = None
+        if state_map is not None:
+            snapshot = list(state_map.values())
+        else:
+            ha_service = getattr(self, "_ha_service", None)
+            if ha_service is not None:
+                try:
+                    snapshot = await ha_service.get_states_snapshot()
+                except Exception:
+                    logger.debug("Failed to get presence/sun for condition context", exc_info=True)
+        if snapshot:
+            try:
+                home_names = [
+                    str((s.get("attributes") or {}).get("friendly_name") or s.get("entity_id"))
+                    for s in snapshot
+                    if str(s.get("entity_id", "")).startswith("person.")
+                    and str(s.get("state", "")) == "home"
+                ]
+                persons = [s for s in snapshot if str(s.get("entity_id", "")).startswith("person.")]
+                if persons:
+                    parts.append(f"在家成员：{'、'.join(home_names) if home_names else '无（都离家了）'}")
+                sun = next((s for s in snapshot if s.get("entity_id") == "sun.sun"), None)
+                if sun is not None:
+                    parts.append(
+                        f"太阳：{'白天（地平线上）' if str(sun.get('state')) == 'above_horizon' else '夜间（地平线下）'}")
+            except Exception:
+                logger.debug("Failed to render presence/sun context", exc_info=True)
 
         # 天气：60s 缓存
         now = time.time()

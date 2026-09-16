@@ -201,6 +201,24 @@ class HomeAssistantClient:
         response.raise_for_status()
         return response.content
 
+    # ============ 日历 ============
+
+    async def calendar_events(
+        self, entity_id: str, start: str, end: str,
+    ) -> list[dict[str, Any]]:
+        """查询日历实体在 [start, end) 内的日程（ISO8601）。
+
+        返回 [{summary, start: {dateTime}, end: {dateTime}, description?, uid?}]。
+        calendar 实体的 state_changed 不可靠（多数集成 state 长期 off、事件藏在
+        attribute），日程对齐只能轮询本接口（EventTriggerService 每 5 分钟）。
+        """
+        client = await self._get_client()
+        response = await client.get(
+            f"/api/calendars/{entity_id}",
+            params={"start": start, "end": end}, timeout=10.0)
+        response.raise_for_status()
+        return response.json()
+
     # ============ 实体注册表写操作 ============
 
     async def update_entity_name(

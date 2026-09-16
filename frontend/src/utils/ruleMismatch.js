@@ -9,11 +9,12 @@
  */
 export function getRuleMismatch(rule) {
   if (!rule) return ''
-  // 缺失/非法 type 兜底为 vision：仅 time/weather 为合法非视觉类型，其余一律按 vision
+  // 缺失/非法 type 兜底为 vision：合法非视觉类型（含阶段4 事件驱动类型）以外一律按 vision
+  const NON_VISION = ['time', 'weather', 'presence', 'sun', 'calendar', 'helper']
   const raw = String(rule.type || '').toLowerCase()
-  const type = raw === 'time' || raw === 'weather' ? raw : 'vision'
+  const type = NON_VISION.includes(raw) ? raw : 'vision'
   const cam = rule.camera_id || ''
   if (type === 'vision' && !cam) return 'red'
-  if ((type === 'time' || type === 'weather') && cam) return 'orange'
+  if (type !== 'vision' && cam) return 'orange'
   return ''
 }

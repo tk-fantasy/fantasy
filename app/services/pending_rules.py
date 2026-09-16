@@ -121,13 +121,20 @@ async def find_missing_entities(rule: dict, ha_service: Any, ha_client_ref: list
     return [e for e in entity_ids if e not in real]
 
 
+# 非视觉规则类型（阶段4 起含事件驱动类型）。type 缺失/非法不在此列 → 按 vision
+# 兜底，与 rule_service.build_rule 的落库兜底、前端 utils/ruleMismatch.js 同口径。
+_NON_VISION_TYPES = frozenset({
+    "time", "weather", "presence", "sun", "calendar", "helper",
+})
+
+
 def is_vision_rule(rule: dict) -> bool:
     """这条规则是否靠摄像头画面判断。
 
     type 缺失/非法一律按 vision —— 与 rule_service.build_rule 的兜底方向一致
     （兜到 vision 至少不会让规则静默失效），也与前端 utils/ruleMismatch.js 同口径。
     """
-    return str(rule.get("type", "") or "").strip().lower() not in ("time", "weather")
+    return str(rule.get("type", "") or "").strip().lower() not in _NON_VISION_TYPES
 
 
 def needs_camera(rule: dict) -> bool:

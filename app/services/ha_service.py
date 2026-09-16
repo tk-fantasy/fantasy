@@ -222,20 +222,27 @@ class HAService:
         area_map, _ = await self._get_area_maps_cached()
         return [{"area_id": aid, "name": name} for aid, name in area_map.items()]
 
-    # 可控/可展示的设备 domain — 过滤掉 sun/zone/person/update 等 HA 内置实体
+    # 可控/可展示的设备 domain — 过滤掉 sun/zone/person/update 等 HA 内置实体。
+    # input_boolean（阶段4）：本质是个开关（turn_on/off/toggle 标准服务），
+    # 进可控目录让 AI 与设备页都能操作（「离家开关」防误触发的载体）。
     _DEVICE_DOMAINS = frozenset({
         "light", "switch", "climate", "cover", "fan", "humidifier",
         "sensor", "binary_sensor", "lock", "media_player", "vacuum",
         "valve", "water_heater", "siren", "alarm_control_panel",
+        "input_boolean",
     })
 
+    # 无区域也展示的 domain：HA helper（虚拟开关）常不分配区域，按 area 过滤
+    # 会把它们全藏掉——而它们正是阶段4 规则触发的高频载体。
+    _AREA_EXEMPT_DOMAINS = frozenset({"input_boolean"})
+
     # 在场/环境/辅助类状态实体 domain：被 _DEVICE_DOMAINS 白名单天然排除，
-    # 但它们是最高频的自动化触发源（到家/日落/日历/虚拟开关）。单独成目录，
-    # 不混入设备列表——可控性语义不同（sun 只读、input_boolean 可控），
-    # AI 视图与闸门的口径在各自消费方单独接入，互不污染。
+    # 但它们是最高频的自动化触发源（到家/日落/日历/计时器）。单独成目录，
+    # 不混入设备列表——可控性语义不同（sun 只读），AI 视图与闸门的口径在
+    # 各自消费方单独接入，互不污染。
     _STATUS_DOMAINS = frozenset({
         "person", "device_tracker", "sun", "calendar",
-        "input_boolean", "input_number", "timer", "counter", "scene",
+        "input_number", "timer", "counter", "scene",
     })
 
     async def get_status_entities(self) -> list[dict[str, Any]]:
@@ -335,7 +342,7 @@ class HAService:
             if domain not in self._DEVICE_DOMAINS:
                 continue
             area_id = entity_area_map.get(entity_id)
-            if area_id is None:
+            if area_id is None and domain not in self._AREA_EXEMPT_DOMAINS:
                 continue
             devices.append({
                 "entity_id": entity_id,
@@ -377,9 +384,9 @@ class HAService:
             domain = entity_id.split(".")[0]
             if domain not in self._DEVICE_DOMAINS:
                 continue
-            # area 过滤（entity 自身或 device 继承）
+            # area 过滤（entity 自身或 device 继承）；helper 域豁免（常无区域）
             eid_area = self._entity_area_map.get(entity_id)
-            if not eid_area:
+            if not eid_area and domain not in self._AREA_EXEMPT_DOMAINS:
                 continue
             by_id[entity_id] = state
 
@@ -427,7 +434,7 @@ class HAService:
                 if e["domain"] in {
                     "light", "switch", "climate", "cover", "fan", "humidifier",
                     "lock", "media_player", "vacuum", "valve", "water_heater",
-                    "siren", "alarm_control_panel",
+                    "siren", "alarm_control_panel", "input_boolean",
                 }
             ]
             # summary：用 domain 中文描述能力，不用子实体的 friendly_name

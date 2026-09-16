@@ -412,8 +412,10 @@ class RuleService:
             parsed.setdefault("name", text[:20])
             parsed.setdefault("condition", "")
             # type 归一化到合法值；LLM 漏输出或乱填时兜底 vision
+            # 合法集合见 rule_registry_service.RULE_TYPES（阶段4 起含事件驱动类型）
+            from .rule_registry_service import RULE_TYPES
             _t = str(parsed.get("type", "vision") or "vision").strip().lower()
-            parsed["type"] = _t if _t in ("time", "weather", "vision") else "vision"
+            parsed["type"] = _t if _t in RULE_TYPES else "vision"
             parsed.setdefault("actions", [])
             parsed.setdefault("action_descriptions", [])
             parsed.setdefault("cooldown_seconds", get_config("automation.default_cooldown_seconds", 5))
@@ -471,7 +473,9 @@ class RuleService:
             resolved = current_cam
         else:
             resolved = new_cam
-        if str(parsed.get("type", "") or "").strip().lower() in ("time", "weather"):
+        # 摄像头绑定只对 vision 规则有意义；time/weather 与阶段4 的事件驱动类型
+        # （presence/sun/calendar/helper）都不看画面，一律清空绑定防误挂。
+        if str(parsed.get("type", "") or "").strip().lower() != "vision":
             return ""
         return resolved
 

@@ -69,6 +69,7 @@ class AppContainer:
     scene_service: Any = None  # SceneService | None（lifespan 阶段装配）
     weekly_report_service: Any = None  # WeeklyReportService | None
     device_event_service: Any = None  # DeviceEventService | None（HA 状态事件流）
+    event_trigger_service: Any = None  # EventTriggerService | None（事件驱动规则触发）
 
     # ── RAG 文档助手（lifespan 启动阶段后台构建索引）──
     rag_service: Any = None  # RagService | None
