@@ -231,6 +231,28 @@ class HomeAssistantClient:
 
     # ============ 日历 ============
 
+    async def logbook(
+        self, entity_id: str | None = None,
+        timestamp: str | None = None, end_time: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """查询 HA logbook（设备级操作史：谁在何时开了灯/关了门）。
+
+        entity_id 为空查全屋；timestamp/end_time 为 ISO8601 时间窗。
+        返回 [{when, name, entity_id, message, context_user_id?}, ...]，
+        时间升序——Aether 自家的 family_events 只有自家操作，HA 侧的
+        App/自动化/家庭成员操作史都在这里。
+        """
+        client = await self._get_client()
+        path = "/api/logbook" + (f"/{entity_id}" if entity_id else "")
+        params: dict[str, str] = {}
+        if timestamp:
+            params["timestamp"] = timestamp
+        if end_time:
+            params["end_time"] = end_time
+        response = await client.get(path, params=params or None, timeout=15.0)
+        response.raise_for_status()
+        return response.json()
+
     async def calendar_events(
         self, entity_id: str, start: str, end: str,
     ) -> list[dict[str, Any]]:

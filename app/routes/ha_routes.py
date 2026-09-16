@@ -661,3 +661,19 @@ async def delete_ha_automation(
     if result.get("error"):
         raise AppException(result["error"], code="ha_automation_delete_failed", http_status=502)
     return ApiResponse(data=result)
+
+
+@router.get("/ha/logbook/{entity_id}")
+async def ha_logbook(
+    entity_id: str,
+    hours: int = Query(24, ge=1, le=720),
+    container: AppContainer = Depends(get_container),
+) -> ApiResponse[list[dict]]:
+    """查 HA logbook 设备操作史（前端设备详情/家庭报告数据源）。"""
+    from datetime import datetime, timedelta
+    try:
+        start = (datetime.now() - timedelta(hours=hours)).isoformat()
+        entries = await container.ha_client.logbook(entity_id, timestamp=start)
+    except Exception as e:  # noqa: BLE001
+        raise AppException(f"Home Assistant 连接失败: {e}", code="ha_error", http_status=502)
+    return ApiResponse(data=entries or [])

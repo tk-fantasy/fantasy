@@ -297,6 +297,9 @@ def sync_ha_runtime_refs(new_client, new_service) -> None:
     has_ = getattr(_container, "ha_automation_service", None)
     if has_ is not None:
         has_.set_refs(new_client)
+    wrs = getattr(_container, "weekly_report_service", None)
+    if wrs is not None:
+        wrs.set_ha_service(new_service)
 
 
 # ============ 公共工具函数 ============
@@ -663,6 +666,7 @@ async def lifespan(_: FastAPI):
     # ── 家庭周报（默认开启，weekly_report.enabled=false 关闭）──
     from .services.weekly_report_service import WeeklyReportService
     _container.weekly_report_service = WeeklyReportService(llm_chat_client=llm_chat_client)
+    _container.weekly_report_service.set_ha_service(_container.ha_service)
     await _container.weekly_report_service.start()
 
     _startup_progress.set("正在连接摄像头与智能家居...")

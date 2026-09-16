@@ -279,6 +279,8 @@ def register_all_tools(deps: ToolDeps) -> None:
     _register_automation_rule_tools(deps)
     # 10. HA 原生自动化管理（聊天写进 Home Assistant，两段式确认）
     _register_ha_automation_tools(deps)
+    # 11. HA logbook 设备操作史（"昨晚大门是谁关的、几点关的"）
+    _register_ha_device_history(deps)
 
 
 # ---------------------------------------------------------------------------
@@ -1587,3 +1589,65 @@ def _register_ha_automation_tools(deps: ToolDeps) -> None:
         handler=delete_handler,
     ))
     
+
+
+# ---------------------------------------------------------------------------
+# HA logbook 设备操作史 — "昨晚大门是谁关的、几点关的"（阶段6）
+# ---------------------------------------------------------------------------
+
+def _register_ha_device_history(deps: ToolDeps) -> None:
+    """注册设备操作史查询工具（HA logbook）。
+
+    Aether 自家 family_events 只记自家操作；HA App、HA 自动化、其他家庭成员
+    的操作史都在 HA logbook 里，本工具把它们带进聊天可问范围。
+    """
+
+    async def handler(parameters: dict, session) -> dict:
+        entity_id = str(parameters.get("entity_id", "")).strip()
+        try:
+            hours = max(1, min(int(parameters.get("hours", 24) or 24), 24 * 30))
+        except (TypeError, ValueError):
+            hours = 24
+        if not entity_id:
+            return tool_error("entity_id 不能为空",
+                              hint="先用 get_entities 查实体 ID；设备名对照系统提示词里的清单。")
+        client = deps.ha_client_ref[0]
+        if client is None or not hasattr(client, "logbook"):
+            return tool_error("HA 客户端不可用", hint="Home Assistant 未配置或不可达，如实告知用户。")
+        from datetime import datetime, timedelta
+        start = (datetime.now() - timedelta(hours=hours)).isoformat()
+        try:
+            entries = await client.logbook(entity_id, timestamp=start)
+        except Exception as exc:  # noqa: BLE001
+            return tool_error(f"查询失败: {exc}", hint="检查实体 ID 是否正确；HA 可能暂时不可达。")
+        if not entries:
+            return {"entity_id": entity_id, "entries": [], "count": 0,
+                    "note": f"近 {hours} 小时该实体在 HA logbook 中没有记录。"}
+        # 紧凑文本：时间 + 实体名 + 消息（含操作者），最近 50 条倒序（新→旧更好答"最后一次"）
+        lines = []
+        for e in reversed(entries[-50:]):
+            when = str(e.get("when", ""))[:16].replace("T", " ")
+            name = str(e.get("name", "") or entity_id)
+            msg = str(e.get("message", "") or "").strip()
+            lines.append(f"{when} {name} {msg}".strip())
+        return {"entity_id": entity_id, "entries": lines,
+                "count": len(lines), "hours": hours}
+
+    deps.mcp_client_manager.register_tool(MCPTool(
+        client_id="local",
+        tool_name="get_device_history",
+        description=(
+            "【查设备操作历史】用户问某设备过去的操作记录时调用（如「昨晚大门是谁关的、"
+            "几点关的」「今天谁开过空调」）。数据来自 Home Assistant logbook，涵盖 "
+            "HA App/HA 自动化/家庭成员的所有操作。默认查近 24 小时，可传 hours 扩大。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "entity_id": {"type": "string", "description": "实体 ID（如 lock.front_door）"},
+                "hours": {"type": "number", "description": "回溯小时数（默认 24，最大 720）"},
+            },
+            "required": ["entity_id"],
+        },
+        handler=handler,
+    ))

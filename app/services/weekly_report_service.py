@@ -39,9 +39,14 @@ class WeeklyReportService:
     def __init__(self, llm_chat_client: Any = None) -> None:
         self._llm = llm_chat_client
         self._loop_task: asyncio.Task | None = None
+        # HA 统计数据源（阶段6）：温湿度趋势 + 能耗；list[0] 热替换模式
+        self._ha_service_ref: list = [None]
 
     def set_llm_client(self, llm_chat_client: Any) -> None:
         self._llm = llm_chat_client
+
+    def set_ha_service(self, ha_service: Any) -> None:
+        self._ha_service_ref[0] = ha_service
 
     # ------------------------------------------------------------------
     # 生命周期
@@ -118,6 +123,9 @@ class WeeklyReportService:
             for e in llm_events[-500:]
         ]
         stats = await self._summarize_stats(events)
+        # HA 长期统计（阶段6）：温湿度趋势/能耗拼进 LLM 输入与报告 stats
+        ha_stats = await self._ha_stats_text()
+        stats_full = stats + (f"\n{ha_stats}" if ha_stats else "")
 
         text = ""
         if self._llm is not None and getattr(self._llm, "enabled", False):
@@ -125,7 +133,7 @@ class WeeklyReportService:
                 timeout = int(get_config("llm.summary_timeout_seconds", 30) or 30)
                 text = await self._llm.chat(
                     [{"role": "user", "content": _PROMPT.format(
-                        stats=stats, events="\n".join(lines))}],
+                        stats=stats_full, events="\n".join(lines))}],
                     timeout,
                 )
                 text = str(text).strip()
@@ -133,13 +141,14 @@ class WeeklyReportService:
                 logger.warning("Weekly report LLM summarize failed, fallback to stats", exc_info=True)
                 text = ""
         if not text:
-            text = stats  # LLM 不可用时退化为纯统计文本
+            text = stats_full  # LLM 不可用时退化为纯统计文本
 
         report = {
             "generated": True,
             "generated_at": int(time.time() * 1000),
             "week": datetime.now().strftime("%Y-%m-%d"),
-            "stats": stats,
+            "stats": stats_full,
+            "ha_stats": ha_stats,
             "text": text,
         }
         await Database.get().kv_set(_KV_REPORT_KEY, str(time.time()))
@@ -189,6 +198,87 @@ class WeeklyReportService:
         if chat_turns:
             parts.append(f"对话 {chat_turns} 轮")
         return "；".join(parts) + "。"
+
+    # ------------------------------------------------------------------
+    # HA 长期统计（阶段6）：温湿度趋势 + 能耗
+    # ------------------------------------------------------------------
+
+    async def _ha_stats_text(self) -> str:
+        """拉 HA 历史统计拼成文本行；任何失败静默返回空串（缺统计不阻塞周报）。
+
+        实体挑选：report.ha_stat_entities = {"temperature": [...], "humidity": [...],
+        "energy": [...]} 显式配置优先（每类最多 4 个）；缺省按 device_class 自动挑
+        （每类最多 2 个，unavailable 跳过）。能耗是累计值，本周用量 = 末值-首值。
+        """
+        ha = self._ha_service_ref[0]
+        client = getattr(ha, "_client", None)
+        if ha is None or client is None or not hasattr(client, "get_history"):
+            return ""
+        try:
+            snapshot = await ha.get_states_snapshot()
+        except Exception:  # noqa: BLE001
+            logger.debug("weekly report: HA snapshot failed", exc_info=True)
+            return ""
+        configured = get_config("report.ha_stat_entities", {}) or {}
+        start = (datetime.now() - timedelta(days=7)).isoformat()
+        parts: list[str] = []
+        for cls in ("temperature", "humidity", "energy"):
+            entities = [str(e).strip() for e in (configured.get(cls) or [])
+                        if str(e).strip()][:4]
+            auto = not entities
+            if auto:
+                entities = self._auto_pick_stat_entities(snapshot, cls)[:2]
+            for eid in entities:
+                line = await self._entity_week_summary(client, eid, cls, start)
+                if line:
+                    parts.append(line)
+        return "\n".join(parts)
+
+    @staticmethod
+    def _auto_pick_stat_entities(snapshot: list, device_class: str) -> list[str]:
+        """按 device_class 从 states 快照挑可数值解析的 sensor（名字稳定排序）。"""
+        picked: list[tuple[str, str]] = []
+        for s in snapshot or []:
+            eid = str(s.get("entity_id", "") or "")
+            attrs = s.get("attributes") or {}
+            if not eid.startswith("sensor.") \
+                    or attrs.get("device_class") != device_class:
+                continue
+            try:
+                float(s.get("state"))
+            except (TypeError, ValueError):
+                continue
+            picked.append((str(attrs.get("friendly_name") or eid), eid))
+        return [eid for _, eid in sorted(picked)]
+
+    @staticmethod
+    async def _entity_week_summary(client: Any, entity_id: str, cls: str, start: str) -> str:
+        """单个实体近 7 天统计行。能耗取差值；温湿度取 min/max/avg。"""
+        try:
+            history = await client.get_history(entity_id, timestamp=start)
+        except Exception:  # noqa: BLE001
+            return ""
+        points = history[0] if history and isinstance(history[0], list) else []
+        values: list[float] = []
+        name = entity_id
+        for p in points:
+            try:
+                values.append(float(p.get("state")))
+                attrs = p.get("attributes") or {}
+                if attrs.get("friendly_name"):
+                    name = str(attrs["friendly_name"])
+            except (TypeError, ValueError):
+                continue
+        if len(values) < 2:
+            return ""
+        if cls == "energy":
+            usage = values[-1] - values[0]
+            if usage < 0:
+                return ""  # 累计值被重置（换表/重启清零），差值无意义
+            return f"{name} 本周用电 {usage:.1f} kWh"
+        unit = "°C" if cls == "temperature" else "%"
+        return (f"{name} 本周 {min(values):.1f}~{max(values):.1f}{unit}"
+                f"（平均 {sum(values) / len(values):.1f}{unit}）")
 
     @staticmethod
     async def _count_chat_turns() -> int:
