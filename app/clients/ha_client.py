@@ -252,6 +252,40 @@ class HomeAssistantClient:
             f"/api/config/automation/config/{automation_id}", timeout=15.0)
         response.raise_for_status()
 
+    async def remove_entity(self, entity_id: str) -> bool:
+        """从 entity_registry 移除实体（WS config/entity_registry/remove）。
+
+        HA 2026 实测：删除 automation config 后实体可能残留为 unavailable
+        幽灵（state 停留 unavailable、config API 已 404），需要注册表层面移除。
+        一次性短连接 WS，握手模板同 update_entity_name。
+        """
+        import json as _json
+        import websockets
+        scheme, _, rest = self._base_url.partition("://")
+        ws_url = f"{'wss' if scheme == 'https' else 'ws'}://{rest}/api/websocket"
+        headers = {}
+        if self._token:
+            headers["Authorization"] = f"Bearer {self._token}"
+        try:
+            async with asyncio.timeout(5):
+                async with websockets.connect(ws_url, additional_headers=headers) as ws:
+                    await ws.recv()
+                    await ws.send(_json.dumps({"type": "auth", "access_token": self._token}))
+                    auth = _json.loads(await ws.recv())
+                    if auth.get("type") != "auth_ok":
+                        raise RuntimeError(f"HA auth failed: {auth}")
+                    await ws.send(_json.dumps({
+                        "id": 1, "type": "config/entity_registry/remove",
+                        "entity_id": entity_id,
+                    }))
+                    resp = _json.loads(await ws.recv())
+                    if resp.get("id") != 1:
+                        raise RuntimeError("entity_registry/remove: unexpected frame")
+                    return bool(resp.get("success"))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("remove_entity(%s) failed: %s", entity_id, exc)
+            return False
+
     # ============ 日历 ============
 
     async def logbook(

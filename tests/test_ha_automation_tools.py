@@ -174,8 +174,19 @@ class TestWriteAndManage:
     async def test_delete(self):
         client = MagicMock()
         client.delete_automation = AsyncMock(return_value=None)
+        # 删 config 后实体残留为幽灵 → 补 entity_registry 移除
+        client.list_automations = AsyncMock(return_value=[
+            {"id": "a1", "entity_id": "automation.a1", "state": "unavailable"}])
+        client.remove_entity = AsyncMock(return_value=True)
         svc = HaAutomationService(rule_service=MagicMock(), ha_client_ref=[client])
         assert await svc.delete("a1") == {"deleted": True, "id": "a1"}
+        client.remove_entity.assert_awaited_once_with("automation.a1")
+        # 实体状态正常（非幽灵）时不移除
+        client.list_automations = AsyncMock(return_value=[
+            {"id": "a1", "entity_id": "automation.a1", "state": "on"}])
+        client.remove_entity.reset_mock()
+        await svc.delete("a1")
+        client.remove_entity.assert_not_awaited()
         client.delete_automation = AsyncMock(side_effect=RuntimeError("404"))
         assert "error" in await svc.delete("a1")
 

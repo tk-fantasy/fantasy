@@ -239,4 +239,14 @@ class HaAutomationService:
         except Exception as exc:  # noqa: BLE001
             return {"error": f"删除失败: {exc}"}
         logger.info("HA automation deleted: %s", automation_id)
+        # HA 2026 实测：config 删除后实体可能残留为 unavailable 幽灵
+        # （config API 已 404 但实体还在），补一刀实体注册表移除。
+        try:
+            for a in await client.list_automations():
+                if str(a.get("id")) == str(automation_id) and a.get("entity_id"):
+                    if str(a.get("state")) in ("unavailable", "unknown"):
+                        await client.remove_entity(str(a["entity_id"]))
+                    break
+        except Exception:  # noqa: BLE001
+            logger.debug("ghost entity cleanup skipped", exc_info=True)
         return {"deleted": True, "id": automation_id}
