@@ -6,10 +6,17 @@
 actions 格式（与 HA service 调用一致，capture 从当前状态生成同构数据）：
     [{"domain": "light", "service": "turn_on", "entity_id": "light.ke_ting",
       "data": {"brightness": 200}}, ...]
+
+HA Scenes 复用（阶段3）：HA 原生场景实体（domain=scene）直接列出/应用/捕获，
+不镜像进本地 scenes 表——HA 侧创建/编辑/管理的场景在本系统即取即用，
+本地表只承载 Aether 自建场景，两池并存、HA 优先解析。
 """
 from __future__ import annotations
 
 import logging
+import re
+import time
+import unicodedata
 import uuid
 from typing import Any
 
@@ -162,3 +169,79 @@ class SceneService:
             clean.append({"domain": domain, "service": service,
                           "entity_id": entity_id, "data": data})
         return clean
+
+    # ------------------------------------------------------------------
+    # HA Scenes 复用（阶段3）
+    # ------------------------------------------------------------------
+
+    async def list_ha_scenes(self) -> list[dict]:
+        """HA 原生场景实体（domain=scene）。HA 不可用/未配置返回空列表。"""
+        ha = self._ha_service_ref[0]
+        if ha is None:
+            return []
+        try:
+            entities = await ha.get_entities_by_domains({"scene"})
+        except Exception:  # noqa: BLE001
+            logger.warning("list HA scenes failed", exc_info=True)
+            return []
+        return [{"entity_id": e["entity_id"], "name": e["name"],
+                 "state": e["state"], "kind": "ha"} for e in entities]
+
+    async def apply_ha_scene(self, entity_id: str) -> dict:
+        """应用 HA 原生场景（scene.turn_on，一条原子指令整组切换）。"""
+        ha = self._ha_client_ref[0]
+        if ha is None:
+            raise RuntimeError("HA 服务不可用")
+        entity_id = (entity_id or "").strip()
+        if not entity_id.startswith("scene."):
+            raise ValueError(f"不是 HA 场景实体: {entity_id}")
+        await ha.call_service("scene", "turn_on", entity_id)
+        name = entity_id.split(".", 1)[1]
+        logger.info("HA scene applied: %s", entity_id)
+        return {"scene": name, "via": "ha", "ok": 1, "total": 1, "results": []}
+
+    async def capture_ha_scene(self, name: str) -> dict:
+        """用 HA scene.create 从当前状态生成 HA 原生场景。
+
+        生成的场景落在 HA 侧（.storage，可在 HA 界面管理/编辑），本系统
+        不镜像——列场景时实时拉取即见。中文名转 ASCII slug 做 scene_id，
+        显示名保留中文。
+        """
+        ha = self._ha_client_ref[0]
+        if ha is None:
+            raise RuntimeError("HA 服务不可用")
+        name = (name or "").strip()
+        if not name:
+            raise ValueError("场景名不能为空")
+        ascii_name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
+        slug = re.sub(r"[^a-z0-9_]+", "_", ascii_name.lower()).strip("_")
+        scene_id = slug or f"aether_{int(time.time())}"
+        await ha.call_service(
+            "scene", "create", data={"scene_id": scene_id, "name": name})
+        logger.info("HA scene captured: '%s' -> scene.%s", name, scene_id)
+        return {"id": f"scene.{scene_id}", "name": name, "kind": "ha"}
+
+    async def resolve_scene(self, *, scene_id: str = "", name: str = "") -> dict | None:
+        """跨两个场景池解析：HA 原生场景优先，Aether 本地场景兜底。
+
+        返回 {"kind": "ha"|"local", "id": entity_id 或本地 id, "name": 显示名}；
+        解析不到返回 None。名字精确匹配（与既有聊天工具语义一致，模糊
+        匹配交给 LLM 看 scene_list 候选自己做）。
+        """
+        if scene_id:
+            if scene_id.startswith("scene."):
+                return {"kind": "ha", "id": scene_id,
+                        "name": scene_id.split(".", 1)[1]}
+            local = await self.get_scene(scene_id)
+            if local is not None:
+                return {"kind": "local", "id": local["id"], "name": local["name"]}
+            return None
+        if not name:
+            return None
+        for e in await self.list_ha_scenes():
+            if e["name"] == name or e["entity_id"] == f"scene.{name}":
+                return {"kind": "ha", "id": e["entity_id"], "name": e["name"]}
+        for s in await self.list_scenes():
+            if s["name"] == name:
+                return {"kind": "local", "id": s["id"], "name": s["name"]}
+        return None

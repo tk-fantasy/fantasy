@@ -956,11 +956,21 @@ def _register_scene_tools(deps: ToolDeps) -> None:
         if svc is None:
             return tool_error("场景服务未就绪", hint="场景服务尚未初始化，请如实告知用户稍后再试。")
         scenes = await svc.list_scenes()
-        return {"scenes": [
-            {"id": s["id"], "name": s["name"],
-             "actions_count": len(s.get("actions", []))}
-            for s in scenes
-        ]}
+        # HA 原生场景并入候选（HA 优先解析；不可用时静默降级为仅本地场景）
+        try:
+            ha_scenes = await svc.list_ha_scenes()
+        except Exception:  # noqa: BLE001
+            ha_scenes = []
+        return {
+            "scenes": [
+                {"id": s["id"], "name": s["name"],
+                 "actions_count": len(s.get("actions", []))}
+                for s in scenes
+            ],
+            "ha_scenes": [
+                {"id": s["entity_id"], "name": s["name"]} for s in ha_scenes
+            ],
+        }
 
     async def apply_handler(parameters: dict, session) -> dict:
         svc = _svc()
@@ -968,20 +978,30 @@ def _register_scene_tools(deps: ToolDeps) -> None:
             return tool_error("场景服务未就绪", hint="场景服务尚未初始化，请如实告知用户稍后再试。")
         name = str(parameters.get("name", "")).strip()
         scene_id = str(parameters.get("scene_id", "")).strip()
-        if not scene_id and name:
-            scenes = await svc.list_scenes()
-            match = next((s for s in scenes if s["name"] == name), None)
-            if match is None:
+        # 跨池解析：HA 原生场景优先（scene.* 实体），本地场景兜底
+        resolved = await svc.resolve_scene(scene_id=scene_id, name=name) \
+            if (scene_id or name) else None
+        if resolved is None:
+            if scene_id or name:
+                try:
+                    ha_names = [s["name"] for s in await svc.list_ha_scenes()]
+                except Exception:  # noqa: BLE001
+                    ha_names = []
+                candidates = [s["name"] for s in await svc.list_scenes()] + ha_names
                 return tool_error(
-                    f"没有叫「{name}」的场景",
+                    f"没有叫「{name or scene_id}」的场景",
                     hint="从候选里选一个最接近的场景应用，或如实告知用户该场景不存在。",
-                    candidates=[s["name"] for s in scenes],
+                    candidates=candidates,
                 )
-            scene_id = match["id"]
-        if not scene_id:
             return tool_error("name 或 scene_id 必填一个", hint="不确定有哪些场景时先调 scene_list。")
+        if resolved["kind"] == "ha":
+            try:
+                result = await svc.apply_ha_scene(resolved["id"])
+            except (ValueError, RuntimeError) as e:
+                return tool_error(str(e), hint="HA 场景应用失败，检查 HA 连接。")
+            return {"success": True, "summary": f"HA 场景「{result.get('scene')}」已应用"}
         try:
-            result = await svc.apply_scene(scene_id)
+            result = await svc.apply_scene(resolved["id"])
         except ValueError as e:
             return tool_error(str(e), hint="先调 scene_list 确认场景是否存在。")
         ok, total = result.get("ok", 0), result.get("total", 0)

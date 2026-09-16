@@ -65,7 +65,11 @@ class TestGetWeather:
         mock_indices_data = {"daily": []}
 
         with patch("app.services.weather_service.Database") as MockDB, \
-             patch("app.services.weather_service._qweather_request", new_callable=AsyncMock) as mock_api:
+             patch("app.services.weather_service._qweather_request", new_callable=AsyncMock) as mock_api, \
+             patch("app.services.weather_service.get_config",
+                   side_effect=lambda key, default=None:
+                   {"host": "h", "kid": "k", "sub": "s", "private_key": "p"}
+                   if key == "weather" else ({} if key == "home" else default)):
             MockDB.get.return_value = mock_db
             # Return different values for each call
             mock_api.side_effect = [mock_geo_data, mock_weather_data, mock_indices_data]
@@ -85,7 +89,11 @@ class TestGetWeather:
         mock_db.kv_get = AsyncMock(return_value=None)  # 无缓存
 
         with patch("app.services.weather_service.Database") as MockDB, \
-             patch("app.services.weather_service._qweather_request", new_callable=AsyncMock) as mock_api:
+             patch("app.services.weather_service._qweather_request", new_callable=AsyncMock) as mock_api, \
+             patch("app.services.weather_service.get_config",
+                   side_effect=lambda key, default=None:
+                   {"host": "h", "kid": "k", "sub": "s", "private_key": "p"}
+                   if key == "weather" else ({} if key == "home" else default)):
             MockDB.get.return_value = mock_db
             mock_api.side_effect = Exception("API Error")
 

@@ -6,6 +6,7 @@ import { ref, onMounted } from 'vue'
 import { apiGet, apiPost, apiDelete } from '../utils/api'
 
 const scenes = ref([])
+const haScenes = ref([])   // HA 原生场景（scene.* 实体，应用走 scene.turn_on）
 const loading = ref(true)
 const applying = ref('')
 const capturing = ref(false)
@@ -22,6 +23,12 @@ async function loadScenes() {
   } finally {
     loading.value = false
   }
+  // HA 原生场景（HA 未配置/不可达时静默隐藏该区）
+  try {
+    haScenes.value = await apiGet('/api/scenes/ha') || []
+  } catch (e) {
+    haScenes.value = []
+  }
 }
 
 async function applyScene(scene) {
@@ -29,10 +36,15 @@ async function applyScene(scene) {
   errorMsg.value = ''
   lastResult.value = ''
   try {
-    const r = await apiPost(`/api/scenes/${scene.id}/apply`, {})
-    lastResult.value = r.ok === r.total
-      ? `✅ 「${r.scene}」已应用`
-      : `⚠️ 「${r.scene}」${r.ok}/${r.total} 个设备成功`
+    if (scene.kind === 'ha') {
+      await apiPost('/api/scenes/ha/apply', { entity_id: scene.entity_id })
+      lastResult.value = `✅ HA 场景「${scene.name}」已应用`
+    } else {
+      const r = await apiPost(`/api/scenes/${scene.id}/apply`, {})
+      lastResult.value = r.ok === r.total
+        ? `✅ 「${r.scene}」已应用`
+        : `⚠️ 「${r.scene}」${r.ok}/${r.total} 个设备成功`
+    }
   } catch (e) {
     errorMsg.value = '应用失败：' + (e.message || e)
   } finally {
@@ -86,7 +98,14 @@ onMounted(loadScenes)
         <button class="chip-del" :disabled="applying === s.id" title="删除场景"
           @click.stop="removeScene(s)">×</button>
       </span>
-      <span v-if="!scenes.length" class="scene-empty">
+      <!-- HA 原生场景：HA 侧创建/管理，这里只应用不删除 -->
+      <span v-for="s in haScenes" :key="s.entity_id" class="scene-chip"
+        :class="{ applying: applying === s.entity_id }" title="Home Assistant 原生场景，点击应用">
+        <button class="chip-main" :disabled="applying === s.entity_id" @click="applyScene(s)">
+          {{ s.name }}<span class="chip-ha-tag">HA</span>
+        </button>
+      </span>
+      <span v-if="!scenes.length && !haScenes.length" class="scene-empty">
         还没有场景——把设备调到想要的状态，起个名字保存
       </span>
       <span class="scene-new">
@@ -184,6 +203,18 @@ onMounted(loadScenes)
 
 .chip-del:hover { color: var(--color-danger); }
 .chip-del:disabled { cursor: wait; }
+
+/* HA 原生场景角标 */
+.chip-ha-tag {
+  margin-left: var(--space-4);
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: var(--radius-full);
+  background: var(--color-primary-light);
+  color: var(--color-primary);
+  vertical-align: 1px;
+}
 
 .scene-empty {
   font-size: var(--text-xs);

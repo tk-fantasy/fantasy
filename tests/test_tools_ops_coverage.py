@@ -594,6 +594,20 @@ class TestSceneTools:
             "results": [{"entity_id": "l1", "ok": True}, {"entity_id": "l2", "ok": True}]})
         svc.create_scene = AsyncMock(return_value={"id": "s9", "actions": [{"a": 1}]})
         svc.capture_scene = AsyncMock(return_value={"id": "s8", "actions": [{"a": 1}, {"a": 2}]})
+        # HA 场景层（阶段3）：无 HA 场景，resolve 按本地池语义模拟
+        svc.list_ha_scenes = AsyncMock(return_value=[])
+        svc.apply_ha_scene = AsyncMock(return_value={"scene": "x", "via": "ha", "ok": 1, "total": 1})
+
+        async def _resolve(scene_id="", name=""):
+            if scene_id:
+                return ({"kind": "ha", "id": scene_id, "name": scene_id.split(".", 1)[1]}
+                        if scene_id.startswith("scene.")
+                        else {"kind": "local", "id": scene_id, "name": scene_id})
+            for s in svc.list_scenes.return_value:
+                if s["name"] == name:
+                    return {"kind": "local", "id": s["id"], "name": s["name"]}
+            return None
+        svc.resolve_scene = _resolve
         return svc
 
     @staticmethod

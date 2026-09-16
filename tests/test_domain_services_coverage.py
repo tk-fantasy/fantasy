@@ -54,13 +54,18 @@ async def temp_db(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 def _weather_cfg() -> dict:
-    """Config dict handed to weather_service.get_config patches."""
+    """Config dict handed to weather_service.get_config patches.
+
+    private_key 非空：阶段3 起和风请求有「四要素齐全才发」的前置门槛
+    （_qweather_configured），空串会被跳过直接降级 HA，分支测试就断不到
+    _qweather_request 了。JWT 真实签名另有 TestGenerateJwt 自己造密钥。
+    """
     return {
         "weather": {
             "host": "devapi.example.com",
             "kid": "kid-1",
             "sub": "pro",
-            "private_key": "",
+            "private_key": "pk-nonempty",
         },
         "home": {},
     }
@@ -264,7 +269,8 @@ class TestGetWeatherBranches:
         idx = {"daily": []}
         db.kv_set = AsyncMock()
         with patch.object(weather_service, "Database") as MockDB, \
-             patch.object(weather_service, "_qweather_request", new_callable=AsyncMock) as api:
+             patch.object(weather_service, "_qweather_request", new_callable=AsyncMock) as api, \
+             patch.object(weather_service, "_qweather_configured", lambda: True):
             MockDB.get.return_value = db
             api.side_effect = [geo, now, idx]
             out = await weather_service.get_weather("深圳")
@@ -283,7 +289,8 @@ class TestGetWeatherBranches:
         idx = {"daily": []}
         db.kv_set = AsyncMock()
         with patch.object(weather_service, "Database") as MockDB, \
-             patch.object(weather_service, "_qweather_request", new_callable=AsyncMock) as api:
+             patch.object(weather_service, "_qweather_request", new_callable=AsyncMock) as api, \
+             patch.object(weather_service, "_qweather_configured", lambda: True):
             MockDB.get.return_value = db
             api.side_effect = [geo, now, idx]
             out = await weather_service.get_weather("上海")
@@ -296,7 +303,8 @@ class TestGetWeatherBranches:
         db = MagicMock()
         db.kv_get = AsyncMock(return_value=None)
         with patch.object(weather_service, "Database") as MockDB, \
-             patch.object(weather_service, "_qweather_request", new_callable=AsyncMock) as api:
+             patch.object(weather_service, "_qweather_request", new_callable=AsyncMock) as api, \
+             patch.object(weather_service, "_qweather_configured", lambda: True):
             MockDB.get.return_value = db
             api.return_value = {"location": []}
             out = await weather_service.get_weather("不存在的地方")
@@ -313,7 +321,8 @@ class TestGetWeatherBranches:
         idx = {"daily": [{"type": "1", "name": "运动", "level": "1",
                           "category": "适宜", "text": "适合跑步"}]}
         with patch.object(weather_service, "Database") as MockDB, \
-             patch.object(weather_service, "_qweather_request", new_callable=AsyncMock) as api:
+             patch.object(weather_service, "_qweather_request", new_callable=AsyncMock) as api, \
+             patch.object(weather_service, "_qweather_configured", lambda: True):
             MockDB.get.return_value = db
             api.side_effect = [geo, Exception("weather down"), idx]
             out = await weather_service.get_weather("深圳")

@@ -286,6 +286,9 @@ def sync_ha_runtime_refs(new_client, new_service) -> None:
     ss = getattr(_container, "scene_service", None)
     if ss is not None:
         ss.set_ha(new_client, new_service)
+    # 天气降级链的 HA 兜底数据源同步热替换
+    from .services import weather_service as _ws
+    _ws.set_ha_service(new_service)
 
 
 # ============ 公共工具函数 ============
@@ -621,6 +624,10 @@ async def lifespan(_: FastAPI):
     # ── 场景模式（纯核心功能，聊天工具与 REST 共用）──
     from .services.scene_service import SceneService
     _container.scene_service = SceneService(ha_client=ha_client, ha_service=_container.ha_service)
+
+    # ── 天气降级链：HA weather 实体兜底（和风优先，热替换经 sync_ha_runtime_refs）──
+    from .services import weather_service as _weather_service
+    _weather_service.set_ha_service(_container.ha_service)
 
     # ── 离线告警（摄像头离线/HA 断连轮询 + 各 hook 点事件；模块级单例）──
     from .services.alert_service import alert_service

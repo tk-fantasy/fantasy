@@ -51,6 +51,45 @@ async def create_scene(
         raise AppException(str(e), code="scene_invalid", http_status=400)
 
 
+# —— HA Scenes 复用（阶段3）。FastAPI 按注册顺序匹配，/scenes/ha/apply 与
+# /scenes/{scene_id}/apply 同形，必须注册在它之前，否则 "ha" 会被当路径参数。 ——
+
+
+@router.get("/scenes/ha")
+async def list_ha_scenes(container: AppContainer = Depends(get_container)) -> ApiResponse[list[dict]]:
+    """列出 HA 原生场景实体。HA 不可用返回空列表（前端隐藏 HA 区）。"""
+    return ApiResponse(data=await _svc(container).list_ha_scenes())
+
+
+@router.post("/scenes/ha/apply")
+async def apply_ha_scene(
+    payload: dict,
+    container: AppContainer = Depends(get_container),
+) -> ApiResponse[dict]:
+    try:
+        result = await _svc(container).apply_ha_scene(str(payload.get("entity_id", "")))
+        return ApiResponse(data=result)
+    except ValueError as e:
+        raise AppException(str(e), code="scene_invalid", http_status=400)
+    except RuntimeError as e:
+        raise AppException(str(e), code="ha_unavailable", http_status=503)
+
+
+@router.post("/scenes/capture-ha")
+async def capture_ha_scene(
+    payload: dict,
+    container: AppContainer = Depends(get_container),
+) -> ApiResponse[dict]:
+    """把当前设备状态捕获成 HA 原生场景（scene.create，落在 HA 侧可管理）。"""
+    try:
+        scene = await _svc(container).capture_ha_scene(str(payload.get("name", "")))
+        return ApiResponse(data=scene)
+    except ValueError as e:
+        raise AppException(str(e), code="scene_invalid", http_status=400)
+    except RuntimeError as e:
+        raise AppException(str(e), code="ha_unavailable", http_status=503)
+
+
 @router.post("/scenes/{scene_id}/apply")
 async def apply_scene(
     scene_id: str,
