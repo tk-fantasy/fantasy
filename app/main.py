@@ -883,6 +883,7 @@ from .routes.scene_routes import router as scene_router
 from .routes.report_routes import router as report_router
 from .routes.simulator_routes import router as simulator_router
 from .routes.ops_routes import router as ops_router
+from .routes.assist_routes import router as assist_router
 app.include_router(llm_key_router, prefix="/api")
 app.include_router(global_config_router, prefix="/api")
 app.include_router(home_router, prefix="/api")
@@ -908,6 +909,7 @@ app.include_router(integration_router, prefix="/api")  # 集成插件平台：/a
 app.include_router(ops_router, prefix="/api")  # 运维：诊断包导出 /api/ops/*
 app.include_router(scene_router, prefix="/api")  # 场景模式：/api/scenes/*
 app.include_router(report_router, prefix="/api")  # 家庭报告：/api/events、/api/report/*
+app.include_router(assist_router, prefix="/api")  # Assist 桥：HA conversation agent 单轮对话
 app.include_router(ws_router)  # WebSocket 路由，无 prefix
 
 # CORS

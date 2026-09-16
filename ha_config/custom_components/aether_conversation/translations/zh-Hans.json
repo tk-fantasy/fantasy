@@ -1,0 +1,32 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "description": "把 Aether 接成 Assist 的对话引擎（入口归 HA，脑子归 Aether）。",
+        "data": {
+          "host": "Aether 地址（如 http://aether:8000）",
+          "token": "API Token（Aether 的 APP_TOKEN 环境变量）"
+        }
+      }
+    },
+    "error": {
+      "invalid_host": "地址必须以 http:// 或 https:// 开头"
+    },
+    "abort": {
+      "already_configured": "Aether 对话引擎已配置"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "data": {
+          "host": "Aether 地址",
+          "token": "API Token"
+        }
+      }
+    },
+    "error": {
+      "invalid_host": "地址必须以 http:// 或 https:// 开头"
+    }
+  }
+}

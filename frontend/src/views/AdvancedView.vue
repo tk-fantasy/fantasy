@@ -24,7 +24,22 @@ const modalTitle = computed(() => {
 function openModal(section) {
   activeModal.value = section
   // HA 弹窗打开时顺带拉原生自动化列表（聊天创建的落点，运维侧可见可删）
-  if (section === 'ha') loadHaAutomations()
+  // 与 Assist 对接状态（组件 + APP_TOKEN 就绪度）
+  if (section === 'ha') {
+    loadHaAutomations()
+    loadAssistStatus()
+  }
+}
+
+// ===== Assist 语音对接状态（阶段7：入口归 HA，脑子归 Aether）=====
+const assistStatus = ref({ component_deployed: false, token_configured: false, hint: '' })
+
+async function loadAssistStatus() {
+  try {
+    assistStatus.value = await apiGet('/api/assist/status') || assistStatus.value
+  } catch (e) {
+    assistStatus.value = { component_deployed: false, token_configured: false, hint: '状态不可用' }
+  }
 }
 
 // ===== HA 原生自动化（阶段5：列表 + 删除；创建走聊天 ha_automation_create）=====
@@ -988,6 +1003,18 @@ onUnmounted(() => {
             </div>
           </template>
           <div v-else class="label-desc">暂无 HA 原生自动化</div>
+        </div>
+
+        <!-- Assist 对接：入口归 HA（STT/TTS/唤醒词），脑子归 Aether -->
+        <div class="setting-row" style="flex-direction: column; align-items: stretch;">
+          <label class="setting-label">
+            <span class="label-text">Assist 语音对接</span>
+            <span class="label-desc">{{ assistStatus.hint }}</span>
+          </label>
+          <div class="label-desc" style="display: flex; gap: 16px;">
+            <span>{{ assistStatus.component_deployed ? '✅' : '❌' }} 组件已分发</span>
+            <span>{{ assistStatus.token_configured ? '✅' : '❌' }} APP_TOKEN 已设置</span>
+          </div>
         </div>
       </div>
 
