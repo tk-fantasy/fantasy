@@ -37,6 +37,11 @@ class AutomationRule:
     last_triggered_at: float = 0.0                       # 上次触发时间(秒级)
     user_id: str = ""                                    # 创建者，用于 per-user LLM key 解析；空表示老规则回退全局
     camera_id: str = ""                                  # Task 5:绑定摄像头;空串=全局规则(归所有摄像头)
+    # 阶段8 委托触发：trigger_source="ha" 表示触发时机外包给 HA 原生自动化
+    # （精确定时器/状态事件，评估管道跳过、不烧 LLM），到点回调 /api/rules/fire
+    # 执行动作。ha_automation_id 是 HA 侧自动化 id，删除/修改时双向联动。
+    trigger_source: str = ""                             # ""=Aether 自评（30s 循环/事件）；"ha"=委托 HA 触发
+    ha_automation_id: str = ""                           # 委托触发的 HA 自动化 id；空=未委托
 
     def to_dict(self) -> dict:
         return {
@@ -54,6 +59,8 @@ class AutomationRule:
             "updated_at": self.updated_at,
             "user_id": self.user_id,
             "camera_id": self.camera_id,
+            "trigger_source": self.trigger_source,
+            "ha_automation_id": self.ha_automation_id,
         }
 
 
@@ -127,6 +134,8 @@ class RuleRegistryService:
                             last_triggered_at=float(item.get("last_triggered_at", 0.0)),
                             user_id=str(item.get("user_id", "")),
                             camera_id=str(item.get("camera_id", "")),
+                            trigger_source=str(item.get("trigger_source", "") or ""),
+                            ha_automation_id=str(item.get("ha_automation_id", "") or ""),
                         )
                     )
             logger.info("Loaded %d rules from database", len(rules_data))
@@ -189,6 +198,8 @@ class RuleRegistryService:
             last_triggered_at=0.0,
             user_id=str(user_id or rule.get("user_id", "")),
             camera_id=str(rule.get("camera_id", "")),
+            trigger_source=str(rule.get("trigger_source", "") or ""),
+            ha_automation_id=str(rule.get("ha_automation_id", "") or ""),
         )
         with self._lock:
             self._rules.append(normalized)
@@ -247,6 +258,38 @@ class RuleRegistryService:
                     self._save_rule_async(rule)
                     return rule.to_dict()
         raise AppException(f"规则不存在: {rule_id}", code="rule_not_found", http_status=404)
+
+    def set_ha_backing(self, rule_id: str, automation_id: str | None) -> dict:
+        """绑定/解绑 HA 委托触发（阶段8）。
+
+        automation_id 非空 → trigger_source="ha"（评估管道跳过，等 HA 回调执行）；
+        None → 清空委托标记，规则降级回 Aether 自评（30s 循环/事件管道照常评估）。
+        HA 写入失败时的降级走 None 这条路——规则保得住，触发路径退回本地。
+        """
+        with self._lock:
+            for rule in self._rules:
+                if rule.id == rule_id:
+                    if automation_id:
+                        rule.trigger_source = "ha"
+                        rule.ha_automation_id = str(automation_id)
+                    else:
+                        rule.trigger_source = ""
+                        rule.ha_automation_id = ""
+                    rule.updated_at = int(time.time() * 1000)
+                    self._save_rule_async(rule)
+                    return rule.to_dict()
+        raise AppException(f"规则不存在: {rule_id}", code="rule_not_found", http_status=404)
+
+    def find_by_ha_automation_id(self, automation_id: str) -> dict | None:
+        """按 HA 自动化 id 反查委托规则（HA 侧删除时的反向联动用）。"""
+        aid = str(automation_id or "")
+        if not aid:
+            return None
+        with self._lock:
+            for rule in self._rules:
+                if rule.ha_automation_id == aid:
+                    return rule.to_dict()
+        return None
 
     def delete_rule(self, rule_id: str) -> dict:
         with self._lock:

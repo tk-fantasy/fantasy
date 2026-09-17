@@ -202,6 +202,8 @@ async def confirm_pending(
     ha_client_ref: list,
     user_id: str = "",
     known_cameras: list | None = None,
+    ha_automation_service: Any = None,
+    automation_service: Any = None,
 ) -> dict:
     """草稿 → 摄像头绑定校验 → 实体校验 → 落库 → 摘除草稿。
 
@@ -209,13 +211,18 @@ async def confirm_pending(
         known_cameras: 可选的 [{"id","name"}] 列表，仅用于在拒绝时给出候选名字。
             不传也会执行校验——「视觉规则必须绑定摄像头」这条不变量与是否知道
             有哪些摄像头无关。
+        ha_automation_service / automation_service: 阶段8 委托触发双写依赖。
+            草稿带 ha_trigger（创建时编译成功的 HA 触发配置）且两服务齐备时，
+            落库后把触发写入 HA（trigger_source="ha"）；HA 写入失败则解绑降级，
+            规则照常按本地路径评估——双写的第二笔失败不整体失败。
 
     校验放在这里而不是各调用方：网页走 REST 路由、语音走 automation_rule_confirm
     工具，两条路都汇到本函数。只在路由里校验的话，工具路径能绕过去落库一条
     未绑定的全局视觉规则（automation_service 对它在**每一路**摄像头上都评估）。
 
     Returns:
-        成功：{"ok": True, "rule_id", "name", "summary", "pending_id"}
+        成功：{"ok": True, "rule_id", "name", "summary", "pending_id",
+               "delegated", "delegation_note"}
         失败：{"ok": False, "reason", "error"}；reason ∈
         not_found / camera_required / missing_entities / save_failed，供调用方映射
         各自的错误形态（工具转 tool_error + hint，REST 转对应 HTTP 状态码）。
@@ -247,19 +254,69 @@ async def confirm_pending(
             "error": f"规则动作引用的设备已不存在: {', '.join(missing)}",
             "missing_entities": missing,
         }
+    ha_trigger = entry.get("ha_trigger") if isinstance(entry.get("ha_trigger"), dict) else None
+    if ha_trigger and ha_automation_service is not None:
+        # 双写第一笔前先打委托标记：评估管道据此跳过这条规则（触发等 HA 回调）
+        rule["trigger_source"] = "ha"
     try:
         saved = registry.add_rule(rule, user_id=user_id)
     except Exception as exc:
         logger.warning("confirm_pending 落库失败: %s", exc, exc_info=True)
         return {"ok": False, "reason": "save_failed", "error": f"规则保存失败：{exc}"}
     pending_store(session).pop(resolved_id, None)
+    delegated = False
+    delegation_note = ""
+    if ha_trigger and ha_automation_service is not None:
+        delegation_note = await _attach_ha_trigger(
+            saved, ha_trigger, registry, ha_automation_service, automation_service)
+        delegated = (saved.get("trigger_source") == "ha"
+                     and bool(saved.get("ha_automation_id")))
     return {
         "ok": True,
         "pending_id": resolved_id,
         "rule_id": saved.get("id"),
         "name": saved.get("name", ""),
         "summary": str(saved.get("summary", "")),
+        "delegated": delegated,
+        "delegation_note": delegation_note,
     }
+
+
+async def _attach_ha_trigger(
+    saved: dict, ha_trigger: dict, registry: Any,
+    ha_automation_service: Any, automation_service: Any,
+) -> str:
+    """双写第二笔：把触发写入 HA 并回写绑定。失败降级回本地自评（不整体失败）。
+
+    顺序约束：必须先落本地行拿 rule_id（fire_rule 回调数据里就是它），再写 HA，
+    最后把 HA 自动化 id 回写进规则。降级口子只有 set_ha_backing(None)——规则
+    保留、触发退回 30s 循环，用户无感。
+    """
+    rule_id = str(saved.get("id", ""))
+    name = str(saved.get("name", "") or rule_id)
+    try:
+        written = await ha_automation_service.write_delegated(
+            rule_id, name,
+            ha_trigger.get("trigger") or [], ha_trigger.get("condition") or [],
+            description=str(saved.get("summary", "") or ""),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("write_delegated 异常，规则降级本地评估: %s", exc, exc_info=True)
+        written = {"error": str(exc)}
+    if written.get("error"):
+        registry.set_ha_backing(rule_id, None)
+        logger.warning("HA 委托触发写入失败，规则降级本地评估: %s", written["error"])
+        return f"（HA 触发写入失败，已按本地规则创建：{written['error']}）"
+    registry.set_ha_backing(rule_id, written.get("id", ""))
+    if automation_service is not None:
+        try:
+            instant = await automation_service.instant_hit_check(saved)
+            if instant.get("fired"):
+                return ("（规则触发已委托 Home Assistant 原生自动化；创建时条件已成立，"
+                        "已立即执行一轮动作）")
+        except Exception:  # noqa: BLE001
+            logger.debug("instant hit check failed", exc_info=True)
+    return "（规则触发已委托 Home Assistant 原生自动化：HA 精确触发，动作仍在 Aether 执行）"
 
 
 def cancel_pending(session: Any, pending_id: str) -> bool:

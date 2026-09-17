@@ -385,6 +385,7 @@ onMounted(() => {
               class="rule-mismatch-badge"
               :class="`rule-mismatch-badge--${mismatch(rule)}`"
             >{{ mismatchBadgeText[mismatch(rule)] }}</span>
+            <span v-if="rule.trigger_source === 'ha'" class="rule-ha-tag" title="触发时机由 Home Assistant 原生自动化执行，动作仍由 Aether 执行">HA 触发</span>
             <span class="rule-camera-tag" :class="{ global: !rule.camera_id }">
               {{ cameraName(rule.camera_id) }}
             </span>
@@ -580,6 +581,16 @@ onMounted(() => {
 .rule-camera-tag.global {
   background: var(--color-primary-light);
   color: var(--color-primary);
+}
+
+/* 阶段8：委托触发标记——触发时机归 HA，动作仍回 Aether 执行 */
+.rule-ha-tag {
+  font-size: var(--text-xs);
+  padding: var(--space-1) var(--space-5);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 153, 51, 0.14);
+  color: var(--color-warning, #ff9933);
+  flex-shrink: 0;
 }
 
 /* 创建表单作用范围提示 */

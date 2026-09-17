@@ -1093,6 +1093,45 @@ def _register_scene_tools(deps: ToolDeps) -> None:
 # 与这里的工具 handler 共用），本文件只负责工具层的入参校验与 hint 措辞。
 # ---------------------------------------------------------------------------
 
+# 阶段8 委托触发适用类型：时间/天气的条件能编译成 HA 结构化触发器（精确到点、
+# 状态边沿，运行时零 LLM）。presence/sun 等事件类型已在 Aether 事件管道零轮询，
+# 只剩条件判定烧少量 LLM，本期不外判。
+_HA_DELEGATE_TYPES = frozenset({"time", "weather"})
+
+
+async def _compile_ha_trigger(rule: dict, fallback_text: str, user_id: str) -> dict | None:
+    """尝试把 time/weather 规则的条件编译成 HA 触发配置；任何失败返回 None。
+
+    前置两道闸：容器里有 ha_automation_service、且 HA 侧回调组件已装配
+    （fire_rule 服务可探测）。编译失败/表达不了的模糊语义都返回 None——调用方
+    原样走本地规则路径，委托只是增强，永远不阻塞创建。
+    """
+    try:
+        from .container import get_container
+        ha_svc = getattr(get_container(), "ha_automation_service", None)
+        if ha_svc is None:
+            return None
+        if not await ha_svc.component_ready():
+            return None
+        compiled = await ha_svc.compile_trigger(
+            str(rule.get("condition", "") or fallback_text),
+            str(rule.get("type", "")), user_id=user_id)
+    except Exception:  # noqa: BLE001 — 容器未初始化/HA 不可达都按"不委托"处理
+        logger.warning("HA trigger delegation compile failed", exc_info=True)
+        return None
+    if compiled.get("error") or not compiled.get("trigger"):
+        return None
+    return {"trigger": compiled["trigger"], "condition": compiled.get("condition") or []}
+
+
+def _ha_automation_service_safe():
+    """容器里的 HaAutomationService（未初始化/未装配返回 None）。"""
+    try:
+        from .container import get_container
+        return getattr(get_container(), "ha_automation_service", None)
+    except Exception:  # noqa: BLE001
+        return None
+
 
 def _register_automation_rule_tools(deps: ToolDeps) -> None:
     """注册自动化规则聊天工具。
@@ -1155,14 +1194,24 @@ def _register_automation_rule_tools(deps: ToolDeps) -> None:
                 candidates=candidates,
             )
         pending_id = uuid4().hex[:12]
+        # 阶段8 确定性路由：时间/天气规则创建时把触发时机编译成 HA 结构化触发器，
+        # 用户确认后触发归 HA（精确定时器/状态边沿，运行时零 LLM），动作仍回
+        # Aether 执行。编译失败/组件未装 → ha_trigger=None，原样走本地规则。
+        ha_trigger = None
+        if str(rule.get("type", "")) in _HA_DELEGATE_TYPES:
+            ha_trigger = await _compile_ha_trigger(rule, text, user_id)
         pending_store(session)[pending_id] = {
             "kind": KIND_AUTOMATION_RULE, "rule": rule, "created_at": time.time(),
+            "ha_trigger": ha_trigger,
         }
         missing_camera = needs_camera(rule)
         note = ("规则尚未创建。简要复述条件/动作要点，并明确告知用户「确认后才生效」。"
                 "网页端会自动弹出确认框，无需用户再打字；语音等渠道请引导用户口头确认。"
                 "用户说「确认」调 automation_rule_confirm；要改调 automation_rule_revise。"
                 "不要说成已经创建好了。")
+        if ha_trigger:
+            note += ("这条规则的触发时机将委托给 Home Assistant 原生自动化"
+                     "（HA 到点/天气变化精确触发，动作仍由 Aether 执行），复述时如实说明。")
         if rule.get("auto_corrections"):
             # 透明化：用户说的设备不存在但找到了近似真实设备，已强制替换——
             # 复述必须点明替换，否则用户核对的只是系统的猜测，二次核对就失效了
@@ -1208,6 +1257,13 @@ def _register_automation_rule_tools(deps: ToolDeps) -> None:
         new_rule = result.get("rule") or entry["rule"]
         entry["rule"] = new_rule
         entry["created_at"] = time.time()  # 改完重新计时，给用户完整评估窗口
+        # 委托草稿被修改后，之前编译的 HA 触发配置可能已不匹配：类型还在
+        # time/weather 就重编译；类型改了（或编译失败）就撤回委托回本地评估。
+        if entry.get("ha_trigger") is not None:
+            if str(new_rule.get("type", "")) in _HA_DELEGATE_TYPES:
+                entry["ha_trigger"] = await _compile_ha_trigger(new_rule, instruction, user_id)
+            else:
+                entry["ha_trigger"] = None
         # camera_id 的清空/校验在 rule_service._resolve_revised_camera 里做（三个
         # 调用方共用一处），这里只把结果如实报给模型
         still_needs_camera = needs_camera(new_rule)
@@ -1234,6 +1290,8 @@ def _register_automation_rule_tools(deps: ToolDeps) -> None:
             deps.ha_client_ref,
             user_id=user_id,
             known_cameras=_enabled_cameras(deps),
+            ha_automation_service=_ha_automation_service_safe(),
+            automation_service=deps.automation_service,
         )
         if not result.get("ok"):
             hints = {
@@ -1247,9 +1305,15 @@ def _register_automation_rule_tools(deps: ToolDeps) -> None:
                               hint=hints.get(str(result.get("reason")),
                                              "待确认规则 10 分钟有效；请用户重新描述需求，"
                                              "调 automation_rule_create 重建。"))
+        note = "规则已创建并启用，自动化评估会周期执行（受冷却约束）。"
+        if result.get("delegated"):
+            note = ("规则已创建：触发时机已委托 Home Assistant 原生自动化（HA 到点触发、"
+                    "动作由 Aether 执行），如实告知用户。" + str(result.get("delegation_note", "")))
+        elif result.get("delegation_note"):
+            note += str(result["delegation_note"])
         return {"success": True, "rule_id": result.get("rule_id"),
                 "name": result.get("name", ""), "summary": str(result.get("summary", "")),
-                "note": "规则已创建并启用，自动化评估会周期执行（受冷却约束）。"}
+                "note": note}
 
     async def trigger_handler(parameters: dict, session) -> dict:
         automation = deps.automation_service
@@ -1324,9 +1388,19 @@ def _register_automation_rule_tools(deps: ToolDeps) -> None:
         if not rule_id:
             return tool_error("rule_id 不能为空", hint="先调 automation_rule_list 获取规则 ID。")
         try:
-            registry.delete_rule(rule_id)
+            removed = registry.delete_rule(rule_id)
         except Exception as exc:  # noqa: BLE001 — AppException（404）统一转工具错误
             return tool_error(str(exc), hint="先调 automation_rule_list 确认规则存在。")
+        # 委托规则连带删 HA 侧触发自动化（best-effort：HA 侧失败不回滚本地删除，
+        # 残留自动化即便触发，回调也会因规则不存在而 404 失效）
+        if str(removed.get("trigger_source", "")) == "ha" and removed.get("ha_automation_id"):
+            ha_svc = _ha_automation_service_safe()
+            if ha_svc is not None:
+                try:
+                    await ha_svc.delete(str(removed["ha_automation_id"]))
+                except Exception:  # noqa: BLE001
+                    logger.warning("委托的 HA 自动化连带删除失败: %s",
+                                   removed["ha_automation_id"], exc_info=True)
         return {"success": True, "rule_id": rule_id}
 
     deps.mcp_client_manager.register_tool(MCPTool(

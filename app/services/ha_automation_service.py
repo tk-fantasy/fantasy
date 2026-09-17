@@ -84,6 +84,15 @@ def _validate_conditions(conditions: Any) -> list[str]:
     return errors
 
 
+# 阶段8 委托触发的编译产物白名单：LLM 产出之外的 platform/condition 一律拒绝
+# （time/weather 场景用不到 calendar/zone 触发器等；白名单比校验修复链省事且
+# 出错时直接走本地规则兜底，不阻塞创建）。
+_DELEGATE_TRIGGER_PLATFORMS = frozenset(
+    {"time", "time_pattern", "state", "numeric_state", "sun", "template"})
+_DELEGATE_CONDITION_TYPES = frozenset(
+    {"state", "numeric_state", "time", "sun", "zone", "template", "and", "or", "not"})
+
+
 class HaAutomationService:
     def __init__(self, rule_service: Any, ha_client_ref: list | None = None) -> None:
         self._rule_service = rule_service
@@ -181,6 +190,133 @@ class HaAutomationService:
                 "summary": text,
             }
         }
+
+    # ------------------------------------------------------------------
+    # 阶段8：时间/天气规则委托触发 —— 编译触发器 + 写回调自动化
+    # ------------------------------------------------------------------
+
+    async def component_ready(self) -> bool:
+        """回调组件是否已在 HA 侧装配（aether_conversation.fire_rule 服务已注册）。
+
+        组件未装/未配置时 HA 也接受带未知服务的 automation 配置（保存成功、
+        触发时才报"服务不存在"）——那是条静默死规则，所以委托前必须先探测。
+        组件在 async_setup_entry 成功后才注册服务，探到服务即等价于 host/token
+        已配置（config flow 两项都必填）。
+        """
+        client = self._ha_client
+        if client is None or not hasattr(client, "get_services"):
+            return False
+        try:
+            services = await client.get_services()
+        except Exception:  # noqa: BLE001
+            logger.debug("get_services failed for delegation probe", exc_info=True)
+            return False
+        for block in services or []:
+            if isinstance(block, dict) and block.get("domain") == "aether_conversation":
+                return "fire_rule" in (block.get("services") or {})
+        return False
+
+    async def compile_trigger(self, condition: str, rule_type: str, user_id: str = "") -> dict:
+        """把 time/weather 规则的自然语言条件编译成 HA trigger/condition。
+
+        与 build_from_text 的区别：只产出触发时机（动作固定为回调，由
+        write_delegated 构造），且产物过 platform 白名单。任何失败返回
+        {"error": ...}，调用方（工具层）据此回退本地规则路径。
+        """
+        rs = self._rule_service
+        if rs is None:
+            return {"error": "规则服务未就绪"}
+        condition = (condition or "").strip()
+        if not condition:
+            return {"error": "条件描述为空"}
+
+        from .prompt_service import HA_TRIGGER_COMPILE_PROMPT_TEMPLATE
+        ctx = await rs._prepare_rule_context(
+            condition, user_id, system_template=HA_TRIGGER_COMPILE_PROMPT_TEMPLATE)
+        if not ctx:
+            return {"error": "LLM 未启用或设备目录不可用"}
+
+        # 天气实体单独补给 LLM：设备目录以可控设备为主，weather.* 不保证在列，
+        # 而天气触发的 entity_id 只能从这里取
+        weather_line = ""
+        client_raw = self._ha_client
+        if client_raw is not None and hasattr(client_raw, "get_states"):
+            try:
+                states = await client_raw.get_states()
+                weather_ids = [str(s.get("entity_id", "")) for s in states or []
+                               if str(s.get("entity_id", "")).startswith("weather.")]
+                if weather_ids:
+                    weather_line = f"\n可用天气实体: {', '.join(weather_ids[:5])}"
+            except Exception:  # noqa: BLE001
+                logger.debug("weather entity lookup failed", exc_info=True)
+
+        type_hint = {"time": "时间触发", "weather": "天气触发"}.get(rule_type, rule_type or "时间/天气")
+        parsed = None
+        messages = [
+            {"role": "system", "content": ctx["system_prompt"]},
+            {"role": "user", "content": f"规则类型: {type_hint}{weather_line}\n"
+                                        f"请把这条触发条件编译成 HA 触发配置 JSON: {condition}"},
+        ]
+        last_err = ""
+        for _ in range(2):
+            try:
+                content = await ctx["client"].chat(messages, 20)
+                parsed = rs._parse_json(content)
+            except Exception as exc:  # noqa: BLE001
+                last_err = str(exc)
+                parsed = None
+            if parsed:
+                break
+            messages.append({"role": "user", "content": "JSON 解析失败，请重新输出有效 JSON。"})
+        if not parsed:
+            return {"error": f"解析失败: {last_err or 'LLM 未返回有效 JSON'}"}
+        if parsed.get("error"):
+            return {"error": f"HA 语法表达不了该条件: {parsed.get('error')}"}
+
+        triggers = parsed.get("trigger") or parsed.get("triggers")
+        conditions = parsed.get("condition", [])
+        if conditions in (None, ""):
+            conditions = parsed.get("conditions") or []
+        errors = _validate_triggers(triggers) + _validate_conditions(conditions)
+        if not errors:
+            for t in triggers or []:
+                if str(t.get("platform", "")) not in _DELEGATE_TRIGGER_PLATFORMS:
+                    errors.append(f"触发器类型不在委托白名单: {t.get('platform')}")
+            for c in conditions or []:
+                if str(c.get("condition", "")) not in _DELEGATE_CONDITION_TYPES:
+                    errors.append(f"条件类型不在委托白名单: {c.get('condition')}")
+        if errors:
+            return {"error": "；".join(errors)}
+        return {"trigger": triggers, "condition": conditions if isinstance(conditions, list) else []}
+
+    async def write_delegated(
+        self, rule_id: str, name: str, trigger: list, condition: list,
+        description: str = "", automation_id: str = "",
+    ) -> dict:
+        """委托触发自动化写入 HA：触发归 HA，动作回调 Aether 执行。
+
+        automation_id 非空时覆盖写（revise 后重同步）；动作是 aether_conversation
+        组件的 fire_rule 服务（组件配置里已有 host/token），不是设备服务调用。
+        """
+        client = self._ha_client
+        if client is None or not hasattr(client, "create_automation"):
+            return {"error": "HA 客户端不可用"}
+        if not trigger:
+            return {"error": "触发器为空"}
+        config = {
+            "alias": f"Aether·{name}",
+            "description": description or f"Aether 规则委托触发（rule_id={rule_id}）",
+            "trigger": trigger,
+            "condition": condition or [],
+            "action": [{"action": "aether_conversation.fire_rule",
+                        "data": {"rule_id": str(rule_id)}}],
+        }
+        try:
+            result = await client.create_automation(config, automation_id=str(automation_id or ""))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("delegated automation write failed: %s", exc)
+            return {"error": f"写入 Home Assistant 失败: {exc}"}
+        return {"id": str(result.get("id", "")), "alias": config["alias"]}
 
     # ------------------------------------------------------------------
     # 第二步：确认写入 HA

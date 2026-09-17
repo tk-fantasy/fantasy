@@ -123,6 +123,12 @@ class AutomationService:
             if rule_types is not None and rtype not in rule_types:
                 skipped_count += 1
                 continue
+            # 阶段8 委托规则：触发时机已外包给 HA 原生自动化（到点回调
+            # fire_from_ha 执行动作），所有评估管道都跳过——否则 30s 静默循环
+            # 仍会对它调 LLM 判条件，委托就白做了。trigger_rule()/手动触发不受影响。
+            if str(rule.get("trigger_source", "") or "") == "ha":
+                skipped_count += 1
+                continue
             if not rule.get("enabled", True):
                 logger.debug("Rule '%s' skipped: disabled", rule.get("name", ""))
                 skipped_count += 1
@@ -237,6 +243,53 @@ class AutomationService:
         except Exception:  # noqa: BLE001
             pass
         return {"rule": rule.get("name") or rule_id, "results": results}
+
+    async def fire_from_ha(self, rule_id: str) -> dict:
+        """HA 委托触发回调（阶段8）：校验后走动作全链路。
+
+        与手动 trigger_rule 的两处差异：禁用规则直接拒绝（TaskView 的启停开关
+        因此对委托规则依然生效）；冷却照常检查（weather 状态在雨/阴间抖动时 HA
+        会连发回调，冷却就是防重触闸）。动作执行/留痕/冷却武装与自动评估同链路
+        （_run_actions → update_trigger_time），留痕文案标「HA 触发」让时间线/
+        周报能区分触发来源。
+        """
+        rule = self._rule_registry.get_rule(rule_id)
+        if rule is None:
+            raise ValueError(f"规则不存在: {rule_id}")
+        name = rule.get("name") or rule_id
+        if not rule.get("enabled", True):
+            return {"fired": False, "reason": "disabled", "rule": name}
+        remaining = self._cooldown_remaining(rule, time.time())
+        if remaining > 0:
+            return {"fired": False, "reason": "cooldown",
+                    "retry_after": round(remaining, 1), "rule": name}
+        results = await self._run_actions(rule, time.time())
+        try:
+            from .alert_service import alert_service
+            await alert_service.record(
+                "automation", f"rule:{name}",
+                f"HA 触发规则「{name}」，执行了 {len(results)} 个动作")
+        except Exception:  # noqa: BLE001
+            pass
+        return {"fired": True, "rule": name, "results": results}
+
+    async def instant_hit_check(self, rule: dict) -> dict:
+        """委托规则创建后的一次性即时判定（阶段8，仅 weather）。
+
+        HA 天气触发是「状态转变」边沿语义：建规则时条件已成立（正下着雨）的话
+        HA 要等下次转雨才会触发，而旧 30s 轮询是"新建即生效"。这里补一发本地
+        LLM 判定 + 立即执行，把即时性补回来。时间类规则无此问题（下个到点 HA
+        自然触发），不做。
+        """
+        if str(rule.get("type", "")) != "weather":
+            return {"checked": False, "fired": False}
+        context_info = await self._build_condition_context()
+        result = await self._evaluate_context_only(
+            str(rule.get("condition", "")), context_info, str(rule.get("user_id", "")))
+        if result != 1:
+            return {"checked": True, "fired": False}
+        fired = await self.fire_from_ha(str(rule.get("id", "")))
+        return {"checked": True, "fired": bool(fired.get("fired")), "detail": fired}
 
     async def _apply_results(self, rules: list[dict], results: list, now: float,
                              applied: list[dict], camera_id: str = "") -> list[dict]:

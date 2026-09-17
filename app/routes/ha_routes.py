@@ -660,6 +660,15 @@ async def delete_ha_automation(
     result = await svc.delete(automation_id)
     if result.get("error"):
         raise AppException(result["error"], code="ha_automation_delete_failed", http_status=502)
+    # 反向同步（阶段8）：这是 Aether 委托触发的自动化（有本地规则行指向它），
+    # 从 HA 侧删掉后触发源就没了——本地规则行连带删除，不然留一条永不触发的死规则
+    linked = container.rule_registry_service.find_by_ha_automation_id(automation_id)
+    if linked is not None:
+        try:
+            container.rule_registry_service.delete_rule(str(linked.get("id", "")))
+            result["delegated_rule_deleted"] = str(linked.get("name", "") or linked.get("id", ""))
+        except Exception:  # noqa: BLE001
+            logger.warning("委托规则连带删除失败: %s", linked.get("id"), exc_info=True)
     return ApiResponse(data=result)
 
 

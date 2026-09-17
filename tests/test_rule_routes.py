@@ -28,10 +28,31 @@ class TestRuleRoutes:
         from app.routes.rule_routes import delete_rule
 
         mock_container = MagicMock()
-        mock_container.rule_registry_service.delete_rule.return_value = True
+        mock_container.rule_registry_service.delete_rule.return_value = {
+            "id": "rule-123", "name": "有人开灯", "trigger_source": "",
+            "ha_automation_id": "",
+        }
 
         result = await delete_rule("rule-123", container=mock_container)
         assert result.code == "ok"
+
+    @pytest.mark.asyncio
+    async def test_delete_delegated_rule_removes_ha_automation(self):
+        """委托规则（阶段8）删除时连带删 HA 侧触发自动化；本地规则照常返回。"""
+        from app.routes.rule_routes import delete_rule
+
+        mock_container = MagicMock()
+        mock_container.rule_registry_service.delete_rule.return_value = {
+            "id": "rule-9", "name": "晚上关灯", "trigger_source": "ha",
+            "ha_automation_id": "aid-9",
+        }
+        mock_container.ha_automation_service.delete = AsyncMock(
+            return_value={"deleted": True, "id": "aid-9"})
+
+        result = await delete_rule("rule-9", container=mock_container)
+
+        assert result.code == "ok"
+        mock_container.ha_automation_service.delete.assert_awaited_once_with("aid-9")
 
     @pytest.mark.asyncio
     async def test_set_rule_enabled(self):
@@ -413,7 +434,8 @@ class TestPendingRuleConfirm:
             container=container, current_user=ALICE)
 
         assert result.data == {"rule_id": "rule-1", "name": "有人开研发部灯",
-                               "summary": "有人就打开研发部灯"}
+                               "summary": "有人就打开研发部灯",
+                               "delegated": False, "delegation_note": ""}
         assert container.rule_registry_service.add_rule.call_args.kwargs["user_id"] == "u1"
         assert session.pending_confirmations == {}
         container.session_store.store_session.assert_awaited_once_with(session)

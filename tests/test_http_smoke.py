@@ -277,7 +277,8 @@ class TestPendingRuleHttp:
         # 前端 apiPost 只认 code=="ok" 时解包 data，形状必须是 ApiResponse
         assert body["code"] == "ok"
         assert body["data"] == {"rule_id": "rule-http-1", "name": "有人开研发部灯",
-                                "summary": "有人就打开研发部灯"}
+                                "summary": "有人就打开研发部灯",
+                                "delegated": False, "delegation_note": ""}
         assert pending_env.saved[0]["user_id"] == "test-user"
         assert pending_env.session.pending_confirmations == {}
         assert pending_env.stored == [pending_env.session]

@@ -12,6 +12,7 @@ from ..core.auth import get_current_user, require_owned_session
 from ..core.exceptions import AppException
 from ..schema.api_schemas import (
     RuleCreateRequest,
+    RuleFireRequest,
     RulePayloadRequest,
     RuleEnabledRequest,
     RuleReviseRequest,
@@ -108,7 +109,41 @@ async def delete_rule(
     rule_id: str,
     container: AppContainer = Depends(get_container),
 ) -> ApiResponse[dict]:
-    return ApiResponse(data=container.rule_registry_service.delete_rule(rule_id))
+    """删除规则；委托规则（阶段8）连带删 HA 侧触发自动化。
+
+    HA 侧失败不回滚本地删除：残留自动化即便触发，回调也会因规则不存在而
+    404 失效，不会误执行动作。
+    """
+    removed = container.rule_registry_service.delete_rule(rule_id)
+    if str(removed.get("trigger_source", "")) == "ha" and removed.get("ha_automation_id"):
+        ha_svc = getattr(container, "ha_automation_service", None)
+        if ha_svc is not None:
+            try:
+                await ha_svc.delete(str(removed["ha_automation_id"]))
+            except Exception:  # noqa: BLE001
+                logger.warning("委托的 HA 自动化连带删除失败: %s",
+                               removed["ha_automation_id"], exc_info=True)
+    return ApiResponse(data=removed)
+
+
+@router.post("/rules/fire")
+async def fire_rule(
+    payload: RuleFireRequest,
+    container: AppContainer = Depends(get_container),
+) -> ApiResponse[dict]:
+    """HA 委托触发回调（阶段8）：组件 fire_rule 服务到点调这里执行动作。
+
+    鉴权走全局中间件（X-API-Token=APP_TOKEN，与 assist 桥同源，登录 JWT 也
+    放行=等价手动触发）。禁用/冷却中返回 fired=false 而非报错——调用方是 HA
+    自动化，HTTP 500 只会在 HA 日志里刷错误，业务状态放 body 更干净。
+    """
+    if getattr(container, "automation_service", None) is None:
+        raise AppException("自动化服务未就绪", code="automation_unavailable", http_status=503)
+    try:
+        result = await container.automation_service.fire_from_ha(payload.rule_id.strip())
+    except ValueError as exc:
+        raise AppException(str(exc), code="rule_not_found", http_status=404)
+    return ApiResponse(data=result)
 
 
 @router.post("/rules/{rule_id}/revise")
@@ -148,6 +183,7 @@ async def update_rule(
     container: AppContainer = Depends(get_container),
 ) -> ApiResponse[dict]:
     """把 revise 后确认的规则 JSON 落库。"""
+    before = container.rule_registry_service.get_rule(rule_id)
     try:
         stored = container.rule_registry_service.update_rule(rule_id, payload.rule)
     except AppException:
@@ -155,7 +191,57 @@ async def update_rule(
     except Exception as e:
         logger.warning("update_rule failed: %s", e, exc_info=True)
         raise AppException(f"保存失败：{e}", code="rule_save_failed", http_status=500)
+    if before and str(before.get("trigger_source", "")) == "ha":
+        await _resync_delegated_trigger(container, stored, before)
     return ApiResponse(data=stored)
+
+
+async def _resync_delegated_trigger(
+    container: AppContainer, updated: dict, before: dict
+) -> None:
+    """委托规则内容被修改后重编译 HA 触发；失败降级回本地自评（阶段8）。
+
+    条件/type 变了，HA 侧的触发配置就是旧的——宁可降级（规则回 30s 循环评估，
+    功能不丢）也不能留着一条触发时机对不上的委托规则。
+    """
+    ha_svc = getattr(container, "ha_automation_service", None)
+    registry = container.rule_registry_service
+    rule_id = str(updated.get("id", ""))
+    auto_id = str(before.get("ha_automation_id", "") or "")
+
+    def _degrade() -> None:
+        try:
+            registry.set_ha_backing(rule_id, None)
+        except Exception:  # noqa: BLE001
+            logger.warning("委托降级失败（规则可能已被删）: %s", rule_id, exc_info=True)
+
+    if ha_svc is None or str(updated.get("type", "")) not in ("time", "weather"):
+        _degrade()
+        return
+    try:
+        if not await ha_svc.component_ready():
+            _degrade()
+            return
+        compiled = await ha_svc.compile_trigger(
+            str(updated.get("condition", "")), str(updated.get("type", "")),
+            user_id=str(updated.get("user_id", "") or ""))
+        if compiled.get("error") or not compiled.get("trigger"):
+            _degrade()
+            return
+        written = await ha_svc.write_delegated(
+            rule_id, str(updated.get("name", "") or rule_id),
+            compiled["trigger"], compiled.get("condition") or [],
+            description=str(updated.get("summary", "") or ""),
+            automation_id=auto_id,
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("委托触发重同步失败: %s", rule_id, exc_info=True)
+        _degrade()
+        return
+    if written.get("error"):
+        _degrade()
+        return
+    registry.set_ha_backing(rule_id, str(written.get("id", "") or auto_id))
 
 
 @router.post("/rules/{rule_id}/explain")
@@ -331,6 +417,8 @@ async def confirm_pending_rule(
         container.ha_service,
         container.ha_client_ref,
         user_id=current_user.get("user_id", ""),
+        ha_automation_service=getattr(container, "ha_automation_service", None),
+        automation_service=getattr(container, "automation_service", None),
     )
     if not result.get("ok"):
         # 设备已消失是用户可修正的输入问题（400），落库失败是服务端问题（500），
@@ -342,13 +430,18 @@ async def confirm_pending_rule(
     name = str(result.get("name", ""))
     # 让下一轮 LLM 知道规则是用户在界面上确认的（会话历史不存 tool 消息，
     # 不补这一条模型会以为规则还没建）
-    session.model_messages.append(
-        {"role": "user", "content": f"（我已通过界面确认，规则「{name}」已创建生效）"})
+    if result.get("delegated"):
+        note = f"（我已通过界面确认，规则「{name}」已创建生效，触发委托给了 Home Assistant）"
+    else:
+        note = f"（我已通过界面确认，规则「{name}」已创建生效）"
+    session.model_messages.append({"role": "user", "content": note})
     await container.session_store.store_session(session)
     return ApiResponse(data={
         "rule_id": result.get("rule_id"),
         "name": name,
         "summary": str(result.get("summary", "")),
+        "delegated": bool(result.get("delegated")),
+        "delegation_note": str(result.get("delegation_note", "")),
     })
 
 

@@ -121,6 +121,37 @@ HA_AUTOMATION_PROMPT_TEMPLATE = (
     "- 不要添加用户没有提到的动作或条件。"
 )
 
+# 阶段8：时间/天气规则委托 HA 触发时的「触发器编译」模板。只编译 trigger/condition
+# （触发时机归 HA），动作固定为回调 aether_conversation.fire_rule——由代码构造，
+# 不经 LLM，所以这里不输出 action 字段。weather 实体由调用方附在用户消息里。
+# 注意占位符只准用 {device_list_text}（_prepare_rule_context 统一 format，
+# 出现其他占位符会 KeyError；规则类型提示走用户消息）。
+HA_TRIGGER_COMPILE_PROMPT_TEMPLATE = (
+    "你是 Home Assistant 自动化配置专家。把一条智能规则的触发条件编译成 HA 自动化的"
+    "触发配置（只编译触发时机，不需要动作）。\n"
+    "只返回 JSON，不要 markdown，不要解释。\n\n"
+    "可用 HA 实体（entity_id 只准从这里取，不得编造）:\n"
+    "{device_list_text}\n\n"
+    "编译要求:\n"
+    '- "trigger" 必须非空，platform 只准用: time / time_pattern / state / numeric_state / sun / template\n'
+    '- "condition" 可为空数组 []，每项含 "condition" 键，只准用: state / numeric_state / time / sun / zone / template / and / or / not\n'
+    "- 天气类条件: 天气现象（下雨/下雪/晴）用 weather 实体的 state 触发（天气状态转为 rainy 等）；\n"
+    "  温度/湿度阈值用 numeric_state 盯 weather 实体的 temperature/humidity 属性\n"
+    '- 时间类条件: 固定时刻用 {{"platform": "time", "at": "HH:MM:SS"}}；「每天/工作日」等周期\n'
+    "  用 time 或 time_pattern；「每小时的第X分」用 time_pattern\n"
+    "- 条件里说「下雨时/高温时」这类状态词，先翻译成 HA 的天气状态值（rainy/sunny/cloudy…）或数值属性\n"
+    "- 严禁输出 action 字段\n\n"
+    "无法用上述结构化语法表达的模糊语义（如「我快到家的时候」「大概晚饭后」「冷的时候」），输出:\n"
+    '{{"error": "简要原因"}}\n\n'
+    "输出格式:\n"
+    '{{"trigger": [{{"platform": "...", ...}}], "condition": []}}\n\n'
+    "### 示例\n"
+    "「每天22点」→ {{\"trigger\": [{{\"platform\": \"time\", \"at\": \"22:00:00\"}}], \"condition\": []}}\n"
+    "「下雨的时候」→ {{\"trigger\": [{{\"platform\": \"state\", \"entity_id\": \"weather.home\", \"to\": \"rainy\"}}], \"condition\": []}}\n"
+    "「工作日早上8点」→ {{\"trigger\": [{{\"platform\": \"time\", \"at\": \"08:00:00\"}}], "
+    "\"condition\": [{{\"condition\": \"time\", \"weekday\": [\"mon\",\"tue\",\"wed\",\"thu\",\"fri\"]}}]}}"
+)
+
 
 # ============ 规则解释 Prompt（plan 模式）===========
 RULE_EXPLAIN_PROMPT = (
@@ -179,7 +210,9 @@ GUIDELINES = (
     "「创建规则：…」）时，只准用 automation_rule_list / automation_rule_create / automation_rule_revise / "
     "automation_rule_confirm 这组工具——定时任务（scheduled_task_*）是另一套系统，"
     "scene 是场景，都不是自动化规则；http_request 直连 HA 会被内网防护拦截。"
-    "规则列表结果里每条 actions 已含控制的设备 entity_id 和设备名，如实转述。\n"
+    "规则列表结果里每条 actions 已含控制的设备 entity_id 和设备名，如实转述。"
+    "创建时间/天气类规则时，系统会自动把触发时机委托给 Home Assistant 原生自动化"
+    "（HA 精确触发、动作仍在 Aether 执行，工具结果会标注），如实转述即可，不要重复创建。\n"
     "- 【HA 原生自动化】用户明确要在 Home Assistant 里建自动化（「在 HA 里建个自动化」"
     "「帮我写个 HA 自动化：我到家开玄关灯」）或要管理 HA 已有自动化（列表/删除）时，"
     "用 ha_automation_create / ha_automation_list / ha_automation_delete 这组工具，"

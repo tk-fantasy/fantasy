@@ -16,6 +16,8 @@ class AuthRegisterRequest(BaseModel):
     password: str = Field(min_length=8, max_length=128)
     # 注册门控：首用户填安装码（部署日志/8011 页可查），之后填管理员邀请码
     code: str = Field(default="", max_length=64)
+    # 显示名称：可选，留空回落为用户名
+    display_name: str = Field(default="", max_length=32)
 
 
 class AuthLoginRequest(BaseModel):
@@ -402,6 +404,15 @@ class RulePayloadRequest(BaseModel):
 class RuleEnabledRequest(BaseModel):
     """POST /rules/{rule_id}/enabled 请求体。"""
     enabled: bool = True
+
+
+class RuleFireRequest(BaseModel):
+    """POST /rules/fire 请求体 —— HA 委托触发回调（阶段8）。
+
+    调用方是 aether_conversation 组件的 fire_rule 服务（X-API-Token=APP_TOKEN，
+    全局中间件鉴权），带规则 id 来执行动作。
+    """
+    rule_id: str
 
 
 # --------------- Automation ---------------
