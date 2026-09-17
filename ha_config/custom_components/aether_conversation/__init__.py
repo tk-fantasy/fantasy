@@ -22,8 +22,8 @@ from homeassistant.const import CONF_TOKEN
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import intent
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant import intent
 import uuid
 
 from .const import CONF_HOST, CONF_TOKEN, DEFAULT_TIMEOUT_SECONDS, DOMAIN
@@ -101,7 +101,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 class AetherAgent(conversation.AbstractConversationAgent):
-    """转发文本给 Aether 的 conversation agent。"""
+    """转发文本给 Aether 的 conversation agent（HA 2026 models 接口）。
+
+    实现抽象方法 async_process(user_input)；hass 从构造器持有（新版
+    ConversationInput 不再携带 hass）。
+    """
 
     def __init__(
         self, hass: HomeAssistant, entry: ConfigEntry, session: aiohttp.ClientSession
@@ -115,24 +119,18 @@ class AetherAgent(conversation.AbstractConversationAgent):
         # "*" 通配：语言判断/播报都在 Aether 与 Assist 管线两侧各自处理
         return ["*"]
 
-    async def async_handle(
-        self,
-        hass: HomeAssistant,
-        text: str,
-        context: conversation.ConversationContext,
-        language: str,
-        conversation_id: str | None,
-        device_id: str | None,
+    async def async_process(
+        self, user_input: conversation.ConversationInput
     ) -> conversation.ConversationResult:
         host = str(self._entry.data.get(CONF_HOST, "")).rstrip("/")
         token = str(self._entry.data.get(CONF_TOKEN, ""))
         reply = ""
-        cid = conversation_id or uuid.uuid4().hex
+        cid = user_input.conversation_id or uuid.uuid4().hex
         if host and token:
             try:
                 resp = await _post_aether(
                     self._session, host, token,
-                    "/api/assist/chat", {"text": text, "conversation_id": cid},
+                    "/api/assist/chat", {"text": user_input.text, "conversation_id": cid},
                 )
                 if resp is not None and resp.status == 200:
                     data: dict[str, Any] = await resp.json()
@@ -148,8 +146,6 @@ class AetherAgent(conversation.AbstractConversationAgent):
         if not reply:
             reply = _FALLBACK_REPLY
 
-        intent_response = intent.IntentResponse(language=language)
+        intent_response = intent.IntentResponse(language=user_input.language)
         intent_response.async_set_speech(reply)
-        return conversation.ConversationResult(
-            conversation_id=cid, response=intent_response
-        )
+        return conversation.ConversationResult(intent_response, cid)

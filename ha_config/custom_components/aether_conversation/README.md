@@ -12,7 +12,8 @@ wake word / STT / TTS 全走 HA Assist 管线，识别出的文本转发给 Aeth
 2. Aether 侧设置 `APP_TOKEN` 环境变量（机器对机器令牌）并重启 Aether。
 3. 重启 HA（组件首次被发现需要重启）。
 4. HA「设置 → 设备与服务 → 添加集成 → Aether Conversation Agent」，填：
-   - Aether 地址：如 `http://aether:8000`（容器网络内可达地址）
+   - Aether 地址：如 `https://aether:8010`（compose 网络内地址；自签证书，
+     组件已跳过校验）
    - API Token：Aether 的 `APP_TOKEN` 值
 5. HA「设置 → 语音助手」里把对话引擎（conversation agent）选成 **Aether**。
 6. 对着 Assist 说「打开客厅灯」，Aether 会理解并经 HA 执行。
