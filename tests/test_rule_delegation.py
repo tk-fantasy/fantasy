@@ -56,7 +56,9 @@ class _RS:
 
 
 class TestComponentReady:
-    def test_ready_when_service_registered(self):
+    def test_ready_when_service_registered(self, monkeypatch):
+        import app.main as app_main
+        monkeypatch.setattr(app_main, "APP_TOKEN", "tok")
         client = MagicMock()
         client.get_services = AsyncMock(return_value=[
             {"domain": "light", "services": {"turn_on": {}}},
@@ -64,14 +66,28 @@ class TestComponentReady:
         ])
         assert _run(_ha_svc(client).component_ready()) is True
 
-    def test_not_ready_without_fire_rule(self):
+    def test_not_ready_when_app_token_unset(self, monkeypatch):
+        """APP_TOKEN 未设置时回调必被 401——闸门直接判 False，不出静默死规则。"""
+        import app.main as app_main
+        monkeypatch.setattr(app_main, "APP_TOKEN", "")
+        client = MagicMock()
+        client.get_services = AsyncMock(return_value=[
+            {"domain": "aether_conversation", "services": {"fire_rule": {}}},
+        ])
+        assert _run(_ha_svc(client).component_ready()) is False
+
+    def test_not_ready_without_fire_rule(self, monkeypatch):
+        import app.main as app_main
+        monkeypatch.setattr(app_main, "APP_TOKEN", "tok")
         client = MagicMock()
         client.get_services = AsyncMock(return_value=[
             {"domain": "aether_conversation", "services": {}},
         ])
         assert _run(_ha_svc(client).component_ready()) is False
 
-    def test_not_ready_on_error_or_missing_client(self):
+    def test_not_ready_on_error_or_missing_client(self, monkeypatch):
+        import app.main as app_main
+        monkeypatch.setattr(app_main, "APP_TOKEN", "tok")
         client = MagicMock()
         client.get_services = AsyncMock(side_effect=RuntimeError("ha down"))
         assert _run(_ha_svc(client).component_ready()) is False

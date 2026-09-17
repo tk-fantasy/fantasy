@@ -196,13 +196,17 @@ class HaAutomationService:
     # ------------------------------------------------------------------
 
     async def component_ready(self) -> bool:
-        """回调组件是否已在 HA 侧装配（aether_conversation.fire_rule 服务已注册）。
+        """回调链路整体是否就绪：HA 侧组件已装配 + Aether 侧 APP_TOKEN 已设置。
 
         组件未装/未配置时 HA 也接受带未知服务的 automation 配置（保存成功、
-        触发时才报"服务不存在"）——那是条静默死规则，所以委托前必须先探测。
-        组件在 async_setup_entry 成功后才注册服务，探到服务即等价于 host/token
-        已配置（config flow 两项都必填）。
+        触发时才报"服务不存在"）——那是条静默死规则；APP_TOKEN 未设置时回调
+        会被鉴权中间件 401，同样是静默死规则。两者都是委托前必须探掉的坑。
+        组件在 async_setup_entry 成功后才注册 fire_rule 服务，探到服务即等价于
+        host/token 已配置（config flow 两项都必填）。
         """
+        from ..main import APP_TOKEN
+        if not APP_TOKEN:
+            return False
         client = self._ha_client
         if client is None or not hasattr(client, "get_services"):
             return False
