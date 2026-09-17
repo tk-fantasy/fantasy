@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuth } from '../composables/useAuth'
 import { markBackendReady } from '../router'
@@ -167,16 +167,25 @@ async function retry() {
 }
 
 // 收尾：full=首次进场完整谢幕；quick=会话内刷新，快速淡出
+// redirectTimer 必须在卸载时清掉：后台标签页里 setTimeout 被节流到分钟级，
+// 用户在谢幕延迟期间点了侧边栏导航，僵尸定时器随后触发会把人从别的页面
+// 强拽回 /chat（前端走查实测复现）。
+let redirectTimer = null
+
 async function finish(full) {
   statusText.value = '一切就绪'
   if (full) {
     await new Promise(resolve => setTimeout(resolve, 800))
   }
   isReady.value = true
-  setTimeout(() => {
+  redirectTimer = setTimeout(() => {
     router.push('/chat')
   }, full ? 500 : 400)
 }
+
+onUnmounted(() => {
+  if (redirectTimer) clearTimeout(redirectTimer)
+})
 
 onMounted(async () => {
   // 获取用户称呼
