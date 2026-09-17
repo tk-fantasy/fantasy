@@ -135,11 +135,17 @@ HA_TRIGGER_COMPILE_PROMPT_TEMPLATE = (
     "编译要求:\n"
     '- "trigger" 必须非空，platform 只准用: time / time_pattern / state / numeric_state / sun / template\n'
     '- "condition" 可为空数组 []，每项含 "condition" 键，只准用: state / numeric_state / time / sun / zone / template / and / or / not\n'
-    "- 天气类条件: 天气现象（下雨/下雪/晴）用 weather 实体的 state 触发（天气状态转为 rainy 等）；\n"
-    "  温度/湿度阈值用 numeric_state 盯 weather 实体的 temperature/humidity 属性\n"
+    "- 天气类条件（触发时机以 HA 天气实体为准，与和风天气无关）:\n"
+    "  · 天气现象用 state 触发盯 weather 实体，状态值只准用 HA 标准枚举:\n"
+    "    sunny=晴 / clear-night=晴夜 / partlycloudy=多云 / cloudy=阴 / fog=雾 /\n"
+    "    rainy=雨 / pouring=大雨 / lightning-rainy=雷雨 / lightning=雷 / hail=冰雹 /\n"
+    "    snowy=雪 / snowy-rainy=雨夹雪 / windy=大风 / exceptional=极端天气\n"
+    "    中文映射示例：下雨→rainy，下大雨→pouring，雷阵雨→lightning-rainy，下雪→snowy；\n"
+    "    编造枚举外的值（如 thunderstorm）= 永不触发的死规则\n"
+    "  · 温度/湿度等阈值用 numeric_state 盯 weather 实体的 temperature/humidity 属性\n"
     '- 时间类条件: 固定时刻用 {{"platform": "time", "at": "HH:MM:SS"}}；「每天/工作日」等周期\n'
     "  用 time 或 time_pattern；「每小时的第X分」用 time_pattern\n"
-    "- 条件里说「下雨时/高温时」这类状态词，先翻译成 HA 的天气状态值（rainy/sunny/cloudy…）或数值属性\n"
+    "- 条件里说「下雨时/高温时」这类状态词，必须翻译成上面的标准枚举或数值属性\n"
     "- 严禁输出 action 字段\n\n"
     "无法用上述结构化语法表达的模糊语义（如「我快到家的时候」「大概晚饭后」「冷的时候」），输出:\n"
     '{{"error": "简要原因"}}\n\n'

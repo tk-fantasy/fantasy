@@ -241,14 +241,19 @@ class HaAutomationService:
             return {"error": "LLM 未启用或设备目录不可用"}
 
         # 天气实体单独补给 LLM：设备目录以可控设备为主，weather.* 不保证在列，
-        # 而天气触发的 entity_id 只能从这里取
+        # 而天气触发的 entity_id 只能从这里取。unavailable/unknown 的实体必须
+        # 过滤——选中它们等于编译出永不触发的死触发器。
         weather_line = ""
         client_raw = self._ha_client
         if client_raw is not None and hasattr(client_raw, "get_states"):
             try:
                 states = await client_raw.get_states()
-                weather_ids = [str(s.get("entity_id", "")) for s in states or []
-                               if str(s.get("entity_id", "")).startswith("weather.")]
+                weather_ids = [
+                    f"{s.get('entity_id')}(当前:{s.get('state')})"
+                    for s in states or []
+                    if str(s.get("entity_id", "")).startswith("weather.")
+                    and str(s.get("state", "")) not in ("unavailable", "unknown", "")
+                ]
                 if weather_ids:
                     weather_line = f"\n可用天气实体: {', '.join(weather_ids[:5])}"
             except Exception:  # noqa: BLE001
