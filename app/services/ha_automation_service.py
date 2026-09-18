@@ -60,6 +60,64 @@ def _to_ha_actions(mcp_actions: list[dict]) -> list[dict]:
     return out
 
 
+def _normalize_time_at(value: Any) -> str:
+    """time 触发器 at 规范化为 HH:MM:SS；解析不了返回 ""（调用方据此拒绝写入）。
+
+    HA 对 at 严格要求 HH:MM[:SS] / input_datetime 实体等，LLM 波动时可能直接
+    吐中文（"早上七点半"）→ HA 400 → 整条规则降级本地且难归因。代码层提前拦。
+    """
+    s = str(value or "").strip()
+    parts = s.split(":")
+    if len(parts) == 2:
+        parts.append("00")
+    if len(parts) != 3:
+        return ""
+    try:
+        h, m, sec = (int(float(p)) for p in parts)
+    except ValueError:
+        return ""
+    if not (0 <= h <= 23 and 0 <= m <= 59 and 0 <= sec <= 59):
+        return ""
+    return f"{h:02d}:{m:02d}:{sec:02d}"
+    return f"{h:02d}:{m:02d}:{sec:02d}"
+
+
+# time 触发器在 HA 里只认 platform/at（weekday 属于 time **条件**，塞进触发器
+# 会被 400 拒掉——LLM 编译「工作日早上8点」时的高频跑偏点）
+_TIME_TRIGGER_KEYS = ("platform", "at")
+
+
+def sanitize_delegated_triggers(triggers: list) -> list:
+    """写 HA 前的确定性规范化：不依赖 LLM 自觉，代码兜住高频坏字段。
+
+    - time: at 补零补秒（"7:30"→"07:30:00"）；剥离 weekday 等触发器不认的键
+      （weekday 移入不了 condition——语义上它本来就是条件，直接丢弃会让
+      「工作日8点」变成「每天8点」，宁可丢弃也不要整条 400 降级，条件语义
+      由本地规则的 condition 原文保留）
+    - time_pattern: hours/minutes/seconds 转字符串（HA 模板语义 "/2" 是字符串）
+    其余 platform 原样透传（结构合法性已由白名单校验）。
+    """
+    out = []
+    for t in triggers or []:
+        if not isinstance(t, dict):
+            continue
+        platform = str(t.get("platform", ""))
+        if platform == "time":
+            clean = {k: v for k, v in t.items() if k in _TIME_TRIGGER_KEYS}
+            if "at" in clean:
+                clean["at"] = _normalize_time_at(clean["at"])
+            out.append(clean)
+        elif platform == "time_pattern":
+            clean = dict(t)
+            for key in ("hours", "minutes", "seconds"):
+                if key in clean:
+                    clean[key] = str(clean[key])
+            out.append(clean)
+        else:
+            out.append(t)
+    return out
+
+
 def _validate_triggers(triggers: Any) -> list[str]:
     """trigger 结构校验：非空列表、每项 dict 且含 platform 键。"""
     if not isinstance(triggers, list) or not triggers:
@@ -317,6 +375,12 @@ class HaAutomationService:
             return {"error": "HA 客户端不可用"}
         if not trigger:
             return {"error": "触发器为空"}
+        # LLM 编译产物先过确定性规范化（补零/剥离 time 触发器里的 weekday/
+        # at 解析不了直接拒绝），高频坏字段在代码层兜住，不把 400 交给 HA
+        trigger = sanitize_delegated_triggers(trigger)
+        for t in trigger:
+            if str(t.get("platform", "")) == "time" and not t.get("at"):
+                return {"error": f"time 触发器 at 字段无法解析: {t!r}"}
         config = {
             "alias": f"Aether·{name}",
             "description": description or f"Aether 规则委托触发（rule_id={rule_id}）",

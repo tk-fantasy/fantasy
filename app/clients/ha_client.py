@@ -242,7 +242,14 @@ class HomeAssistantClient:
         response = await client.post(
             f"/api/config/automation/config/{automation_id}",
             json=config, timeout=15.0)
-        response.raise_for_status()
+        if response.status_code >= 400:
+            # 带 HA 响应体抛错：LLM 编译的字段被 HA 拒时（400），只有状态码
+            # 无法归因（httpx 报文不含 HA 说的事实原因）
+            try:
+                detail = str(response.json())[:200]
+            except Exception:  # noqa: BLE001
+                detail = (response.text or "")[:200]
+            raise RuntimeError(f"HA {response.status_code}: {detail}")
         return {"id": automation_id, "result": (response.json() or {}).get("result", "")}
 
     async def delete_automation(self, automation_id: str) -> None:

@@ -142,6 +142,43 @@ class TestWriteDelegated:
         assert config["action"] == [{"action": "aether_conversation.fire_rule",
                                      "data": {"rule_id": "rule-1"}}]
 
+    def test_sanitize_before_write(self):
+        """LLM 高频跑偏字段在写 HA 前被代码规范化：at 补零补秒、time 触发器
+        里的 weekday 剥离（weekday 属于 time 条件，塞触发器部分 HA 版本 400）。"""
+        client = MagicMock()
+        client.create_automation = AsyncMock(return_value={"id": "aid1"})
+
+        _run(_ha_svc(client).write_delegated(
+            "rule-1", "工作日早8点开灯",
+            [{"platform": "time", "at": "7:30",
+              "weekday": ["mon", "tue"]}], []))
+
+        config = client.create_automation.await_args.args[0]
+        assert config["trigger"] == [{"platform": "time", "at": "07:30:00"}]
+
+    def test_unparseable_at_rejected_before_ha(self):
+        """at 解析不了（LLM 波动吐中文）→ 写 HA 前拒绝，干净降级本地而不是 HA 400。
+        这是「每天早上7点半」规则降级事故的实测根因。"""
+        client = MagicMock()
+        client.create_automation = AsyncMock(return_value={"id": "aid1"})
+
+        result = _run(_ha_svc(client).write_delegated(
+            "rule-1", "x", [{"platform": "time", "at": "早上七点半"}], []))
+
+        assert "error" in result
+        client.create_automation.assert_not_awaited()
+
+    def test_time_pattern_values_stringified(self):
+        client = MagicMock()
+        client.create_automation = AsyncMock(return_value={"id": "aid1"})
+
+        _run(_ha_svc(client).write_delegated(
+            "rule-1", "x",
+            [{"platform": "time_pattern", "hours": "/2", "minutes": 30}], []))
+
+        config = client.create_automation.await_args.args[0]
+        assert config["trigger"][0]["minutes"] == "30"
+
     def test_overwrite_uses_existing_id(self):
         """revise 重同步走覆盖写：带原 automation_id，不新造第二条。"""
         client = MagicMock()
