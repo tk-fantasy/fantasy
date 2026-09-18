@@ -375,7 +375,7 @@ class Dispatcher:
         清缓存前先关闭该 agent 的 httpx 客户端，回收连接池。
         同时清 validator 的 per-user LLM 缓存，避免 validator 用旧 key 请求。
         """
-        for allow in ("full", "no_create", "clean"):
+        for allow in ("full", "rule_create", "no_create", "clean"):
             old = self._user_agents.pop((user_id, allow), None)
             if old is not None:
                 await self._close_agent_clients(old)
@@ -410,6 +410,9 @@ class Dispatcher:
         """按回合变体取工具列表。
 
         - full：全量工具（消息明确出现创建关键词，wants_rule_creation 命中）。
+        - rule_create：full 基础上剔除 scheduled_task_create——用户明说了
+          「创建规则」，弱模型仍高频把规则话术路由去定时任务（实测），代码层
+          让 automation_rule_* 成为唯一创建出口。
         - no_create：剔除 automation_rule_create，保留 confirm/revise 等——
           会话里有活草稿、用户在做「确认 / 改成…」后续时使用。
         - clean：automation_rule_* 整族剔除——无关键词且无活草稿的回合，模型
@@ -420,16 +423,18 @@ class Dispatcher:
         if variant == "full":
             return self._tools
 
-        def _keep(name: str) -> bool:
-            if variant == "no_create":
-                return name != "automation_rule_create"
-            return not name.startswith("automation_rule_")
-
         kept = []
         for t in self._tools:
             name = getattr(t, "name", "") or getattr(t, "tool_name", "")
-            if _keep(name):
-                kept.append(t)
+            if variant == "rule_create":
+                if name != "scheduled_task_create":
+                    kept.append(t)
+            elif variant == "no_create":
+                if name != "automation_rule_create":
+                    kept.append(t)
+            else:  # clean
+                if not name.startswith("automation_rule_"):
+                    kept.append(t)
         return kept
 
     def _live_rule_draft(self, session) -> bool:
@@ -442,14 +447,19 @@ class Dispatcher:
             return False
 
     def _pick_variant(self, session, query: str) -> str:
-        """回合变体选择：创建/查询规则话术 → full；有活草稿（确认/修改流）→
-        no_create；其余 → clean（完全无规则概念）。
+        """回合变体选择：创建规则话术 → rule_create；查询规则 → full；
+        有活草稿（确认/修改流）→ no_create；其余 → clean（完全无规则概念）。
 
-        查询也要 full：clean 把 automation_rule_* 整族剔除后，模型面对
+        查询要 full：clean 把 automation_rule_* 整族剔除后，模型面对
         「查一下有哪些规则」只能如实回答"没有这工具"——查询场景需要
         automation_rule_list 可见；创建误触由工具层 wants_rule_creation 硬门兜底。
+        创建要 rule_create（full 减 scheduled_task_create）：弱模型实测会把
+        「创建规则：每天X点…」路由去定时任务，明说了"规则"还选错——工具面
+        上把定时创建拿掉，选择就不再依赖模型自觉。
         """
-        if wants_rule_creation(query) or wants_rule_query(query):
+        if wants_rule_creation(query):
+            return "rule_create"
+        if wants_rule_query(query):
             return "full"
         if self._live_rule_draft(session):
             return "no_create"

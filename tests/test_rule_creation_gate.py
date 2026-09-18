@@ -183,13 +183,26 @@ def test_pick_variant_keyword_draft_clean():
     live = SimpleNamespace(pending_confirmations={
         "abc": {"kind": "automation_rule", "rule": {"name": "x"}, "created_at": 1 << 40},
     })
-    assert dispatcher._pick_variant(live, "创建一条规则：有人开灯") == "full"
+    assert dispatcher._pick_variant(live, "创建一条规则：有人开灯") == "rule_create"
     assert dispatcher._pick_variant(live, "确认") == "no_create"      # 有活草稿
     assert dispatcher._pick_variant(live, "改成35度") == "no_create"
     empty = SimpleNamespace(pending_confirmations={})
     assert dispatcher._pick_variant(empty, "如果有人就打开厨房灯") == "clean"
     assert dispatcher._pick_variant(empty, "今天天气怎样") == "clean"
     assert dispatcher._pick_variant(empty, "把灯都关了") == "clean"
+
+
+def test_rule_create_variant_strips_scheduled_task_create():
+    """创建规则回合：定时任务创建工具被剔除——弱模型路由规则的唯一出口是
+    automation_rule_create（实测 agnes-flash 会把「创建规则：每天X点…」
+    错路由去定时任务）。"""
+    dispatcher = _mk_dispatcher()
+    kept = [t.name for t in dispatcher._tools_for_variant("rule_create")]
+    assert "scheduled_task_create" not in kept
+    assert "automation_rule_create" in kept
+    # 查询话术（非创建）仍走 full，定时任务可用
+    assert dispatcher._pick_variant(SimpleNamespace(pending_confirmations={}),
+                                    "有哪些规则") == "full"
 
 
 def test_global_clean_agent_lazy_built_and_cached():
