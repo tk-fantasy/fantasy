@@ -1120,6 +1120,9 @@ async def _compile_ha_trigger(rule: dict, fallback_text: str, user_id: str) -> d
         logger.warning("HA trigger delegation compile failed", exc_info=True)
         return None
     if compiled.get("error") or not compiled.get("trigger"):
+        logger.info("委托编译未成（走本地规则兜底）: %s | %s",
+                    rule.get("condition", "") or fallback_text,
+                    compiled.get("error") or "trigger 为空")
         return None
     return {"trigger": compiled["trigger"], "condition": compiled.get("condition") or []}
 

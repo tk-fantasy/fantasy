@@ -238,6 +238,7 @@ class HaAutomationService:
         ctx = await rs._prepare_rule_context(
             condition, user_id, system_template=HA_TRIGGER_COMPILE_PROMPT_TEMPLATE)
         if not ctx:
+            logger.warning("委托编译失败（LLM 未启用或目录不可用）: %s", condition)
             return {"error": "LLM 未启用或设备目录不可用"}
 
         # 天气实体单独补给 LLM：设备目录以可控设备为主，weather.* 不保证在列，
@@ -278,8 +279,11 @@ class HaAutomationService:
                 break
             messages.append({"role": "user", "content": "JSON 解析失败，请重新输出有效 JSON。"})
         if not parsed:
+            logger.warning("委托编译解析失败: %s | last_err=%s", condition, last_err)
             return {"error": f"解析失败: {last_err or 'LLM 未返回有效 JSON'}"}
         if parsed.get("error"):
+            logger.info("委托编译：条件无法用 HA 语法表达（走本地兜底）: %s | %s",
+                        condition, parsed.get("error"))
             return {"error": f"HA 语法表达不了该条件: {parsed.get('error')}"}
 
         triggers = parsed.get("trigger") or parsed.get("triggers")
@@ -295,6 +299,7 @@ class HaAutomationService:
                 if str(c.get("condition", "")) not in _DELEGATE_CONDITION_TYPES:
                     errors.append(f"条件类型不在委托白名单: {c.get('condition')}")
         if errors:
+            logger.warning("委托编译校验未通过（走本地兜底）: %s | %s", condition, errors)
             return {"error": "；".join(errors)}
         return {"trigger": triggers, "condition": conditions if isinstance(conditions, list) else []}
 
