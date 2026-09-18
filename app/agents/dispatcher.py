@@ -46,6 +46,8 @@ class _StreamRunState:
     # 本轮是否调过 automation_rule_create（创建关键词门控配套）：validator 用它
     # 判定「声称已创建规则」是否为幻觉——没调过却声称 = 必然撒谎。
     rule_create_called: bool = False
+    # 本轮是否调过 automation_rule_confirm：草稿还挂着却声称「已生效」= 幻觉
+    rule_confirm_called: bool = False
     has_error: bool = False
     has_streamed_tokens: bool = False  # WS 路径：是否已推送过 token
     # run_id -> 该次调用的 args。用 run_id 而非 tool_name 做 key，
@@ -119,6 +121,8 @@ def _make_event_handler(
             tool_name = se.get("tool_name", "unknown")
             if tool_name.split("___")[-1] == "automation_rule_create":
                 state.rule_create_called = True
+            if tool_name.split("___")[-1] == "automation_rule_confirm":
+                state.rule_confirm_called = True
             tool_args = se.get("tool_args", {})
             run_id = se.get("run_id", "") or f"tool-{state.tool_call_count}"
             tool_id = f"tool-{state.tool_call_count}"
@@ -1036,9 +1040,21 @@ class Dispatcher:
             not state.rule_create_called
             and ValidatorAgent.has_rule_create_claim(state.final_content)
         )
+        # 确认环节幻觉（实测：glm 收到「确认」后嘴上「已生效/已转正」但不调
+        # automation_rule_confirm，草稿根本没落库）：会话里挂着活草稿 + 本轮
+        # 没调确认工具 + 声称已生效 → 定向重试逼它真调。query 含「界面确认」
+        # 标记的轮次跳过——那是网页弹窗 REST 确认后的合法转述轮。
+        _live_draft = resolve_pending(session, KIND_AUTOMATION_RULE)[1] is not None
+        confirm_claim_lied = (
+            not state.rule_confirm_called
+            and _live_draft
+            and "界面确认" not in (query or "")
+            and ValidatorAgent.has_rule_confirm_claim(state.final_content)
+        )
         while (retry_count < self._validator.max_retries
                and not state.has_error
                and (creation_claim_lied
+                    or confirm_claim_lied
                     or (state.tool_call_count == 0
                         and await self._validator.should_retry(
                             state.final_content, state.tool_call_count,
@@ -1047,7 +1063,8 @@ class Dispatcher:
             retry_count += 1
             logger.info("Validator: auto-retry (%d/%d) [%s]%s",
                         retry_count, self._validator.max_retries, path,
-                        "（声称已创建规则但未调创建工具）" if creation_claim_lied else "")
+                        "（声称已创建规则但未调创建工具）" if creation_claim_lied
+                        else "（声称规则已生效但未调确认工具）" if confirm_claim_lied else "")
             # retrying 状态：与失败重试轮一致，REST 也发（统一策略）
             await emit(
                 Instruction.build_instruction(
@@ -1056,6 +1073,9 @@ class Dispatcher:
             )
             if creation_claim_lied:
                 lc_messages.append(ValidatorAgent.build_rule_create_claim_retry_message(
+                    state.final_content[:120]))
+            elif confirm_claim_lied:
+                lc_messages.append(ValidatorAgent.build_rule_confirm_claim_retry_message(
                     state.final_content[:120]))
             else:
                 lc_messages.append(self._validator.build_retry_message())

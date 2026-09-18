@@ -595,6 +595,35 @@ class ValidatorAgent:
         return bool(_RULE_CREATE_CLAIM_RE.search(text) or _RULE_TOOL_LEAK_RE.search(text))
 
     @staticmethod
+    def has_rule_confirm_claim(final_content: str) -> bool:
+        """回复是否声称规则「已生效/已转正/已启用」（确认环节幻觉核查用）。
+
+        配套判定在 dispatcher：会话里还挂着活草稿 + 本轮没调 automation_rule_confirm
+        却声称已生效 = 幻觉（草稿根本没落库）。这里只管文本形态，合法性交给
+        调用方组合判断，避免误伤"尚未生效"这类否定表述（正则要求 已/已经 紧邻
+        生效/转正/启用，"还没有生效""尚未生效"不会命中）。
+        """
+        text = final_content or ""
+        if "规则" not in text and "草稿" not in text:
+            return False
+        return bool(re.search(r"(?:已|已经)[^。！？!?,，]{0,6}(?:生效|转正|启用)", text))
+
+    @staticmethod
+    def build_rule_confirm_claim_retry_message(claim_text: str) -> HumanMessage:
+        """声称规则已生效（但确认工具没调、草稿还挂着）的定向重写消息。"""
+        return HumanMessage(
+            content=(
+                f"你刚才回复「{claim_text}」，但本轮没有调用 automation_rule_confirm，"
+                "待确认草稿根本没有落库，规则不存在——「已生效/已转正」的说法不属实，"
+                "必须纠正。\n"
+                "用户是在确认创建这条规则。请立即调用 automation_rule_confirm 工具"
+                "（pending_id 可不传，系统会自动定位唯一草稿），以工具返回的真实结果"
+                "回复用户；工具失败就如实告知失败，绝不要在未调用确认工具的情况下"
+                "声称规则已生效。"
+            )
+        )
+
+    @staticmethod
     def build_rule_create_claim_retry_message(claim_text: str) -> HumanMessage:
         """声称已创建规则 / 泄漏创建工具文本的定向重写消息。"""
         return HumanMessage(

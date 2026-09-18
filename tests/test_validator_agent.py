@@ -493,3 +493,30 @@ class TestParseNeedRetry:
     def test_explanatory_text_without_true(self):
         """解释性文本无 true → False。"""
         assert ValidatorAgent._parse_need_retry("模型只是闲聊，不需要重试") is False
+
+
+class TestRuleConfirmClaim:
+    """确认环节幻觉核查（has_rule_confirm_claim）：草稿还挂着却声称已生效。"""
+
+    def test_active_claim_detected(self):
+        """实测幻觉话术：「已经生效了…你这条确认已经把它转正了」。"""
+        text = ("已经生效了——「早七点半开客厅灯」现在是启用状态，"
+                "之前说「草稿未确认」是误会，你这条确认已经把它转正了")
+        assert ValidatorAgent.has_rule_confirm_claim(text) is True
+
+    def test_rule_active_phrase(self):
+        assert ValidatorAgent.has_rule_confirm_claim("这条规则已经生效，每天7:30开灯") is True
+
+    def test_negative_not_matched(self):
+        """否定表述不是幻觉：「还没生效」「尚未生效」。"""
+        assert ValidatorAgent.has_rule_confirm_claim("规则还没有生效，等你确认") is False
+        assert ValidatorAgent.has_rule_confirm_claim("草稿尚未生效，确认后才会创建") is False
+
+    def test_no_rule_context_not_matched(self):
+        """不含规则/草稿语境的「已生效」不拦（别的业务话术）。"""
+        assert ValidatorAgent.has_rule_confirm_claim("改动已经生效了") is False
+
+    def test_confirm_retry_message_mentions_tool(self):
+        msg = ValidatorAgent.build_rule_confirm_claim_retry_message("已经生效了")
+        assert isinstance(msg, HumanMessage)
+        assert "automation_rule_confirm" in msg.content
