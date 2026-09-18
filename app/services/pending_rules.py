@@ -267,10 +267,12 @@ async def confirm_pending(
     delegated = False
     delegation_note = ""
     if ha_trigger and ha_automation_service is not None:
-        delegation_note = await _attach_ha_trigger(
+        attach = await _attach_ha_trigger(
             saved, ha_trigger, registry, ha_automation_service, automation_service)
-        delegated = (saved.get("trigger_source") == "ha"
-                     and bool(saved.get("ha_automation_id")))
+        delegation_note = attach["note"]
+        # delegated 不能读 saved 快照：set_ha_backing 回写的 automation_id 在
+        # add_rule 返回的 to_dict 副本上看不到（实测桩-vs-真件差异坑）
+        delegated = attach["delegated"]
     return {
         "ok": True,
         "pending_id": resolved_id,
@@ -285,12 +287,16 @@ async def confirm_pending(
 async def _attach_ha_trigger(
     saved: dict, ha_trigger: dict, registry: Any,
     ha_automation_service: Any, automation_service: Any,
-) -> str:
+) -> dict:
     """双写第二笔：把触发写入 HA 并回写绑定。失败降级回本地自评（不整体失败）。
 
     顺序约束：必须先落本地行拿 rule_id（fire_rule 回调数据里就是它），再写 HA，
     最后把 HA 自动化 id 回写进规则。降级口子只有 set_ha_backing(None)——规则
     保留、触发退回 30s 循环，用户无感。
+
+    Returns:
+        {"note": 给模型的提示文案, "delegated": 是否委托成功}
+        （delegated 由写入结果显式判定，不依赖 saved 快照——见调用方注释）
     """
     rule_id = str(saved.get("id", ""))
     name = str(saved.get("name", "") or rule_id)
@@ -306,17 +312,19 @@ async def _attach_ha_trigger(
     if written.get("error"):
         registry.set_ha_backing(rule_id, None)
         logger.warning("HA 委托触发写入失败，规则降级本地评估: %s", written["error"])
-        return f"（HA 触发写入失败，已按本地规则创建：{written['error']}）"
+        return {"note": f"（HA 触发写入失败，已按本地规则创建：{written['error']}）",
+                "delegated": False}
     registry.set_ha_backing(rule_id, written.get("id", ""), ha_trigger=ha_trigger)
     if automation_service is not None:
         try:
             instant = await automation_service.instant_hit_check(saved)
             if instant.get("fired"):
-                return ("（规则触发已委托 Home Assistant 原生自动化；创建时条件已成立，"
-                        "已立即执行一轮动作）")
+                return {"note": ("（规则触发已委托 Home Assistant 原生自动化；创建时条件已成立，"
+                                 "已立即执行一轮动作）"), "delegated": True}
         except Exception:  # noqa: BLE001
             logger.debug("instant hit check failed", exc_info=True)
-    return "（规则触发已委托 Home Assistant 原生自动化：HA 精确触发，动作仍在 Aether 执行）"
+    return {"note": "（规则触发已委托 Home Assistant 原生自动化：HA 精确触发，动作仍在 Aether 执行）",
+            "delegated": True}
 
 
 def cancel_pending(session: Any, pending_id: str) -> bool:
