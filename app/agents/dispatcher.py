@@ -16,6 +16,8 @@ from ..services.priority_service import interactive_priority
 from ..services.prompt_service import build_system_prompt
 from ..services.pending_rules import (
     KIND_AUTOMATION_RULE,
+    confirm_pending,
+    needs_camera,
     resolve_pending,
     wants_rule_creation,
     wants_rule_query,
@@ -453,6 +455,56 @@ class Dispatcher:
             return "no_create"
         return "clean"
 
+    # 裸确认词：用户对「待确认草稿」的口头应允（两段式确认的语音/assist 路径）。
+    # 只收编无歧义的裸词——带任何其他内容的消息（「确认下天气」）不短路。
+    _BARE_CONFIRM_WORDS = frozenset({
+        "确认", "确定", "好的", "好", "可以", "嗯", "嗯嗯", "行", "对", "是",
+        "没错", "好呀", "ok", "OK", "Okay", "okay",
+    })
+
+    async def _maybe_direct_confirm(self, session, query: str, user_id: str = "") -> None:
+        """裸「确认」+ 会话内唯一活规则草稿 → 系统直接落库，不赌模型调确认工具。
+
+        弱模型（flash 档）实测在确认轮高频翻车：幻觉「已生效/已转正」却不调
+        automation_rule_confirm，校验器拦完它又绕路重建草稿。唯一活草稿前提下
+        确认意图无歧义，收口成确定性动作——与网页弹窗 REST 确认共用
+        confirm_pending（委托双写/降级/校验全一致），结果注入为 user 消息，
+        模型只负责转述既成事实，不再有撒谎空间。
+
+        不短路的情形：非裸确认词、无草稿/多草稿（留给模型追问）、视觉规则缺
+        摄像头绑定（不能替用户选路）、落库失败（模型走原流程拿具体错误）。
+        """
+        q = (query or "").strip().rstrip("。．.!！?？~～ ").lower()
+        if q not in self._BARE_CONFIRM_WORDS:
+            return
+        pid, entry, _count = resolve_pending(session, KIND_AUTOMATION_RULE)
+        if entry is None or pid is None:
+            return
+        rule = entry.get("rule") if isinstance(entry.get("rule"), dict) else {}
+        if needs_camera(rule) and not entry.get("camera_chosen"):
+            return
+        try:
+            from ..container import get_container
+            c = get_container()
+            result = await confirm_pending(
+                session, pid,
+                c.rule_registry_service, c.ha_service, c.ha_client_ref,
+                user_id=user_id,
+                ha_automation_service=getattr(c, "ha_automation_service", None),
+                automation_service=getattr(c, "automation_service", None),
+            )
+        except Exception:  # noqa: BLE001 — 短路失败回退模型流程，不能挡正常对话
+            logger.exception("direct confirm failed, falling back to model flow")
+            return
+        if not result.get("ok"):
+            return
+        note = (f"（系统：用户口头确认，规则「{result.get('name', '')}」已创建生效"
+                + ("，触发时机已委托 Home Assistant 原生自动化" if result.get("delegated") else "")
+                + "。请简短告知用户结果。）")
+        session.model_messages.append({"role": "user", "content": note})
+        logger.info("Direct confirm: rule '%s' saved via bare-confirm shortcut (pending %s)",
+                    result.get("name"), pid)
+
     async def _get_agent(self, user_id: str, variant: str = "full") -> Any:
         """按 user_id + 回合变体获取 agent。
 
@@ -758,6 +810,7 @@ class Dispatcher:
         session.current_query = query
 
         try:
+            await self._maybe_direct_confirm(session, query, user_id=user_id)
             ctx = await self._prepare_context(session, query, user_id=user_id)
         except Exception as e:
             logger.exception("dispatch: _prepare_context failed")
@@ -825,6 +878,7 @@ class Dispatcher:
         session.current_query = query
 
         try:
+            await self._maybe_direct_confirm(session, query, user_id=user_id)
             ctx = await self._prepare_context(session, query, user_id=user_id)
         except Exception as e:
             logger.exception("dispatch_stream: _prepare_context failed")
