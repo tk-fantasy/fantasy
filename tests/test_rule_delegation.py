@@ -190,14 +190,17 @@ class _DualRegistry:
         self.saved.append(saved)
         return saved
 
-    def set_ha_backing(self, rule_id, automation_id):
+    def set_ha_backing(self, rule_id, automation_id, ha_trigger=None):
         rule = self.saved[-1]
         if automation_id:
             rule["trigger_source"] = "ha"
             rule["ha_automation_id"] = str(automation_id)
+            if isinstance(ha_trigger, dict):
+                rule["ha_trigger"] = ha_trigger
         else:
             rule["trigger_source"] = ""
             rule["ha_automation_id"] = ""
+            rule["ha_trigger"] = {}
         self.bindings.append((rule_id, automation_id))
         return rule
 
@@ -240,9 +243,10 @@ class TestConfirmDualWrite:
         assert result["delegated"] is True
         assert "Home Assistant" in result["delegation_note"]
         # 双写顺序：本地行先有 trigger_source=ha（等 HA 回调期间评估管道跳过），
-        # 写入成功后回写 automation_id
+        # 写入成功后回写 automation_id + 编译产物快照（本地 JSON 可见真实触发条件）
         assert registry.saved[0]["trigger_source"] == "ha"
         assert registry.saved[0]["ha_automation_id"] == "aid-9"
+        assert registry.saved[0]["ha_trigger"] == TRIGGER
         assert ha_svc.calls[0]["rule_id"] == "rule-1"
         assert ha_svc.calls[0]["trigger"] == TRIGGER["trigger"]
 
@@ -399,13 +403,18 @@ class TestRegistryHaBacking:
 
     def test_bind_and_unbind(self):
         with patch.object(self.reg, "_save_rule_async"):
-            bound = self.reg.set_ha_backing(self.rule["id"], "aid-1")
+            bound = self.reg.set_ha_backing(
+                self.rule["id"], "aid-1",
+                ha_trigger={"trigger": [{"platform": "time", "at": "22:00:00"}], "condition": []})
             assert bound["trigger_source"] == "ha"
             assert bound["ha_automation_id"] == "aid-1"
+            # 编译产物快照进规则 JSON：本地可见真实触发条件
+            assert bound["ha_trigger"]["trigger"] == [{"platform": "time", "at": "22:00:00"}]
 
             unbound = self.reg.set_ha_backing(self.rule["id"], None)
             assert unbound["trigger_source"] == ""
             assert unbound["ha_automation_id"] == ""
+            assert unbound["ha_trigger"] == {}
 
     def test_find_by_ha_automation_id(self):
         with patch.object(self.reg, "_save_rule_async"):

@@ -42,6 +42,9 @@ class AutomationRule:
     # 执行动作。ha_automation_id 是 HA 侧自动化 id，删除/修改时双向联动。
     trigger_source: str = ""                             # ""=Aether 自评（30s 循环/事件）；"ha"=委托 HA 触发
     ha_automation_id: str = ""                           # 委托触发的 HA 自动化 id；空=未委托
+    # 委托编译产物快照（{"trigger":[...],"condition":[...]}）：真实触发条件在 HA 侧，
+    # 本地存一份让规则 JSON/前端可直接看到"到底什么条件会触发"，也供排障比对
+    ha_trigger: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -61,6 +64,7 @@ class AutomationRule:
             "camera_id": self.camera_id,
             "trigger_source": self.trigger_source,
             "ha_automation_id": self.ha_automation_id,
+            "ha_trigger": self.ha_trigger,
         }
 
 
@@ -136,6 +140,7 @@ class RuleRegistryService:
                             camera_id=str(item.get("camera_id", "")),
                             trigger_source=str(item.get("trigger_source", "") or ""),
                             ha_automation_id=str(item.get("ha_automation_id", "") or ""),
+                            ha_trigger=item.get("ha_trigger") if isinstance(item.get("ha_trigger"), dict) else {},
                         )
                     )
             logger.info("Loaded %d rules from database", len(rules_data))
@@ -259,11 +264,13 @@ class RuleRegistryService:
                     return rule.to_dict()
         raise AppException(f"规则不存在: {rule_id}", code="rule_not_found", http_status=404)
 
-    def set_ha_backing(self, rule_id: str, automation_id: str | None) -> dict:
+    def set_ha_backing(self, rule_id: str, automation_id: str | None,
+                       ha_trigger: dict | None = None) -> dict:
         """绑定/解绑 HA 委托触发（阶段8）。
 
-        automation_id 非空 → trigger_source="ha"（评估管道跳过，等 HA 回调执行）；
-        None → 清空委托标记，规则降级回 Aether 自评（30s 循环/事件管道照常评估）。
+        automation_id 非空 → trigger_source="ha"（评估管道跳过，等 HA 回调执行），
+        并把编译产物 ha_trigger 快照进规则 JSON（本地可见真实触发条件）；
+        None → 清空委托标记与快照，规则降级回 Aether 自评。
         HA 写入失败时的降级走 None 这条路——规则保得住，触发路径退回本地。
         """
         with self._lock:
@@ -272,9 +279,12 @@ class RuleRegistryService:
                     if automation_id:
                         rule.trigger_source = "ha"
                         rule.ha_automation_id = str(automation_id)
+                        if isinstance(ha_trigger, dict):
+                            rule.ha_trigger = ha_trigger
                     else:
                         rule.trigger_source = ""
                         rule.ha_automation_id = ""
+                        rule.ha_trigger = {}
                     rule.updated_at = int(time.time() * 1000)
                     self._save_rule_async(rule)
                     return rule.to_dict()

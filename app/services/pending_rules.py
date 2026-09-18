@@ -307,7 +307,7 @@ async def _attach_ha_trigger(
         registry.set_ha_backing(rule_id, None)
         logger.warning("HA 委托触发写入失败，规则降级本地评估: %s", written["error"])
         return f"（HA 触发写入失败，已按本地规则创建：{written['error']}）"
-    registry.set_ha_backing(rule_id, written.get("id", ""))
+    registry.set_ha_backing(rule_id, written.get("id", ""), ha_trigger=ha_trigger)
     if automation_service is not None:
         try:
             instant = await automation_service.instant_hit_check(saved)

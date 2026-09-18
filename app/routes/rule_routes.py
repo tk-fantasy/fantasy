@@ -241,7 +241,10 @@ async def _resync_delegated_trigger(
     if written.get("error"):
         _degrade()
         return
-    registry.set_ha_backing(rule_id, str(written.get("id", "") or auto_id))
+    registry.set_ha_backing(
+        rule_id, str(written.get("id", "") or auto_id),
+        ha_trigger={"trigger": compiled.get("trigger") or [],
+                    "condition": compiled.get("condition") or []})
 
 
 @router.post("/rules/{rule_id}/explain")
