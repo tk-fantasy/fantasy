@@ -1,8 +1,8 @@
-"""dispatcher 确定性确认短路测试 — 裸「确认」+ 唯一活草稿 → 直接落库。
+"""dispatcher 确定性确认短路测试 — 裸「确认」+ 唯一活草稿 → 直接落库+确定性回复。
 
 弱模型在确认轮高频幻觉「已生效」却不调 automation_rule_confirm（实测），
-短路把确认收口成系统动作：与网页 REST 确认同一 confirm_pending，
-结果注入 user 消息让模型只做转述。
+短路把确认收口成系统动作：与网页 REST 确认同一 confirm_pending；命中时返回
+确定性回复文本，调用方跳过 agent（模型连转述的机会都没有）。
 """
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ def _session_with_draft(delegated=False):
             "actions": [{"mcp_tool_name": "ha_devices___call_service",
                          "mcp_tool_input": {"domain": "light", "service": "turn_on",
                                             "entity_id": "light.rd"}}],
-            "summary": "x"}
+            "summary": "每天早上7点半开研发部灯"}
     entry = {"kind": KIND_AUTOMATION_RULE, "rule": rule, "created_at": time.time()}
     if delegated:
         entry["ha_trigger"] = {"trigger": [{"platform": "time", "at": "07:30:00"}],
@@ -38,8 +38,8 @@ def _session_with_draft(delegated=False):
 def _container_stub(delegated=False):
     c = MagicMock()
     c.rule_registry_service.add_rule.return_value = {
-        **_session_with_draft().pending_confirmations["p1"]["rule"],
-        "id": "rule-1", "enabled": True,
+        "name": "早晨开灯", "id": "rule-1", "enabled": True,
+        "summary": "每天早上7点半开研发部灯",
         "trigger_source": "ha" if delegated else "",
         "ha_automation_id": "aid-1" if delegated else "",
     }
@@ -52,41 +52,44 @@ def _container_stub(delegated=False):
 
 
 class TestMaybeDirectConfirm:
-    async def test_bare_confirm_saves_rule_and_injects_note(self):
+    async def test_bare_confirm_saves_and_returns_reply(self):
         d = _dispatcher()
         session = _session_with_draft(delegated=True)
         with patch("app.container.get_container", return_value=_container_stub(delegated=True)):
-            await d._maybe_direct_confirm(session, "确认", user_id="u1")
+            reply = await d._maybe_direct_confirm(session, "确认", user_id="u1")
 
+        assert reply is not None
+        assert "已确认并创建规则「早晨开灯」" in reply
+        assert "Home Assistant" in reply  # 委托版注明触发归 HA
         assert "p1" not in session.pending_confirmations  # 草稿已摘
-        assert len(session.model_messages) == 1
-        note = session.model_messages[0]["content"]
-        assert "已创建生效" in note and "Home Assistant" in note
+        # 回复由调用方落历史，钩子自身不动 model_messages
+        assert session.model_messages == []
 
-    async def test_delegated_off_note_plain(self):
+    async def test_delegated_off_reply_plain(self):
         d = _dispatcher()
         session = _session_with_draft()
         with patch("app.container.get_container", return_value=_container_stub(delegated=False)):
-            await d._maybe_direct_confirm(session, "好的", user_id="u1")
+            reply = await d._maybe_direct_confirm(session, "好的", user_id="u1")
 
-        assert "Home Assistant" not in session.model_messages[0]["content"]
+        assert reply is not None
+        assert "Home Assistant" not in reply
+        assert "自动评估" in reply
 
-    async def test_non_bare_query_untouched(self):
+    async def test_non_bare_query_returns_none(self):
         """带其他内容的「确认」不短路（可能另有所指）。"""
         d = _dispatcher()
         session = _session_with_draft()
         with patch("app.container.get_container") as gc:
-            await d._maybe_direct_confirm(session, "确认下今天天气", user_id="u1")
+            assert await d._maybe_direct_confirm(session, "确认下今天天气", user_id="u1") is None
             gc.assert_not_called()
         assert "p1" in session.pending_confirmations
-        assert session.model_messages == []
 
-    async def test_no_draft_noop(self):
+    async def test_no_draft_returns_none(self):
         d = _dispatcher()
         session = SimpleNamespace(user_id="u1", model_messages=[],
                                   pending_confirmations={})
         with patch("app.container.get_container") as gc:
-            await d._maybe_direct_confirm(session, "确认", user_id="u1")
+            assert await d._maybe_direct_confirm(session, "确认", user_id="u1") is None
             gc.assert_not_called()
 
     async def test_vision_rule_missing_camera_skipped(self):
@@ -97,20 +100,18 @@ class TestMaybeDirectConfirm:
             "name": "有人开灯", "condition": "画面里有人", "type": "vision",
             "camera_id": "", "actions": []}
         with patch("app.container.get_container") as gc:
-            await d._maybe_direct_confirm(session, "确认", user_id="u1")
+            assert await d._maybe_direct_confirm(session, "确认", user_id="u1") is None
             gc.assert_not_called()
         assert "p1" in session.pending_confirmations
 
-    async def test_confirm_failure_falls_back_silently(self):
-        """落库失败不注入任何消息，回退模型原流程。"""
+    async def test_confirm_failure_returns_none(self):
+        """落库失败回退模型原流程（None），草稿保留。"""
         d = _dispatcher()
         session = _session_with_draft()
         c = _container_stub()
         c.rule_registry_service.add_rule.side_effect = RuntimeError("db locked")
         with patch("app.container.get_container", return_value=c):
-            await d._maybe_direct_confirm(session, "确认", user_id="u1")
-
-        assert session.model_messages == []
+            assert await d._maybe_direct_confirm(session, "确认", user_id="u1") is None
         assert "p1" in session.pending_confirmations  # confirm_pending 失败不摘草稿
 
 

@@ -462,27 +462,28 @@ class Dispatcher:
         "没错", "好呀", "ok", "OK", "Okay", "okay",
     })
 
-    async def _maybe_direct_confirm(self, session, query: str, user_id: str = "") -> None:
-        """裸「确认」+ 会话内唯一活规则草稿 → 系统直接落库，不赌模型调确认工具。
+    async def _maybe_direct_confirm(self, session, query: str, user_id: str = "") -> str | None:
+        """裸「确认」+ 会话内唯一活规则草稿 → 系统直接落库并返回确定性回复文本。
 
         弱模型（flash 档）实测在确认轮高频翻车：幻觉「已生效/已转正」却不调
         automation_rule_confirm，校验器拦完它又绕路重建草稿。唯一活草稿前提下
         确认意图无歧义，收口成确定性动作——与网页弹窗 REST 确认共用
-        confirm_pending（委托双写/降级/校验全一致），结果注入为 user 消息，
-        模型只负责转述既成事实，不再有撒谎空间。
+        confirm_pending（委托双写/降级/校验全一致）。返回非 None 时调用方跳过
+        本轮 agent（转述也确定性生成，模型连编的机会都没有）；None = 不适用，
+        走原模型流程。
 
         不短路的情形：非裸确认词、无草稿/多草稿（留给模型追问）、视觉规则缺
         摄像头绑定（不能替用户选路）、落库失败（模型走原流程拿具体错误）。
         """
         q = (query or "").strip().rstrip("。．.!！?？~～ ").lower()
         if q not in self._BARE_CONFIRM_WORDS:
-            return
+            return None
         pid, entry, _count = resolve_pending(session, KIND_AUTOMATION_RULE)
         if entry is None or pid is None:
-            return
+            return None
         rule = entry.get("rule") if isinstance(entry.get("rule"), dict) else {}
         if needs_camera(rule) and not entry.get("camera_chosen"):
-            return
+            return None
         try:
             from ..container import get_container
             c = get_container()
@@ -495,15 +496,19 @@ class Dispatcher:
             )
         except Exception:  # noqa: BLE001 — 短路失败回退模型流程，不能挡正常对话
             logger.exception("direct confirm failed, falling back to model flow")
-            return
+            return None
         if not result.get("ok"):
-            return
-        note = (f"（系统：用户口头确认，规则「{result.get('name', '')}」已创建生效"
-                + ("，触发时机已委托 Home Assistant 原生自动化" if result.get("delegated") else "")
-                + "。请简短告知用户结果。）")
-        session.model_messages.append({"role": "user", "content": note})
+            return None
+        parts = [f"✅ 已确认并创建规则「{result.get('name', '')}」"]
+        if result.get("summary"):
+            parts.append(f"（{result['summary']}）")
+        if result.get("delegated"):
+            parts.append("触发时机已委托 Home Assistant 原生自动化，到点由 HA 精确触发、动作由 Aether 执行。")
+        else:
+            parts.append("规则已启用，会按条件自动评估执行（受冷却约束）。")
         logger.info("Direct confirm: rule '%s' saved via bare-confirm shortcut (pending %s)",
                     result.get("name"), pid)
+        return "".join(parts)
 
     async def _get_agent(self, user_id: str, variant: str = "full") -> Any:
         """按 user_id + 回合变体获取 agent。
@@ -810,7 +815,6 @@ class Dispatcher:
         session.current_query = query
 
         try:
-            await self._maybe_direct_confirm(session, query, user_id=user_id)
             ctx = await self._prepare_context(session, query, user_id=user_id)
         except Exception as e:
             logger.exception("dispatch: _prepare_context failed")
@@ -829,6 +833,22 @@ class Dispatcher:
 
         async def emit(instruction: Instruction) -> None:
             instructions.append(instruction)
+
+        # 裸确认短路命中：跳过 agent，确定性回复（模型在 clean 变体下看不见
+        # 规则工具，让它转述只会得到幻觉——实测如此）
+        direct_reply = await self._maybe_direct_confirm(session, query, user_id=user_id)
+        if direct_reply is not None:
+            session.model_messages.append({"role": "user", "content": query})
+            session.model_messages.append({"role": "assistant", "content": direct_reply})
+            instructions.append(Instruction.build_instruction(
+                Template.ToastStream(stream=direct_reply),
+                event.header.request_id, event.header.session_id))
+            instructions.append(Instruction.build_instruction(
+                Dialog.Finish(success=True),
+                event.header.request_id, event.header.session_id))
+            session.history_instructions.extend(instructions)
+            await self._session_store.store_session(session)
+            return instructions
 
         agent = await self._get_agent(user_id, variant=self._pick_variant(session, query))
         await self._run_turn(event, session, query, ctx, emit, stream_tokens=False, agent=agent, user_id=user_id)
@@ -878,7 +898,6 @@ class Dispatcher:
         session.current_query = query
 
         try:
-            await self._maybe_direct_confirm(session, query, user_id=user_id)
             ctx = await self._prepare_context(session, query, user_id=user_id)
         except Exception as e:
             logger.exception("dispatch_stream: _prepare_context failed")
@@ -918,6 +937,25 @@ class Dispatcher:
                 ws_broken = True
                 logger.info("dispatch_stream: ws send failed, muting further emits "
                             "(turn continues for persistence)")
+
+        # 裸确认短路命中：跳过 agent，确定性回复（模型在 clean 变体下看不见
+        # 规则工具，让它转述只会得到幻觉——实测如此）
+        direct_reply = await self._maybe_direct_confirm(session, query, user_id=user_id)
+        if direct_reply is not None:
+            session.model_messages.append({"role": "user", "content": query})
+            session.model_messages.append({"role": "assistant", "content": direct_reply})
+            await emit(Instruction.build_instruction(
+                Template.ToastStream(stream=direct_reply),
+                event.header.request_id, event.header.session_id))
+            await emit(Instruction.build_instruction(
+                Dialog.Finish(success=True),
+                event.header.request_id, event.header.session_id))
+            session.history_instructions = []
+            try:
+                await self._session_store.store_session(session)
+            except Exception:
+                logger.exception("dispatch_stream: store_session failed after direct confirm")
+            return
 
         agent = await self._get_agent(user_id, variant=self._pick_variant(session, query))
         try:
