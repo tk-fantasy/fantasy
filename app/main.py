@@ -1080,18 +1080,19 @@ def _build_dispatch_fn(dispatcher):
     return _dispatch
 
 
-def _start_host_integrations(container, loop):
+def _start_host_integrations(container, loop, integrations_dir=None):
     """通用宿主侧集成加载：扫描 integrations/*/main.py，调 start(dispatch_fn, loop)。
 
     不硬编码任何插件名。每个宿主侧集成在 integrations/<name>/main.py 定义
     start(dispatch_fn, loop) -> instance | None 和 stop()。
-    删目录 → 找不到 → 跳过 → 零影响。
+    删目录 → 宿主找不到 → 跳过 → 零影响。
     成功启动的集成都注册到 IntegrationLayer，供插件管理页显示。
     """
     import importlib.util
 
-    integrations_dir = os.path.join(
-        os.path.dirname(os.path.dirname(__file__)), "integrations")
+    if integrations_dir is None:
+        integrations_dir = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), "integrations")
     if not os.path.isdir(integrations_dir):
         return []
 
@@ -1110,13 +1111,16 @@ def _start_host_integrations(container, loop):
             spec.loader.exec_module(mod)
             if hasattr(mod, "start"):
                 instance = mod.start(dispatch_fn, loop)
+                # 未启动（如凭证未配置）也收录并注册：管理页要能显示卡片、
+                # 提供配置/扫码入口；restart 才能找到并按新配置拉起。
+                started.append((name, mod, instance))
+                meta = _load_host_integration_meta(name, integrations_dir)
+                meta["call_method"] = getattr(mod, "call_method", None)
+                if container.integration_layer:
+                    meta["alive"] = instance is not None
+                    container.integration_layer.register_host_integration(name, meta)
                 if instance:
-                    started.append((name, mod, instance))
                     logger.info("宿主侧集成 %s 已启动", name)
-                    # 注册到 IntegrationLayer 供插件管理页显示
-                    meta = _load_host_integration_meta(name, integrations_dir)
-                    if container.integration_layer:
-                        container.integration_layer.register_host_integration(name, meta)
         except Exception:
             logger.exception("宿主侧集成 %s 加载失败（non-fatal）", name)
 
@@ -1180,6 +1184,7 @@ def _restart_host_integration(name: str, loop=None) -> bool:
         # 同步插件管理页的存活状态
         meta = _load_host_integration_meta(
             name, os.path.join(os.path.dirname(os.path.dirname(__file__)), "integrations"))
+        meta["call_method"] = getattr(mod, "call_method", None)
         if _container.integration_layer:
             meta["alive"] = instance is not None
             _container.integration_layer.register_host_integration(name, meta)

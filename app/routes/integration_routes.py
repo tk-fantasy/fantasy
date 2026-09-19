@@ -1,5 +1,6 @@
 """集成插件平台管理路由。"""
 
+import inspect
 import io
 import logging
 import re
@@ -271,6 +272,24 @@ _FRAMEWORK_METHODS = {"handshake", "sink.speak", "sink.interrupt", "router.handl
                       "health.check", "shutdown"}
 
 
+def _restart_host_plugin(container, plugin_id: str) -> str:
+    """config_changed 约定的执行端：热重启宿主集成。
+
+    返回 applied：restarted=已重启；not_found=找不到集成；saved=无法重启（配置已落盘）。
+    """
+    import asyncio
+
+    restart = getattr(container, "restart_host_integration_fn", None)
+    if not callable(restart):
+        return "saved"
+    try:
+        ok = restart(plugin_id, asyncio.get_running_loop())
+        return "restarted" if ok else "not_found"
+    except Exception:  # noqa: BLE001
+        logger.exception("宿主集成 %s 热重启失败（配置已保存，下次启动生效）", plugin_id)
+        return "saved"
+
+
 @router.post("/integrations/{plugin_id}/method/{method}")
 async def call_plugin_method(
     plugin_id: str,
@@ -279,9 +298,11 @@ async def call_plugin_method(
     container=Depends(get_container),
     admin: dict = Depends(get_current_admin),
 ):
-    """调用插件自定义 RPC 方法（管理员）。插件在 setup 里 register_method 注册。
+    """调用插件自定义方法（管理员）。
 
-    插件面板（ui_contributions 的 custom_component）经此入口与插件子进程交互：
+    子进程插件：setup 里 register_method 注册，经 supervisor RPC；
+    宿主侧集成：注册信息携带 call_method 句柄，进程内直接分发。
+    插件面板（ui_contributions 的 custom_component）经此入口与插件交互：
     参数透传、结果透传，宿主不做语义解释。
     """
     if method in _FRAMEWORK_METHODS:
@@ -289,11 +310,32 @@ async def call_plugin_method(
     layer = container.integration_layer
     if layer is None:
         return {"success": False, "message": "集成平台未启用"}
+    params = (req.params if req is not None else {}) or {}
+
+    # 宿主侧集成（进程内）优先
+    host_info = getattr(layer, "host_integrations", {}).get(plugin_id)
+    call_method = host_info.get("call_method") if isinstance(host_info, dict) else None
+    if call_method is not None:
+        try:
+            result = call_method(method, params)
+            if inspect.isawaitable(result):
+                result = await result
+        except Exception as exc:  # noqa: BLE001
+            return {"success": False, "message": f"调用失败: {exc}"}
+        if not isinstance(result, dict):
+            return {"success": True, "data": {"result": result}}
+        if result.get("success") is False:
+            return result  # 插件自述失败（自带 message），原样透传
+        # 约定：插件声明 config_changed 表示已改自身配置，宿主负责热重启
+        if result.get("config_changed"):
+            result["applied"] = _restart_host_plugin(container, plugin_id)
+        return {"success": True, "data": result}
+
+    # 子进程插件（原路径）
     proc = layer._supervisor.get_process(plugin_id)
     if proc is None or not proc.is_alive:
         return {"success": False, "message": f"插件 {plugin_id} 未运行"}
     try:
-        params = (req.params if req is not None else {}) or {}
         result = await proc.call(method, params)
     except Exception as exc:  # noqa: BLE001
         return {"success": False, "message": f"调用失败: {exc}"}

@@ -1904,7 +1904,8 @@ class TestMainHelpers:
             "CAPABILITIES=['ws']\nCONFIG_SCHEMA={'a': 1}\n", encoding="utf-8")
         meta = main._load_host_integration_meta("x", str(tmp_path))
         assert meta == {"name": "飞书", "version": "1.0", "description": "d",
-                        "capabilities": ["ws"], "config_schema": {"a": 1}, "alive": True}
+                        "capabilities": ["ws"], "config_schema": {"a": 1},
+                        "ui_contributions": [], "alive": True}
         # 坏 meta.py → 回退默认
         (d / "meta.py").write_text("raise RuntimeError(1)\n", encoding="utf-8")
         assert main._load_host_integration_meta("x", str(tmp_path))["name"] == "x"
