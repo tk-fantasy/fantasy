@@ -39,3 +39,9 @@ CONFIG_SCHEMA = {
         "placeholder": "可选：告警/周报主动推送目标；留空则推送到最近活跃会话",
     },
 }
+
+# 插件面板贡献：配置弹窗内渲染扫码接入面板（frontend/FeishuQrSetup.vue，
+# 由宿主 PluginSlot 经 import.meta.glob 动态加载）。
+UI_CONTRIBUTIONS = [
+    {"slot": "plugin_config_modal", "type": "custom_component"},
+]

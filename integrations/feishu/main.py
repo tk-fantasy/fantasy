@@ -14,6 +14,7 @@ stop()+start() 热重连，无需重启容器。
 import logging
 import os
 
+from . import qr_setup
 from .ws_client import FeishuBot
 
 logger = logging.getLogger(__name__)
@@ -109,3 +110,63 @@ def stop():
     if _bot:
         _bot.stop()
         _bot = None
+
+
+# ── 扫码一键接入：宿主 method 桥接入口（管理员经 /api/integrations/feishu/method/*）──
+
+_METHOD_APP_ID_PREFIX_LEN = 6
+
+
+async def _method_qr_start(params: dict) -> dict:
+    """发起扫码会话，返回二维码展示字段。"""
+    return await qr_setup.start_session()
+
+
+async def _method_qr_poll(params: dict) -> dict:
+    """轮询扫码结果；success 时凭证落库（保留其余配置字段）并声明热重启。"""
+    result = await qr_setup.poll_once()
+    if result.get("status") != "success":
+        return result
+    creds = qr_setup.consume_result()
+    if creds is None:  # 理论不可达（poll 成功即置凭证）；防御性兜底
+        return {"status": "expired", "message": "凭证已被消费，请重新扫码"}
+    app_id, app_secret = creds
+    from app.integration.config_helper import get_host_config, set_host_config
+    merged = get_host_config("feishu") or {}
+    merged["app_id"] = app_id
+    merged["app_secret"] = app_secret
+    set_host_config("feishu", merged)
+    return {
+        "status": "success",
+        "config_changed": True,  # 宿主约定：据此热重启本集成
+        "app_id_masked": f"{app_id[:_METHOD_APP_ID_PREFIX_LEN]}***",
+    }
+
+
+async def _method_qr_cancel(params: dict) -> dict:
+    qr_setup.cancel_session()
+    return {"status": "cancelled"}
+
+
+_METHODS = {
+    "qr_start": _method_qr_start,
+    "qr_poll": _method_qr_poll,
+    "qr_cancel": _method_qr_cancel,
+}
+
+
+async def call_method(method: str, params: dict | None = None) -> dict:
+    """宿主注入的方法入口（启动时经 getattr 注册进集成层）。
+
+    白名单分发；业务失败返回 {"success": False, "message"}，宿主原样透传。
+    """
+    handler = _METHODS.get(method)
+    if handler is None:
+        return {"success": False, "message": f"未知方法: {method}"}
+    try:
+        return await handler(params or {})
+    except qr_setup.FeishuQrSetupError as exc:
+        return {"success": False, "message": str(exc)}
+    except Exception:  # noqa: BLE001
+        logger.exception("飞书扫码方法 %s 执行失败", method)
+        return {"success": False, "message": "飞书扫码通道异常，请稍后重试或改用手动配置"}
