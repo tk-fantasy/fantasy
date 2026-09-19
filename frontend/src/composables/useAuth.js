@@ -4,6 +4,7 @@
  */
 import { ref, computed } from 'vue'
 import { LS_LOGGED_IN, LS_USER } from '../utils/constants'
+import { extractApiError } from '../utils/api'
 
 // 登录状态标志（非敏感，仅用于 UI 判断）
 const loggedIn = ref(localStorage.getItem(LS_LOGGED_IN) === 'true')
@@ -58,7 +59,7 @@ export function useAuth() {
     })
     const json = await res.json()
     if (!res.ok) {
-      throw new Error(json.detail || json.message || '登录失败')
+      throw new Error(extractApiError(json, '登录失败'))
     }
     loggedIn.value = true
     localStorage.setItem(LS_LOGGED_IN, 'true')
@@ -78,7 +79,7 @@ export function useAuth() {
     })
     const json = await res.json()
     if (!res.ok) {
-      throw new Error(json.detail || json.message || '注册失败')
+      throw new Error(extractApiError(json, '注册失败'))
     }
     loggedIn.value = true
     localStorage.setItem(LS_LOGGED_IN, 'true')

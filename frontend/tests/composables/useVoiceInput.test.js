@@ -112,4 +112,25 @@ describe('useVoiceInput', () => {
     await Promise.resolve()
     expect(onError).toHaveBeenCalled()
   })
+
+  it('STT 返回 422 校验错误时 onError 拿到可读中文而非 [object Object]', async () => {
+    const onError = vi.fn()
+    const v = useVoiceInput({ onError })
+    await v.toggle()
+
+    fetch.mockResolvedValueOnce({
+      ok: false,
+      status: 422,
+      json: () => Promise.resolve({
+        detail: [{ type: 'missing', loc: ['body', 'audio'], msg: 'Field required' }],
+      }),
+    })
+
+    await v.toggle()
+    await Promise.resolve()
+    expect(onError).toHaveBeenCalled()
+    const err = onError.mock.calls[0][0]
+    expect(err.message).not.toBe('[object Object]')
+    expect(err.message).toBe('请填写音频')
+  })
 })

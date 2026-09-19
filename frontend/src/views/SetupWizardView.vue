@@ -2,6 +2,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuth } from '../composables/useAuth'
+import { extractApiError } from '../utils/api'
 
 const router = useRouter()
 const { user } = useAuth()
@@ -121,7 +122,7 @@ async function submitLLMConfig() {
 
         if (!testRes.ok) {
           const json = await testRes.json()
-          throw new Error(`${role.label}配置失败: ${json.detail || '未知错误'}`)
+          throw new Error(`${role.label}配置失败: ${extractApiError(json, '未知错误')}`)
         }
 
         const result = await testRes.json()
@@ -185,7 +186,7 @@ async function submitHAConfig() {
     const json = await res.json()
 
     if (!res.ok) {
-      throw new Error(json.detail || json.message || '保存失败')
+      throw new Error(extractApiError(json, '保存失败'))
     }
 
     haTestResult.value = json.data

@@ -52,7 +52,7 @@ async def register(request: Request, response: Response, payload: AuthRegisterRe
 
     username = payload.username.strip()
     password = payload.password
-    display_name = username  # Pydantic model doesn't have display_name, use username
+    display_name = payload.display_name.strip() or username  # 留空回落用户名
 
     db = Database.get()
 

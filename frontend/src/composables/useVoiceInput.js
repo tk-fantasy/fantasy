@@ -9,6 +9,7 @@
  * multipart boundary）。auth cookie 由 main.js 全局 fetch 拦截器自动带上。
  */
 import { ref } from 'vue'
+import { extractApiError } from '../utils/api'
 
 /**
  * 麦克风/录音 API 是否可用。
@@ -96,7 +97,7 @@ export function useVoiceInput({ onResult, onError } = {}) {
       const res = await fetch('/api/stt/transcribe', { method: 'POST', body: fd })
       const json = await res.json()
       if (!res.ok) {
-        throw new Error(json.message || json.detail || '语音识别失败')
+        throw new Error(extractApiError(json, '语音识别失败'))
       }
       const text = json.data?.text || ''
       if (text) onResult?.(text)

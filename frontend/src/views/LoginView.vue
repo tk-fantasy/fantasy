@@ -105,10 +105,12 @@ async function handleSubmit() {
             v-model="password"
             type="password"
             class="form-input"
-            placeholder="输入密码"
-            autocomplete="current-password"
+            :placeholder="isRegister ? '至少 8 位' : '输入密码'"
+            :minlength="isRegister ? 8 : undefined"
+            :autocomplete="isRegister ? 'new-password' : 'current-password'"
             required
           />
+          <p v-if="isRegister" class="form-hint">注册密码至少 8 位</p>
         </div>
 
         <div v-if="error" class="form-error">{{ error }}</div>

@@ -316,6 +316,61 @@ class TestRegisterRouteGating:
         mock_set_extra.assert_called_once_with({"setup_code": ""})
 
 
+class TestRegisterDisplayName:
+    """注册路由级：display_name 落库与返回（此前前端传了但模型没收，注册后名称丢失）。"""
+
+    def _make_request(self) -> Request:
+        mock_request = AsyncMock(spec=Request)
+        mock_request.client = AsyncMock()
+        mock_request.client.host = "127.0.0.1"
+        mock_request.headers = {}
+        mock_request.url = MagicMock(scheme="http")
+        return mock_request
+
+    @pytest.fixture(autouse=True)
+    def _fresh_rate_limiter(self):
+        from app.core.rate_limit import RateLimiter
+        from app.routes import auth_routes
+
+        with patch.object(auth_routes, "_register_limiter",
+                          RateLimiter(max_requests=100, window_seconds=60)):
+            yield
+
+    async def _register(self, **payload_kwargs):
+        from app.routes.auth_routes import register
+        from app.schema.api_schemas import AuthRegisterRequest
+
+        db = _mock_db(user_count=1)
+        entry = await invite_service.create_invite(db, created_by="admin")
+        db.user_get_by_username = AsyncMock(return_value=None)
+        db.user_create = AsyncMock()
+        payload = AuthRegisterRequest(
+            username="QXYD", password="password123", code=entry["code"], **payload_kwargs,
+        )
+
+        with patch("app.routes.auth_routes.Database.get", return_value=db):
+            result = await register(self._make_request(), Response(), payload)
+        return db, result
+
+    @pytest.mark.asyncio
+    async def test_display_name_saved_when_provided(self):
+        db, result = await self._register(display_name="小蝶")
+        # user_create 第 4 个位置参数是 display_name
+        assert db.user_create.call_args[0][3] == "小蝶"
+        assert result.data["user"]["display_name"] == "小蝶"
+
+    @pytest.mark.asyncio
+    async def test_display_name_falls_back_to_username(self):
+        db, result = await self._register()
+        assert db.user_create.call_args[0][3] == "QXYD"
+        assert result.data["user"]["display_name"] == "QXYD"
+
+    @pytest.mark.asyncio
+    async def test_blank_display_name_falls_back_to_username(self):
+        db, _ = await self._register(display_name="   ")
+        assert db.user_create.call_args[0][3] == "QXYD"
+
+
 class TestInviteRoutes:
     @pytest.mark.asyncio
     async def test_create_invite_route_passes_note(self):

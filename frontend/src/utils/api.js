@@ -95,3 +95,48 @@ export async function apiDelete(url, options = {}) {
   return _unwrap(res)
 }
 
+/** 422 校验错误里常见字段的中文标签（loc 的末段） */
+const _FIELD_LABELS = {
+  username: '用户名',
+  password: '密码',
+  code: '邀请码',
+  display_name: '显示名称',
+  token: '令牌',
+  api_key: 'API Key',
+  base_url: 'API 地址',
+  model: '模型名称',
+  url: '地址',
+  audio: '音频',
+}
+
+/**
+ * 从后端错误响应 JSON 中提取可读的错误文案。
+ *
+ * 覆盖两种错误形态：
+ * - AppException：{code, message, data} → 取 message
+ * - FastAPI 422 参数校验：{detail: [{type, loc, msg, ctx}]} → 按字段名 + 类型转中文
+ *   （直接 new Error(json.detail) 会把数组强转成 "[object Object]" 渲染到表单上）
+ *
+ * @param {any} json - 后端响应 JSON（可能为 null / 未知形状）
+ * @param {string} [fallback] - 无法识别时的兜底文案
+ * @returns {string} 可直接展示的错误文案
+ */
+export function extractApiError(json, fallback = '请求失败') {
+  if (!json) return fallback
+  if (typeof json.detail === 'string' && json.detail) return json.detail
+  if (Array.isArray(json.detail) && json.detail.length > 0) {
+    const first = json.detail[0]
+    const label = _FIELD_LABELS[first?.loc?.at(-1)] || '输入'
+    if (first?.type === 'string_too_short') {
+      return `${label}长度不足（至少 ${first.ctx?.min_length ?? '若干'} 位）`
+    }
+    if (first?.type === 'string_too_long') {
+      return `${label}过长（最多 ${first.ctx?.max_length ?? '若干'} 位）`
+    }
+    if (first?.type === 'missing') return `请填写${label}`
+    if (first?.msg) return first.msg
+  }
+  if (typeof json.message === 'string' && json.message) return json.message
+  return fallback
+}
+
