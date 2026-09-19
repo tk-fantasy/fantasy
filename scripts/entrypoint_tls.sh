@@ -77,6 +77,11 @@ if [ "$(id -u)" = "0" ]; then
     for dir in /aether/app/data /aether/logs /aether/backups /aether/app/sg/output /aether/certs; do
         chown -R "$APP_USER:$APP_USER" "$dir" 2>/dev/null || true
     done
+    # /aether 目录本身须归应用用户：atomic_write 在同目录落 config.json.tmp、
+    # 备份 config.json.bak，write_secrets 写 /aether/.env——目录属 root 时这些
+    # 写入全部 EACCES（管理页保存配置 500 的根因）。镜像层目录 chown 必生效；
+    # 只改目录本身（不递归），应用代码保持 root 属主，进程不可改写自身代码。
+    chown "$APP_USER:$APP_USER" /aether 2>/dev/null || true
     # 单文件 bind-mount（Linux 宿主上须可写：运行时配置更新会回写）
     chown "$APP_USER:$APP_USER" /aether/config.json 2>/dev/null || true
 fi
