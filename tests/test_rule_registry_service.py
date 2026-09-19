@@ -92,7 +92,7 @@ class TestRuleRegistryUserId:
         """to_dict 必须输出 user_id，否则 load_from_db 读不回来。"""
         from app.services.rule_registry_service import AutomationRule
         rule = AutomationRule(
-            id="r1", trigger={}, conditions=[], actions=[], summary="",
+            id="r1", actions=[], summary="",
             enabled=True, created_at=0, updated_at=0, user_id="u-to-dict",
         )
         d = rule.to_dict()
@@ -103,7 +103,7 @@ class TestRuleRegistryUserId:
         """_insert_rule_async 必须把 rule.user_id 传给 db.rules_insert 第三参数。"""
         from app.services.rule_registry_service import AutomationRule
         rule = AutomationRule(
-            id="r1", trigger={}, conditions=[], actions=[], summary="",
+            id="r1", actions=[], summary="",
             enabled=True, created_at=0, updated_at=0, user_id="u-db",
         )
         with patch("app.services.rule_registry_service.Database") as MockDB:
