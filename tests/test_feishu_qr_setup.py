@@ -68,6 +68,7 @@ def test_start_session_returns_qr_fields(monkeypatch):
     calls = _patch_feishu(monkeypatch, [_INIT_OK, _BEGIN_OK])
     result = _run(qr_setup.start_session())
     assert result["qr_url"] == _BEGIN_OK["verification_uri_complete"]
+    assert result["qr_svg_data_url"].startswith("data:image/svg+xml;base64,")
     assert result["user_code"] == "AB12-CD34"
     assert result["expires_in"] == 3600
     assert result["interval"] == 5

@@ -11,10 +11,13 @@ client_id/client_secret。协议经 OpenClaw 生产验证
 会话只存内存：单管理员场景，重复 start 覆盖前会话；服务重启即清空。
 """
 
+import base64
+import io
 import logging
 import time
 
 import httpx
+import segno
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +52,18 @@ async def _post_registration(payload: dict) -> dict:
     return data
 
 
+def _qr_svg_data_url(url: str) -> str:
+    """把二维码 URL 渲染成 SVG data URL（segno，与首装进度页同一技术栈）。
+
+    在后端渲染而非前端引 QR 库：插件面板组件位于 frontend 项目根之外，
+    裸 npm 导入解析不到；后端出图让插件前端保持零依赖。
+    """
+    buf = io.BytesIO()
+    segno.make(url, error="m").save(buf, kind="svg", scale=6, border=2)
+    encoded = base64.b64encode(buf.getvalue()).decode("ascii")
+    return f"data:image/svg+xml;base64,{encoded}"
+
+
 async def start_session() -> dict:
     """发起扫码会话：init 校验 + begin 取二维码。返回前端展示字段。"""
     global _session
@@ -81,6 +96,7 @@ async def start_session() -> dict:
                 _session["user_code"], expires_in)
     return {
         "qr_url": qr_url,
+        "qr_svg_data_url": _qr_svg_data_url(qr_url),
         "user_code": _session["user_code"],
         "expires_in": expires_in,
         "interval": interval,
