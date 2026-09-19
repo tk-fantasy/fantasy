@@ -66,6 +66,10 @@
           <span v-for="cap in detail.capabilities" :key="cap" class="cap-badge">{{ cap }}</span>
         </div>
 
+        <!-- 插件自定义面板：ui_contributions 声明 plugin_config_modal 的插件在此渲染
+             （如飞书扫码一键接入）。无贡献的插件此处渲染为空，零影响。 -->
+        <PluginSlot slot="plugin_config_modal" />
+
         <!-- 配置表单（声明了 config_schema 的插件才有） -->
         <template v-if="hasConfig(detail)">
           <div v-if="configLoading" class="config-loading">加载配置中…</div>
@@ -118,9 +122,10 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { apiGet, apiPost } from '../utils/api'
 import AdvancedModal from '../components/AdvancedModal.vue'
+import PluginSlot from '../components/integration/PluginSlot.vue'
 
 const loading = ref(true)
 const plugins = ref([])
@@ -302,7 +307,15 @@ function handleDrop(e) {
   if (file) uploadZip(file)
 }
 
-onMounted(loadPlugins)
+onMounted(async () => {
+  // 插件面板（如飞书扫码接入）改完配置后广播事件，管理页刷新列表与存活徽标
+  window.addEventListener('aether:plugins-changed', loadPlugins)
+  await loadPlugins()
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('aether:plugins-changed', loadPlugins)
+})
 </script>
 
 <style scoped>
