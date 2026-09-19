@@ -167,6 +167,6 @@ async def call_method(method: str, params: dict | None = None) -> dict:
         return await handler(params or {})
     except qr_setup.FeishuQrSetupError as exc:
         return {"success": False, "message": str(exc)}
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.exception("飞书扫码方法 %s 执行失败", method)
         return {"success": False, "message": "飞书扫码通道异常，请稍后重试或改用手动配置"}

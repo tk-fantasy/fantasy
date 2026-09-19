@@ -285,7 +285,7 @@ def _restart_host_plugin(container, plugin_id: str) -> str:
     try:
         ok = restart(plugin_id, asyncio.get_running_loop())
         return "restarted" if ok else "not_found"
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.exception("宿主集成 %s 热重启失败（配置已保存，下次启动生效）", plugin_id)
         return "saved"
 
