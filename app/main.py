@@ -1131,6 +1131,7 @@ def _load_host_integration_meta(name: str, integrations_dir: str) -> dict:
         "version": "",
         "description": f"宿主侧集成",
         "capabilities": [],
+        "ui_contributions": [],
         "alive": True,
     }
     if not os.path.isfile(meta_path):
@@ -1147,6 +1148,8 @@ def _load_host_integration_meta(name: str, integrations_dir: str) -> dict:
             "capabilities": getattr(mod, "CAPABILITIES", []),
             # 声明了 CONFIG_SCHEMA 的宿主集成会在插件管理页弹窗里渲染配置表单
             "config_schema": getattr(mod, "CONFIG_SCHEMA", {}),
+            # 声明了 UI_CONTRIBUTIONS 的宿主集成会向管理页贡献自定义面板
+            "ui_contributions": getattr(mod, "UI_CONTRIBUTIONS", []),
             "alive": True,
         }
     except Exception:  # noqa: BLE001

@@ -367,6 +367,18 @@ class IntegrationLayer:
                     "state_key": ui.state_key,
                     "action": ui.action,
                 })
+        # 宿主侧集成的 UI 贡献（meta.py UI_CONTRIBUTIONS 声明，形状同 manifest）
+        for integ_id, info in self.host_integrations.items():
+            for ui in info.get("ui_contributions") or []:
+                if isinstance(ui, dict):
+                    result.append({
+                        "plugin_id": integ_id,
+                        "slot": ui.get("slot"),
+                        "type": ui.get("type"),
+                        "props": ui.get("props"),
+                        "state_key": ui.get("state_key"),
+                        "action": ui.get("action"),
+                    })
         return result
 
     def set_plugin_enabled(self, plugin_id: str, enabled: bool) -> None:
