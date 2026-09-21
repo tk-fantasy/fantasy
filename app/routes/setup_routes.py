@@ -8,11 +8,13 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import RedirectResponse, Response
 from pydantic import BaseModel
 
+from ..clients.ha_client import HomeAssistantClient
 from ..container import AppContainer, get_container
 from ..core.api_models import ApiResponse
 from ..core.auth import extract_token_from_request, get_current_admin, verify_token
 from ..core.config import get_config, update_config_section
 from ..core.database import Database
+from ..services.ha_service import HAService
 
 logger = logging.getLogger(__name__)
 
@@ -160,15 +162,22 @@ async def setup_ha(
     import os
     effective_url = (os.getenv("HA_URL") or url).strip().rstrip("/")
 
-    # 重建 ha_client 连接并测试
-    ha_client = container.ha_client
-    ha_client._base_url = effective_url
-    ha_client._token = ha_token
+    # 热替换 HA client 后再测试（与 ha_routes.set_ha_config 同一套流程）。
+    # 不能原地改 _token/_base_url：缓存的 httpx.AsyncClient 只在创建时设置
+    # Authorization 头，而启动健康检查/目录刷新早已用旧（空）token 把 client
+    # 建好——原地改属性后向导测试与后续所有调用仍带旧头，持续 401 直到重启。
+    old_client = container.ha_client
+    new_client = HomeAssistantClient(base_url=effective_url, token=ha_token)
+    container.ha_client_ref[0] = new_client
+    container.ha_service = HAService(client=new_client)
+    await old_client.close()
+    from ..main import sync_ha_runtime_refs
+    sync_ha_runtime_refs(new_client, container.ha_service)
 
     ha_connected = False
     entity_count = 0
     try:
-        states = await ha_client.get_states()
+        states = await new_client.get_states()
         entity_count = len(states)
         ha_connected = entity_count > 0
     except Exception as e:  # noqa: BLE001

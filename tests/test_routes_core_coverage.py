@@ -1534,13 +1534,21 @@ class TestSetupRoutes:
         from app.routes import setup_routes
 
         monkeypatch.delenv("HA_URL", raising=False)
-        container = _mock_container()
-        container.ha_client.get_states = AsyncMock(side_effect=RuntimeError("refused"))
+        old_client = MagicMock()
+        old_client.close = AsyncMock()
+        new_client = MagicMock()
+        new_client.get_states = AsyncMock(side_effect=RuntimeError("refused"))
+        new_client.close = AsyncMock()
+        container = _mock_container(ha_client=old_client, ha_client_ref=[old_client])
+        container.ha_service = MagicMock()
 
         with patch.object(setup_routes, "extract_token_from_request",
                           return_value="tok"), \
              patch.object(setup_routes, "verify_token",
-                          return_value={"sub": "u1"}):
+                          return_value={"sub": "u1"}), \
+             patch.object(setup_routes, "HomeAssistantClient",
+                          return_value=new_client), \
+             patch("app.main.sync_ha_runtime_refs"):
             result = await setup_routes.setup_ha(
                 setup_routes.HASetupRequest(url="http://ha:8123/", token="tok"),
                 request=MagicMock(), container=container, admin={"user_id": "u1"},
@@ -1554,13 +1562,21 @@ class TestSetupRoutes:
         from app.routes import setup_routes
 
         monkeypatch.setenv("HA_URL", "http://ha-in-docker:8123")
-        container = _mock_container()
-        container.ha_client.get_states = AsyncMock(return_value=[{"e": 1}])
+        old_client = MagicMock()
+        old_client.close = AsyncMock()
+        new_client = MagicMock()
+        new_client.get_states = AsyncMock(return_value=[{"e": 1}])
+        new_client.close = AsyncMock()
+        container = _mock_container(ha_client=old_client, ha_client_ref=[old_client])
+        container.ha_service = MagicMock()
 
         with patch.object(setup_routes, "extract_token_from_request",
                           return_value="tok"), \
              patch.object(setup_routes, "verify_token",
-                          return_value={"sub": "u1"}):
+                          return_value={"sub": "u1"}), \
+             patch.object(setup_routes, "HomeAssistantClient",
+                          return_value=new_client) as mock_new, \
+             patch("app.main.sync_ha_runtime_refs"):
             result = await setup_routes.setup_ha(
                 setup_routes.HASetupRequest(url="http://ha:8123", token="tok"),
                 request=MagicMock(), container=container, admin={"user_id": "u1"},
@@ -1569,6 +1585,8 @@ class TestSetupRoutes:
         assert result.data["entity_count"] == 1
         assert result.data["url"] == "http://ha-in-docker:8123"
         assert result.data["url_overridden_by_env"] is True
+        # Docker 下新 client 的 base_url 用环境覆盖的 compose 服务名
+        mock_new.assert_called_once_with(base_url="http://ha-in-docker:8123", token="tok")
 
 
 # ===================== global_config_routes =====================

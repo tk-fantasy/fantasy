@@ -177,8 +177,13 @@ class TestSetupHa:
         req = MagicMock()
         body = setup_routes.HASetupRequest(url="http://ha:8123/", token="abc")
 
-        container = _mock_container()
-        container.ha_client.get_states = AsyncMock(return_value=[{"e": 1}])
+        old_client = MagicMock()
+        old_client.close = AsyncMock()
+        new_client = MagicMock()
+        new_client.get_states = AsyncMock(return_value=[{"e": 1}])
+        new_client.close = AsyncMock()
+        container = _mock_container(ha_client=old_client, ha_client_ref=[old_client])
+        container.ha_service = MagicMock()
 
         # 隔离 HA_URL 环境变量：docker compose 会注入 HA_URL 覆盖用户填的 url，
         # 测试要验证的是"无环境覆盖时回退用户 url"的路径，故临时清掉 HA_URL。
@@ -187,7 +192,9 @@ class TestSetupHa:
         try:
             with patch.object(setup_routes, "extract_token_from_request", return_value="tok"), \
                  patch.object(setup_routes, "verify_token", return_value={"sub": "u1"}), \
-                 patch.object(setup_routes, "update_config_section") as mock_update:
+                 patch.object(setup_routes, "update_config_section") as mock_update, \
+                 patch.object(setup_routes, "HomeAssistantClient", return_value=new_client) as mock_new, \
+                 patch("app.main.sync_ha_runtime_refs"):
                 result = await setup_routes.setup_ha(body, req, container=container)
         finally:
             if saved_ha_url is not None:
@@ -199,6 +206,52 @@ class TestSetupHa:
         assert result.data["url"] == "http://ha:8123"
         # config 写入的是 strip 后的原始 url（保留用户输入意图，不 rstrip）
         mock_update.assert_called_once_with("ha", {"url": "http://ha:8123/", "token": "abc"})
+        # 连接测试必须走新建的 client（携带新 token）
+        new_client.get_states.assert_awaited_once()
+        mock_new.assert_called_once_with(base_url="http://ha:8123", token="abc")
+
+    @pytest.mark.asyncio
+    async def test_save_swaps_client_and_closes_old(self):
+        """回归：向导保存 token 后必须热替换 client，不能原地改 _token。
+
+        缓存的 httpx.AsyncClient 只在创建时设置 Authorization 头，原地改属性后
+        请求仍带旧头，保存即测 401、后续调用持续 401 直到重启（沙箱已复现）。
+        """
+        from app.routes import setup_routes
+        from app.services.ha_service import HAService
+
+        req = MagicMock()
+        body = setup_routes.HASetupRequest(url="http://ha:8123", token="new-tok")
+
+        old_client = MagicMock()
+        old_client.close = AsyncMock()
+        new_client = MagicMock()
+        new_client.get_states = AsyncMock(return_value=[{"e": 1}])
+        new_client.close = AsyncMock()
+        container = _mock_container(ha_client=old_client, ha_client_ref=[old_client])
+        old_service = MagicMock()
+        container.ha_service = old_service
+
+        import os
+        saved_ha_url = os.environ.pop("HA_URL", None)
+        try:
+            with patch.object(setup_routes, "extract_token_from_request", return_value="tok"), \
+                 patch.object(setup_routes, "verify_token", return_value={"sub": "u1"}), \
+                 patch.object(setup_routes, "HomeAssistantClient", return_value=new_client), \
+                 patch("app.main.sync_ha_runtime_refs") as sync_refs:
+                result = await setup_routes.setup_ha(body, req, container=container)
+        finally:
+            if saved_ha_url is not None:
+                os.environ["HA_URL"] = saved_ha_url
+
+        # 新 client 接管所有引用位，旧 client/service 关闭
+        assert container.ha_client_ref[0] is new_client
+        assert container.ha_service is not old_service
+        assert isinstance(container.ha_service, HAService)
+        old_client.close.assert_awaited_once()
+        # 替换后的新 client（而非旧单例）被用于同步运行时引用
+        sync_refs.assert_called_once_with(new_client, container.ha_service)
+        assert result.data["ha_connected"] is True
 
 
 # ===================== mcp_routes =====================
