@@ -1,0 +1,936 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Aether — 接入大模型的智能家居 AI 管家</title>
+<meta name="description" content="Aether：24 个 AI 工具对话控家 · 7 类自动化规则 4 种执行载体 · 每控必核的执行回读 · 飞书免公网接入 · 3D 知识图谱">
+<style>
+  :root {
+    --bg: #fafbfc;
+    --bg-alt: #f2f5f8;
+    --card: #ffffff;
+    --text: #1a2332;
+    --text-secondary: #5a6a7e;
+    --text-muted: #8a97a8;
+    --primary: #0ea5b7;
+    --primary-dark: #0b8a99;
+    --primary-light: #e0f6f8;
+    --accent: #6366f1;
+    --border: #e4e9ef;
+    --code-bg: #f0f4f7;
+    --dark-bg: #101a2c;
+    --dark-card: rgba(255, 255, 255, .045);
+    --dark-border: rgba(255, 255, 255, .12);
+    --shadow-sm: 0 1px 3px rgba(16, 42, 67, .06), 0 1px 2px rgba(16, 42, 67, .04);
+    --shadow-md: 0 6px 24px rgba(16, 42, 67, .08);
+    --shadow-lg: 0 16px 48px rgba(16, 42, 67, .12);
+    --radius: 16px;
+    --max-w: 1120px;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html { scroll-behavior: smooth; scroll-padding-top: 76px; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+      "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  ::selection { background: var(--primary-light); color: var(--primary-dark); }
+
+  a { color: inherit; text-decoration: none; }
+  img { max-width: 100%; display: block; }
+
+  .container { max-width: var(--max-w); margin: 0 auto; padding: 0 24px; }
+
+  /* ---------- 导航 ---------- */
+  .nav {
+    position: sticky; top: 0; z-index: 100;
+    background: rgba(250, 251, 252, .85);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+  }
+  .nav-inner {
+    max-width: var(--max-w); margin: 0 auto; padding: 0 24px;
+    height: 60px; display: flex; align-items: center; justify-content: space-between;
+  }
+  .nav-logo { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 18px; }
+  .nav-logo .dot {
+    width: 28px; height: 28px; border-radius: 9px; display: grid; place-items: center;
+    background: linear-gradient(135deg, var(--primary), var(--accent));
+    color: #fff; font-size: 15px;
+  }
+  .nav-links { display: flex; gap: 18px; font-size: 14px; color: var(--text-secondary); }
+  .nav-links a { transition: color .2s; }
+  .nav-links a:hover { color: var(--primary); }
+  .nav-cta {
+    padding: 7px 16px; border-radius: 999px; font-size: 14px; font-weight: 600;
+    background: var(--text); color: #fff; transition: background .2s;
+  }
+  .nav-cta:hover { background: var(--primary); }
+  @media (max-width: 980px) { .nav-links { display: none; } }
+
+  /* ---------- Hero ---------- */
+  .hero {
+    position: relative; overflow: hidden;
+    padding: 88px 0 64px;
+    text-align: center;
+  }
+  .hero::before {
+    content: ""; position: absolute; inset: 0; pointer-events: none;
+    background:
+      radial-gradient(600px 300px at 20% 0%, rgba(14, 165, 183, .10), transparent 70%),
+      radial-gradient(600px 300px at 80% 10%, rgba(99, 102, 241, .10), transparent 70%);
+  }
+  .hero-inner { position: relative; }
+  .hero-badge {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 6px 16px; border-radius: 999px;
+    background: var(--card); border: 1px solid var(--border);
+    box-shadow: var(--shadow-sm);
+    font-size: 13.5px; color: var(--text-secondary); margin-bottom: 28px;
+  }
+  .hero-badge b { color: var(--primary); font-weight: 700; }
+  .hero h1 {
+    font-size: clamp(34px, 6vw, 58px);
+    line-height: 1.25; font-weight: 800; letter-spacing: -.02em;
+    margin-bottom: 22px;
+  }
+  .hero h1 .grad {
+    background: linear-gradient(100deg, var(--primary), var(--accent));
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .hero p {
+    max-width: 680px; margin: 0 auto 36px;
+    font-size: clamp(16px, 2.2vw, 19px); color: var(--text-secondary);
+  }
+  .hero-actions { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 13px 28px; border-radius: 12px;
+    font-size: 16px; font-weight: 600;
+    transition: transform .15s, box-shadow .2s, background .2s;
+  }
+  .btn:hover { transform: translateY(-2px); }
+  .btn-primary {
+    background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+    color: #fff; box-shadow: 0 8px 24px rgba(14, 165, 183, .30);
+  }
+  .btn-primary:hover { box-shadow: 0 12px 28px rgba(14, 165, 183, .38); }
+  .btn-ghost {
+    background: var(--card); color: var(--text);
+    border: 1px solid var(--border); box-shadow: var(--shadow-sm);
+  }
+  .btn-ghost:hover { border-color: var(--primary); color: var(--primary); }
+  .hero-hint { margin-top: 20px; font-size: 13.5px; color: var(--text-muted); }
+
+  /* ---------- Hero 数字条 ---------- */
+  .stats-strip {
+    display: flex; justify-content: center; flex-wrap: wrap;
+    gap: 18px 56px; margin-top: 52px;
+  }
+  .stat b {
+    display: block; font-size: 30px; font-weight: 800; letter-spacing: -.01em;
+    background: linear-gradient(100deg, var(--primary), var(--accent));
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+    line-height: 1.3;
+  }
+  .stat span { font-size: 13.5px; color: var(--text-muted); }
+
+  /* ---------- 区块通用 ---------- */
+  section { padding: 80px 0; }
+  .section-head { text-align: center; margin-bottom: 52px; }
+  .section-head .kicker {
+    display: inline-block; font-size: 13px; font-weight: 700;
+    letter-spacing: .12em; text-transform: uppercase;
+    color: var(--primary); margin-bottom: 12px;
+  }
+  .section-head h2 { font-size: clamp(26px, 4vw, 36px); font-weight: 800; letter-spacing: -.01em; }
+  .section-head p { margin-top: 12px; color: var(--text-secondary); font-size: 16.5px; }
+
+  /* ---------- 功能卡片 ---------- */
+  #features { background: var(--bg-alt); }
+  .features-grid {
+    display: grid; gap: 22px;
+    grid-template-columns: repeat(3, 1fr);
+  }
+  @media (max-width: 960px) { .features-grid { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 600px) { .features-grid { grid-template-columns: 1fr; } }
+  .feature-card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 28px 26px;
+    box-shadow: var(--shadow-sm);
+    transition: transform .2s, box-shadow .25s, border-color .25s;
+  }
+  .feature-card:hover {
+    transform: translateY(-4px);
+    box-shadow: var(--shadow-md);
+    border-color: rgba(14, 165, 183, .35);
+  }
+  .feature-icon {
+    width: 48px; height: 48px; border-radius: 13px;
+    display: grid; place-items: center; font-size: 24px;
+    background: var(--primary-light); margin-bottom: 18px;
+  }
+  .feature-card h3 { font-size: 17.5px; font-weight: 700; margin-bottom: 8px; }
+  .feature-card p { font-size: 14.5px; color: var(--text-secondary); }
+
+  /* ---------- 规则引擎 ---------- */
+  .rule-chips {
+    display: flex; justify-content: center; flex-wrap: wrap; gap: 12px;
+    margin-bottom: 44px;
+  }
+  .chip {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 8px 18px; border-radius: 999px;
+    background: var(--card); border: 1px solid var(--border);
+    box-shadow: var(--shadow-sm);
+    font-size: 14px; font-weight: 600; color: var(--text-secondary);
+  }
+  .carriers-grid {
+    display: grid; gap: 20px;
+    grid-template-columns: repeat(4, 1fr);
+  }
+  @media (max-width: 960px) { .carriers-grid { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 600px) { .carriers-grid { grid-template-columns: 1fr; } }
+  .carrier-card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 24px 22px;
+    box-shadow: var(--shadow-sm);
+    transition: transform .2s, box-shadow .25s, border-color .25s;
+  }
+  .carrier-card:hover {
+    transform: translateY(-4px);
+    box-shadow: var(--shadow-md);
+    border-color: rgba(99, 102, 241, .35);
+  }
+  .carrier-card .icon { font-size: 26px; margin-bottom: 14px; }
+  .carrier-card h4 { font-size: 16px; font-weight: 700; margin-bottom: 7px; }
+  .carrier-card p { font-size: 13.5px; color: var(--text-secondary); }
+  .rule-note {
+    margin-top: 36px; text-align: center;
+    font-size: 14px; color: var(--text-secondary);
+    background: var(--card); border: 1px dashed var(--border);
+    border-radius: 12px; padding: 14px 22px;
+    max-width: 860px; margin-left: auto; margin-right: auto;
+  }
+  .rule-note b { color: var(--primary-dark); }
+
+  /* ---------- 可信执行（暗色专区） ---------- */
+  #trust { background: var(--dark-bg); color: #e8eef6; }
+  #trust .kicker { color: #67e8f9; }
+  #trust .section-head p { color: rgba(232, 238, 246, .62); }
+  .trust-grid {
+    display: grid; gap: 18px;
+    grid-template-columns: repeat(5, 1fr);
+  }
+  @media (max-width: 1020px) { .trust-grid { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 600px) { .trust-grid { grid-template-columns: 1fr; } }
+  .trust-step {
+    background: var(--dark-card); border: 1px solid var(--dark-border);
+    border-radius: var(--radius); padding: 24px 20px;
+    transition: transform .2s, border-color .25s, background .25s;
+  }
+  .trust-step:hover { transform: translateY(-4px); border-color: rgba(103, 232, 249, .45); background: rgba(255, 255, 255, .07); }
+  .trust-num {
+    width: 30px; height: 30px; border-radius: 9px;
+    display: grid; place-items: center;
+    background: linear-gradient(135deg, #0ea5b7, #6366f1);
+    color: #fff; font-size: 14px; font-weight: 700;
+    margin-bottom: 16px;
+  }
+  .trust-step h4 { font-size: 15.5px; font-weight: 700; margin-bottom: 8px; color: #fff; }
+  .trust-step p { font-size: 13.5px; color: rgba(232, 238, 246, .62); }
+  .trust-quote {
+    margin-top: 40px; text-align: center;
+    font-size: 15.5px; color: rgba(232, 238, 246, .8);
+  }
+  .trust-quote b { color: #67e8f9; }
+
+  /* ---------- 界面截图 ---------- */
+  .shot-block {
+    display: grid; gap: 44px; align-items: center;
+    grid-template-columns: 1fr 1.25fr;
+    margin-bottom: 88px;
+  }
+  .shot-block:last-child { margin-bottom: 0; }
+  .shot-block.reverse { grid-template-columns: 1.25fr 1fr; }
+  .shot-block.reverse .shot-text { order: 2; }
+  .shot-block.reverse .shot-img { order: 1; }
+  @media (max-width: 880px) {
+    .shot-block, .shot-block.reverse { grid-template-columns: 1fr; gap: 26px; }
+    .shot-block.reverse .shot-text { order: 1; }
+    .shot-block.reverse .shot-img { order: 2; }
+  }
+  .shot-text .tag {
+    display: inline-block; font-size: 12.5px; font-weight: 700;
+    padding: 4px 12px; border-radius: 999px;
+    background: var(--primary-light); color: var(--primary-dark);
+    margin-bottom: 14px;
+  }
+  .shot-text h3 { font-size: 24px; font-weight: 800; margin-bottom: 12px; }
+  .shot-text p { color: var(--text-secondary); font-size: 15.5px; margin-bottom: 10px; }
+  .shot-points { list-style: none; margin-top: 6px; }
+  .shot-points li {
+    position: relative; padding-left: 24px; margin-bottom: 7px;
+    font-size: 14px; color: var(--text-secondary);
+  }
+  .shot-points li::before {
+    content: "✓"; position: absolute; left: 0; top: 0;
+    color: var(--primary); font-weight: 700;
+  }
+  .shot-img {
+    border-radius: var(--radius); overflow: hidden;
+    border: 1px solid var(--border); box-shadow: var(--shadow-lg);
+    background: var(--card);
+  }
+  .shot-img img { width: 100%; transition: transform .4s; }
+  .shot-img:hover img { transform: scale(1.02); }
+
+  /* ---------- 家庭周报 ---------- */
+  #report { background: var(--bg-alt); }
+  .report-grid {
+    display: grid; gap: 48px; align-items: center;
+    grid-template-columns: 1.05fr .95fr;
+  }
+  @media (max-width: 880px) { .report-grid { grid-template-columns: 1fr; gap: 30px; } }
+  .report-copy h3 { font-size: 24px; font-weight: 800; margin-bottom: 12px; }
+  .report-copy p { color: var(--text-secondary); font-size: 15.5px; margin-bottom: 10px; }
+  .report-card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: var(--radius); box-shadow: var(--shadow-lg);
+    padding: 26px 28px 20px; max-width: 460px; margin: 0 auto; width: 100%;
+  }
+  .report-card .rc-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding-bottom: 14px; margin-bottom: 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  .report-card .rc-head b { font-size: 16px; }
+  .report-card .rc-head span { font-size: 12.5px; color: var(--text-muted); }
+  .rc-row {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 7px 0; font-size: 14px; color: var(--text-secondary);
+  }
+  .rc-row b { color: var(--text); font-variant-numeric: tabular-nums; }
+  .rc-row .up { color: var(--primary-dark); }
+  .report-card .rc-foot {
+    margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--border);
+    font-size: 12px; color: var(--text-muted); text-align: center;
+  }
+
+  /* ---------- 工程质控 ---------- */
+  .tech-pills {
+    display: flex; justify-content: center; flex-wrap: wrap; gap: 12px;
+    margin-bottom: 26px;
+  }
+  .tech-pill {
+    padding: 7px 18px; border-radius: 999px;
+    background: var(--card); border: 1px solid var(--border);
+    box-shadow: var(--shadow-sm);
+    font-size: 13.5px; font-weight: 600; color: var(--text-secondary);
+  }
+  .tech-line { text-align: center; font-size: 14px; color: var(--text-muted); }
+  .tech-line b { color: var(--text-secondary); }
+
+  /* ---------- 快速开始 ---------- */
+  #quickstart { background: var(--bg-alt); }
+  .qs-steps {
+    max-width: 760px; margin: 0 auto;
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: var(--radius); box-shadow: var(--shadow-md);
+    padding: 36px 36px 32px;
+  }
+  .qs-step { margin-bottom: 26px; }
+  .qs-step:last-child { margin-bottom: 0; }
+  .qs-step-title {
+    display: flex; align-items: center; gap: 12px;
+    font-weight: 700; font-size: 16px; margin-bottom: 12px;
+  }
+  .qs-num {
+    width: 26px; height: 26px; border-radius: 8px; flex: none;
+    display: grid; place-items: center;
+    background: linear-gradient(135deg, var(--primary), var(--accent));
+    color: #fff; font-size: 13.5px; font-weight: 700;
+  }
+  .qs-step p { font-size: 14px; color: var(--text-secondary); margin-bottom: 10px; }
+  .code-box {
+    position: relative; background: var(--code-bg);
+    border: 1px solid var(--border); border-radius: 10px;
+    padding: 13px 44px 13px 16px;
+    font-family: "Cascadia Code", Consolas, "JetBrains Mono", monospace;
+    font-size: 13.5px; overflow-x: auto; white-space: pre;
+    color: #0f3a46;
+  }
+  .code-box .comment { color: #8a97a8; }
+  .copy-btn {
+    position: absolute; top: 8px; right: 8px;
+    border: 1px solid var(--border); background: var(--card);
+    border-radius: 7px; padding: 4px 10px;
+    font-size: 12px; color: var(--text-secondary); cursor: pointer;
+    transition: color .2s, border-color .2s;
+  }
+  .copy-btn:hover { color: var(--primary); border-color: var(--primary); }
+  .qs-tip {
+    max-width: 760px; margin: 22px auto 0;
+    font-size: 13.5px; color: var(--text-muted); text-align: center;
+  }
+  .qs-tip code {
+    background: var(--code-bg); border: 1px solid var(--border);
+    border-radius: 6px; padding: 1px 7px;
+    font-family: Consolas, monospace; font-size: 12.5px;
+  }
+
+  /* ---------- 页脚 ---------- */
+  footer {
+    border-top: 1px solid var(--border);
+    padding: 40px 0; text-align: center;
+    color: var(--text-muted); font-size: 14px;
+  }
+  footer .foot-links { display: flex; gap: 24px; justify-content: center; margin-bottom: 14px; }
+  footer a { color: var(--text-secondary); transition: color .2s; }
+  footer a:hover { color: var(--primary); }
+
+  /* ---------- 内核链路（时间线） ---------- */
+  #kernel { background: var(--bg-alt); }
+  .ktimeline { position: relative; max-width: 840px; margin: 0 auto; }
+  .ktimeline::before { content: ""; position: absolute; left: 19px; top: 10px; bottom: 10px; width: 2px;
+    background: linear-gradient(var(--primary), var(--accent)); opacity: .22; }
+  .kt-item { position: relative; padding-left: 58px; margin-bottom: 20px; }
+  .kt-item:last-child { margin-bottom: 0; }
+  .kt-num { position: absolute; left: 0; top: 2px; width: 38px; height: 38px; border-radius: 11px;
+    background: linear-gradient(135deg, var(--primary), var(--accent)); color: #fff;
+    display: grid; place-items: center; font-weight: 800; font-size: 15px;
+    box-shadow: 0 4px 14px rgba(14, 165, 183, .32); }
+  .kt-card { background: var(--card); border: 1px solid var(--border); border-radius: 14px;
+    padding: 17px 20px; box-shadow: var(--shadow-sm);
+    transition: transform .2s, box-shadow .25s, border-color .25s; }
+  .kt-card:hover { transform: translateX(4px); box-shadow: var(--shadow-md); border-color: rgba(14,165,183,.4); }
+  .kt-card h4 { font-size: 16px; font-weight: 800; margin-bottom: 5px;
+    display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; }
+  .kt-card h4 .en { font-family: Consolas, monospace; font-size: 12px; color: var(--text-muted); font-weight: 600; }
+  .kt-card p { font-size: 13.8px; color: var(--text-secondary); }
+  .kt-card p b { color: var(--text); }
+  .kt-path { font-family: Consolas, monospace; font-size: 11.5px; color: var(--text-muted);
+    background: var(--code-bg); border: 1px solid var(--border); border-radius: 6px;
+    padding: 2px 8px; display: inline-block; margin-top: 9px; }
+
+  /* ---------- 引擎机制 ---------- */
+  .mech-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+  @media (max-width: 980px) { .mech-grid { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 560px) { .mech-grid { grid-template-columns: 1fr; } }
+  .mech-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 22px 20px; box-shadow: var(--shadow-sm);
+    transition: transform .2s, box-shadow .25s, border-color .25s; }
+  .mech-card:hover { transform: translateY(-4px); box-shadow: var(--shadow-md); border-color: rgba(99,102,241,.4); }
+  .mech-card .mh { display: flex; align-items: center; gap: 8px; font-size: 15.5px; font-weight: 800; margin-bottom: 8px; }
+  .mech-card .mh .mi { font-size: 18px; }
+  .mech-card p { font-size: 13.3px; color: var(--text-secondary); }
+  .mech-card p b { color: var(--text); }
+  .mech-card code { font-family: Consolas, monospace; font-size: 12px; background: var(--code-bg);
+    border-radius: 5px; padding: 1px 6px; color: var(--primary-dark); }
+
+  /* ---------- 入场动画 ---------- */
+  .reveal { opacity: 0; transform: translateY(22px); transition: opacity .6s ease, transform .6s ease; }
+  .reveal.visible { opacity: 1; transform: none; }
+  @media (prefers-reduced-motion: reduce) {
+    .reveal { opacity: 1; transform: none; transition: none; }
+    html { scroll-behavior: auto; }
+  }
+</style>
+</head>
+<body>
+
+<!-- 导航 -->
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="nav-logo" href="#top"><span class="dot">Æ</span>Aether</a>
+    <div class="nav-links">
+      <a href="#features">功能</a>
+      <a href="#rules">规则引擎</a>
+      <a href="#trust">可信执行</a>
+      <a href="#kernel">内核链路</a>
+      <a href="#mech">引擎机制</a>
+      <a href="#shots">界面</a>
+      <a href="#quickstart">快速开始</a>
+    </div>
+    <a class="nav-cta" href="https://github.com/tk-fantasy/fantasy" target="_blank" rel="noopener">GitHub</a>
+  </div>
+</nav>
+
+<!-- Hero -->
+<header class="hero" id="top">
+  <div class="container hero-inner">
+    <span class="hero-badge">🏠 开源 · <b>AI 驱动</b> · Docker 一键部署</span>
+    <h1>你的家，从此有了<br><span class="grad">一位 AI 管家</span></h1>
+    <p>Aether 把大模型接进 Home Assistant——一句话控设备、一句话建自动化；执行前有校验，执行后有回读，像一位真正靠谱的管家。</p>
+    <div class="hero-actions">
+      <a class="btn btn-primary" href="#quickstart">🚀 快速开始</a>
+      <a class="btn btn-ghost" href="https://github.com/tk-fantasy/fantasy" target="_blank" rel="noopener">⭐ GitHub 仓库</a>
+    </div>
+    <p class="hero-hint">Docker 一键部署 · 内置 10 类演示设备 · 无需真实硬件即可体验</p>
+    <div class="stats-strip">
+      <div class="stat"><b>24 个</b><span>对话可调用的 AI 工具</span></div>
+      <div class="stat"><b>7 类</b><span>自动化规则</span></div>
+      <div class="stat"><b>4 种</b><span>规则执行载体，故障自动降级</span></div>
+      <div class="stat"><b>17 个</b><span>聊天斜杠命令</span></div>
+    </div>
+  </div>
+</header>
+
+<!-- 功能亮点 -->
+<section id="features">
+  <div class="container">
+    <div class="section-head reveal">
+      <span class="kicker">Features</span>
+      <h2>六大核心能力</h2>
+      <p>从一个命令到一整套智能生活，每一条都长在源码里</p>
+    </div>
+    <div class="features-grid">
+      <div class="feature-card reveal">
+        <div class="feature-icon">💬</div>
+        <h3>对话即控制</h3>
+        <p>24 个内置工具随口调用：控设备、建规则、配场景、查操作记录、联网搜索、抓网页。WebSocket 流式回复、语音输入、17 个斜杠命令，聊天窗口就是控制台。</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-icon">🔄</div>
+        <h3>一句话建自动化</h3>
+        <p>「下雨就关窗」直接生成规则草稿——时间、天气、视觉、在场、日出日落、日历、虚拟开关 7 类条件自由组合，说「确认」才生效，改规则也是一句话。</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-icon">🛡️</div>
+        <h3>每控必核，不谎报成功</h3>
+        <p>每条指令下发后回读 Home Assistant 真实状态核对，不符就如实告诉你「没执行成功」；LLM 编造的设备名会被存在性校验拦下，并附最接近的真实设备自动纠正。</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-icon">👁️</div>
+        <h3>视觉感知</h3>
+        <p>RTSP / USB / HA 相机全支持，dHash 运动检测微秒级完成、几乎不吃 CPU。按摄像头配置关注项——只有关注的事出现才推送；PTZ 云台转向一句话指挥。</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-icon">📱</div>
+        <h3>飞书免公网接入</h3>
+        <p>WebSocket 长连接 + 扫码一键绑定，不需要公网 IP、不需要内网穿透。群里 @它 就能控家，摄像头异常主动找你；凭证在管理页热改热连。</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-icon">🧠</div>
+        <h3>3D 知识图谱 + RAG</h3>
+        <p>家庭文档与设备信息向量化（faiss 秒级检索），LLM 抽取实体关系构建 three.js 3D 球状图谱，可漫游、可搜索、可对着文档提问，构建支持断点续传。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 规则引擎 -->
+<section id="rules">
+  <div class="container">
+    <div class="section-head reveal">
+      <span class="kicker">Rule Engine</span>
+      <h2>7 类规则，4 种执行载体</h2>
+      <p>什么条件都能触发，怎么执行都有讲究——不把鸡蛋放进一个篮子</p>
+    </div>
+    <div class="rule-chips reveal">
+      <span class="chip">⏰ 时间定时</span>
+      <span class="chip">🌦️ 天气变化</span>
+      <span class="chip">👁️ 画面识别</span>
+      <span class="chip">🏠 到家 / 离家</span>
+      <span class="chip">🌅 日出日落</span>
+      <span class="chip">📅 日历日程</span>
+      <span class="chip">🔌 虚拟开关</span>
+    </div>
+    <div class="carriers-grid">
+      <div class="carrier-card reveal">
+        <div class="icon">⚡</div>
+        <h4>HA 原生委托</h4>
+        <p>触发条件编译成 Home Assistant 原生自动化，到点毫秒级精确触发，动作仍回到 Aether 执行，支持 and / or / not 组合。</p>
+      </div>
+      <div class="carrier-card reveal">
+        <div class="icon">🔁</div>
+        <h4>本地静默循环</h4>
+        <p>时间与天气规则每 30 秒、视觉规则每 60 秒静默评估一轮；HA 委托写入失败时自动降级回本地，规则不失效。</p>
+      </div>
+      <div class="carrier-card reveal">
+        <div class="icon">📡</div>
+        <h4>HA 事件订阅</h4>
+        <p>订阅 state_changed 实时事件驱动在场、日出日落、虚拟开关类规则，状态一变立即评估，无轮询延迟。</p>
+      </div>
+      <div class="carrier-card reveal">
+        <div class="icon">📅</div>
+        <h4>日历轮询</h4>
+        <p>每 5 分钟对齐日历日程的开始与结束，去重防重复触发——「开会时静音」这类日程联动也能稳稳落地。</p>
+      </div>
+    </div>
+    <div class="rule-note reveal">
+      两段式确认防误建：规则先以<b>草稿</b>形式挂起（10 分钟内有效），聊天里说「确认」或在网页弹窗点确认才真正落库；
+      落库前还会做实体存在性校验，视觉规则强制绑定摄像头，避免「有人就触发」误伤全屋。
+    </div>
+  </div>
+</section>
+
+<!-- 可信执行 -->
+<section id="trust">
+  <div class="container">
+    <div class="section-head reveal">
+      <span class="kicker">Trustworthy Execution</span>
+      <h2>大模型会胡来？Aether 给它套上五道闸</h2>
+      <p>让 AI 管家「敢放手用」的，不是模型多聪明，而是错了能兜住</p>
+    </div>
+    <div class="trust-grid">
+      <div class="trust-step reveal">
+        <div class="trust-num">1</div>
+        <h4>实体存在性校验</h4>
+        <p>HA 对不存在的实体也会静默返回成功——Aether 先比对真实设备列表，编造的名字直接拦截，并附 5 个最接近的真实设备让模型自愈重试。</p>
+      </div>
+      <div class="trust-step reveal">
+        <div class="trust-num">2</div>
+        <h4>危险设备黑名单</h4>
+        <p>门锁、童锁可一键标记「禁止 AI 操作」：命中即拒绝执行，且这些设备对模型完全不可见——连误指名的机会都没有。</p>
+      </div>
+      <div class="trust-step reveal">
+        <div class="trust-num">3</div>
+        <h4>六层意图消歧</h4>
+        <p>「开灯」匹配到多盏灯时弹框让你勾选，说「所有灯」才全开；「打开加湿器」绝不会错开空调——语义错配直接拒绝。</p>
+      </div>
+      <div class="trust-step reveal">
+        <div class="trust-num">4</div>
+        <h4>执行后回读</h4>
+        <p>每条指令执行后延时回读 HA 真实状态与预期比对，不符就在结果里标记「未验证」，强制模型如实汇报，绝不谎报成功。</p>
+      </div>
+      <div class="trust-step reveal">
+        <div class="trust-num">5</div>
+        <h4>规则防幻觉</h4>
+        <p>生成的规则动作经领域 / 服务 / 实体 / 参数四重校验，重试仍错则自动替换为最接近的真实设备；模糊指令先弹窗确认再执行。</p>
+      </div>
+    </div>
+    <p class="trust-quote reveal">「它不是不犯错，而是<b>错了会告诉你</b>——这是管家和玩具的区别。」</p>
+  </div>
+</section>
+
+<!-- 内核链路 -->
+<section id="kernel">
+  <div class="container">
+    <div class="section-head reveal">
+      <span class="kicker">Kernel Pipeline</span>
+      <h2>一句话指令，在代码里走了六站</h2>
+      <p>从你按下发送到设备真的动起来，中间是一条代码级流水线——不是「把话丢给大模型」那么简单。</p>
+    </div>
+    <div class="ktimeline">
+      <div class="kt-item reveal">
+        <span class="kt-num">1</span>
+        <div class="kt-card">
+          <h4>准备上下文 <span class="en">prepare</span></h4>
+          <p>拉取 HA 设备目录与控件备注、主摄像头视觉关注项、过期对话摘要，组装成 system prompt；命中混合思考模型时注入<b>思考软开关</b>降首字延迟。</p>
+          <span class="kt-path">dispatcher._prepare_context</span>
+        </div>
+      </div>
+      <div class="kt-item reveal">
+        <span class="kt-num">2</span>
+        <div class="kt-card">
+          <h4>变体裁剪 <span class="en">variant</span></h4>
+          <p>按回合意图裁工具面：<b>full / rule_create / no_create / clean</b> 四档。clean 档让模型对 <code>automation_rule_*</code> 整族无感知——工具名本身就是泄漏源，代码级隔离不靠模型自觉。</p>
+          <span class="kt-path">dispatcher._pick_variant</span>
+        </div>
+      </div>
+      <div class="kt-item reveal">
+        <span class="kt-num">3</span>
+        <div class="kt-card">
+          <h4>ReAct 执行 <span class="en">react</span></h4>
+          <p>LangGraph <code>create_react_agent</code> 流式跑工具循环；步数预算 <b>recursion_limit=16</b>，每个工具轮 model→hook→tools 消耗 3 步。</p>
+          <span class="kt-path">langgraph_agent.build_chat_agent</span>
+        </div>
+      </div>
+      <div class="kt-item reveal">
+        <span class="kt-num">4</span>
+        <div class="kt-card">
+          <h4>失败重试 <span class="en">retry</span></h4>
+          <p><code>post_model_hook</code> 剔除已成功的工具签名、<b>只补失败的那几个</b>（代码约束，非提示词）；预算耗尽不报错，走「总结已完成部分」收尾轮。</p>
+          <span class="kt-path">langgraph_agent.make_post_model_hook</span>
+        </div>
+      </div>
+      <div class="kt-item reveal">
+        <span class="kt-num">5</span>
+        <div class="kt-card">
+          <h4>幻觉校验 <span class="en">validate</span></h4>
+          <p>ValidatorAgent 三级核查：正则命中<b>三时态表态</b> → 设备指称模糊匹配 → 读 HA 真实状态核对（白名单域，<b>零 LLM 调用</b>）→ 不符则定向重试并注入真实状态。</p>
+          <span class="kt-path">validator_agent.should_retry</span>
+        </div>
+      </div>
+      <div class="kt-item reveal">
+        <span class="kt-num">6</span>
+        <div class="kt-card">
+          <h4>流式回传 <span class="en">stream</span></h4>
+          <p>SSE / WebSocket 逐事件推 <code>token / tool_start / tool_end</code>；<code>entity_id</code> 实时翻译友好名（light.bed → 床头灯），打字机效果。</p>
+          <span class="kt-path">dispatcher._make_event_handler</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 引擎机制 -->
+<section id="mech">
+  <div class="container">
+    <div class="section-head reveal">
+      <span class="kicker">Engine Internals</span>
+      <h2>引擎里的几个「较真」设计</h2>
+      <p>这些不是功能清单上的卖点，而是让 AI 管家「敢放手用」的代码级兜底。</p>
+    </div>
+    <div class="mech-grid">
+      <div class="mech-card reveal"><div class="mh"><span class="mi">🔁</span>只读校验回读</div><p>控制后延时读 HA 真实状态比对，不符标「未验证」。白名单域 <code>light/switch/fan/cover</code>… 陌生域语义不可靠不核。</p></div>
+      <div class="mech-card reveal"><div class="mh"><span class="mi">🕐</span>三时态表态检测</div><p>已完成 / 进行中 / 将来时正则宽覆盖，误报由下游实体核对过滤；<b>纯闲聊零 LLM 调用</b>，不再每轮白付一次校验。</p></div>
+      <div class="mech-card reveal"><div class="mh"><span class="mi">✂️</span>工具面裁剪</div><p>clean 档剔除 <code>automation_rule_*</code> 整族；rule_create 档剔除 <code>scheduled_task_create</code>——防弱模型把「创建规则」路由去定时任务。</p></div>
+      <div class="mech-card reveal"><div class="mh"><span class="mi">✅</span>裸确认短路</div><p>唯一活草稿 + 裸「确认 / 好的 / 嗯」词 → 系统<b>确定性落库</b>，跳过模型。弱模型确认轮高频幻觉「已生效」，收口成代码动作。</p></div>
+      <div class="mech-card reveal"><div class="mh"><span class="mi">🏁</span>步数预算收尾</div><p><code>recursion_limit</code> 耗尽不是故障，是模型陷入工具循环——注入「停止调工具、总结已完成部分」收尾轮，不把半截回复丢给你。</p></div>
+      <div class="mech-card reveal"><div class="mh"><span class="mi">🎯</span>失败只补不重跑</div><p>已成功工具签名传给 hook，重试轮代码层剔除；<code>unresolved_failed</code> 跨轮追踪，重试空转时收尾兜底生成失败说明。</p></div>
+      <div class="mech-card reveal"><div class="mh"><span class="mi">🔑</span>per-user key 隔离</div><p>每用户用自己的 chat key 构建 agent + validator LLM；会话归属校验，<b>拒绝接管他人会话</b>（SessionOwnershipError）。</p></div>
+      <div class="mech-card reveal"><div class="mh"><span class="mi">🧬</span>模型家族适配</div><p>命中混合思考模型时注入思考软开关，闲聊 / 控制场景关思考降首字延迟；<b>只改发送副本</b>，不回写污染对话历史。</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- 界面截图 -->
+<section id="shots">
+  <div class="container">
+    <div class="section-head reveal">
+      <span class="kicker">Showcase</span>
+      <h2>看看它长什么样</h2>
+      <p>每一处交互，都为「让家更懂你」而设计</p>
+    </div>
+
+    <div class="shot-block reveal">
+      <div class="shot-text">
+        <span class="tag">聊天主页</span>
+        <h3>像聊天一样掌控全屋</h3>
+        <p>输入自然语言即可控制家中设备，AI 流式回复、Markdown 渲染、结构化设备卡片，多轮对话上下文连贯。</p>
+        <ul class="shot-points">
+          <li>WebSocket 逐事件流式推送，支持中途取消与播报打断</li>
+          <li>17 个斜杠命令：/undo 撤销、/compress 压缩上下文、/camera 呼出预览</li>
+          <li>语音输入说话即控，小爱音箱语音播报回复</li>
+        </ul>
+      </div>
+      <div class="shot-img"><img src="images/Home.webp" alt="聊天主页界面" loading="lazy"></div>
+    </div>
+
+    <div class="shot-block reverse reveal">
+      <div class="shot-text">
+        <span class="tag">自动化规则</span>
+        <h3>条件 → 动作，一目了然</h3>
+        <p>用自然语言描述需求，AI 自动拆解成条件卡片与动作卡片，触发什么、执行什么清清楚楚；启停一个开关，改规则像聊天一样简单。</p>
+        <ul class="shot-points">
+          <li>「摄像头检测到小雨 → 开灯开窗帘关窗」一句话生成</li>
+          <li>每条规则独立启停，随时回看触发条件与动作明细</li>
+          <li>同一条规则可一句话修订，无需推倒重建</li>
+        </ul>
+      </div>
+      <div class="shot-img"><img src="images/auto_task.webp" alt="自动化规则界面" loading="lazy"></div>
+    </div>
+
+    <div class="shot-block reveal">
+      <div class="shot-text">
+        <span class="tag">设备控制</span>
+        <h3>所有设备，一屏尽览</h3>
+        <p>灯光的亮度色温、空调的温度模式、窗帘的开关进度——所有状态可视化呈现，也可直接在面板操控。</p>
+        <ul class="shot-points">
+          <li>一键应用回家、观影、睡眠等场景模式，场景可自定义捕获</li>
+          <li>设备别名与口语匹配：「帮我开下灯」也能精准命中</li>
+          <li>危险设备一键标记，AI 从此绕道走</li>
+        </ul>
+      </div>
+      <div class="shot-img"><img src="images/device.webp" alt="设备控制面板" loading="lazy"></div>
+    </div>
+
+    <div class="shot-block reverse reveal">
+      <div class="shot-text">
+        <span class="tag">定时任务</span>
+        <h3>说一句话，定时建好</h3>
+        <p>自然语言描述需求，Aether 自动解析并生成 cron 表达式，任务名也是 AI 起的，回复支持文字推送与小爱音箱语音播报。</p>
+        <ul class="shot-points">
+          <li>「工作日早上 7 点开窗帘」直接落地成定时计划</li>
+          <li>创建、查询、删除全在对话里完成</li>
+        </ul>
+      </div>
+      <div class="shot-img"><img src="images/schedule.webp" alt="定时任务界面" loading="lazy"></div>
+    </div>
+
+    <div class="shot-block reveal">
+      <div class="shot-text">
+        <span class="tag">视觉感知</span>
+        <h3>让 AI 看懂你的家</h3>
+        <p>多路摄像头实时分析画面，dHash 运动检测微秒级完成，按摄像头配置关注项——只有关注的事出现才触发通知。</p>
+        <ul class="shot-points">
+          <li>RTSP 网络摄像头 / USB 摄像头 / HA 相机实体全支持</li>
+          <li>「冰箱前有没有键盘」——关注项自己定，不误报</li>
+          <li>PTZ 云台转动一句话指挥，摄像头离线主动告警</li>
+        </ul>
+      </div>
+      <div class="shot-img"><img src="images/vision.webp" alt="视觉感知界面" loading="lazy"></div>
+    </div>
+
+    <div class="shot-block reverse reveal">
+      <div class="shot-text">
+        <span class="tag">多模型接入</span>
+        <h3>每个角色，各配其主</h3>
+        <p>对话、摘要、语音识别、视觉、嵌入各角色独立配置模型，谁擅长谁来；家庭成员各用各的 API Key，互不影响。</p>
+        <ul class="shot-points">
+          <li>OpenAI、Claude、DeepSeek、智谱、本地 Ollama 随意切换</li>
+          <li>全局共享 Key 二级密码保护，忘记可重置</li>
+          <li>关键端点指向内网即零出网，数据不出家门</li>
+        </ul>
+      </div>
+      <div class="shot-img"><img src="images/models.webp" alt="模型配置界面" loading="lazy"></div>
+    </div>
+
+    <div class="shot-block reveal">
+      <div class="shot-text">
+        <span class="tag">知识图谱</span>
+        <h3>把家装进一颗星球</h3>
+        <p>LLM 从家庭文档与设备信息中抽取实体与关系，构建成 3D 球状知识图谱，语义搜索定位节点，文档问答随口就问。</p>
+        <ul class="shot-points">
+          <li>faiss 向量索引持久化跨重启复用，模型变更自动重建</li>
+          <li>图谱构建断点续传，大规模文档也不怕中断</li>
+        </ul>
+      </div>
+      <div class="shot-img"><img src="images/generate_show.webp" alt="3D 知识图谱界面" loading="lazy"></div>
+    </div>
+  </div>
+</section>
+
+<!-- 家庭周报 -->
+<section id="report">
+  <div class="container">
+    <div class="report-grid">
+      <div class="report-copy reveal">
+        <span class="kicker" style="color:var(--primary);font-size:13px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;">Weekly Report</span>
+        <h3>每周日 20 点，一份 AI 写的家庭周报</h3>
+        <p>自动聚合近 7 天的家庭事件与 Home Assistant 长期统计，LLM 提炼成 250 字以内的人话总结，准时推送到飞书，在线也能回看。</p>
+        <p>自动化触发了几次、定时任务成功率多少、这周用了几度电——不用翻记录，扫一眼周报就知道。</p>
+        <p style="font-size:13.5px;color:var(--text-muted);">错过推送也不怕：每 6 小时补偿检查一次，周报永远补得上。</p>
+      </div>
+      <div class="reveal">
+        <div class="report-card">
+          <div class="rc-head"><b>📋 家庭周报 · 9 月第 3 周</b><span>周日 20:00 自动生成</span></div>
+          <div class="rc-row"><span>🤖 自动化规则触发</span><b>42 次</b></div>
+          <div class="rc-row"><span>⏰ 定时任务成功率</span><b class="up">98%</b></div>
+          <div class="rc-row"><span>🚨 告警</span><b>3 次</b></div>
+          <div class="rc-row"><span>💬 AI 操作 vs 手动操作</span><b>15 / 27 次</b></div>
+          <div class="rc-row"><span>🌡️ 客厅温度</span><b>24.8 ~ 31.2 °C</b></div>
+          <div class="rc-row"><span>⚡ 本周用电</span><b>36.4 kWh</b></div>
+          <div class="rc-foot">↑ 示例数据 · 实际内容按你家真实数据生成</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 工程质控 -->
+<section id="engineering">
+  <div class="container">
+    <div class="section-head reveal">
+      <span class="kicker">Engineering</span>
+      <h2>不是 demo，是一个认真的工程</h2>
+    </div>
+    <div class="tech-pills reveal">
+      <span class="tech-pill">FastAPI</span>
+      <span class="tech-pill">Vue 3</span>
+      <span class="tech-pill">WebSocket 流式</span>
+      <span class="tech-pill">Home Assistant</span>
+      <span class="tech-pill">MQTT</span>
+      <span class="tech-pill">faiss RAG</span>
+      <span class="tech-pill">three.js</span>
+      <span class="tech-pill">Docker Compose</span>
+    </div>
+    <p class="tech-line reveal">
+      <b>203 个 pytest 测试文件</b> · CI 三道关：单测回归（20 分钟挂死护栏）/ 真实进程 E2E / 前端 Vitest · ruff 静态检查 ·
+      健康探针 30 秒自愈重启
+    </p>
+  </div>
+</section>
+
+<!-- 快速开始 -->
+<section id="quickstart">
+  <div class="container">
+    <div class="section-head reveal">
+      <span class="kicker">Quick Start</span>
+      <h2>三步跑起来</h2>
+      <p>Docker 一键部署，内置 10 类演示设备，无需真实硬件</p>
+    </div>
+    <div class="qs-steps reveal">
+      <div class="qs-step">
+        <div class="qs-step-title"><span class="qs-num">1</span>配置密钥与模板</div>
+        <p>复制环境变量与配置模板，填入 LLM / STT 的 API Key。</p>
+        <div class="code-box"><button class="copy-btn" data-copy>复制</button><span class="comment"># 配置密钥</span>
+cp .env.example .env
+<span class="comment"># 复制配置模板（HA 令牌可在向导里填）</span>
+cp config.example.json config.json</div>
+      </div>
+      <div class="qs-step">
+        <div class="qs-step-title"><span class="qs-num">2</span>启动全部服务</div>
+        <p>一条命令拉起 aether、homeassistant、mosquitto、simulator；带 <b>--profile simulator</b> 才会附带 10 类演示设备（生产环境可去掉，之后也能在「高级配置 → 虚拟设备」随时开关）。</p>
+        <div class="code-box"><button class="copy-btn" data-copy>复制</button>docker compose --profile simulator up -d --build
+docker compose ps</div>
+      </div>
+      <div class="qs-step">
+        <div class="qs-step-title"><span class="qs-num">3</span>打开向导，开聊</div>
+        <p>浏览器访问 <b>https://localhost:8010</b>（HTTPS 自签证书），按引导完成家庭信息、模型配置与 Home Assistant 连接，然后对它说「打开客厅灯」试试。</p>
+      </div>
+    </div>
+    <p class="qs-tip reveal">
+      提示：导入 <code>certs/rootCA.crt</code> 可消除浏览器证书警告；想完全离线跑本地模型，<code>docker compose --profile local-llm up -d ollama</code> 一条命令即可。
+    </p>
+  </div>
+</section>
+
+<!-- 页脚 -->
+<footer>
+  <div class="container">
+    <div class="foot-links">
+      <a href="https://github.com/tk-fantasy/fantasy" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://github.com/tk-fantasy/fantasy/blob/main/README.md" target="_blank" rel="noopener">文档</a>
+      <a href="https://github.com/tk-fantasy/fantasy/issues" target="_blank" rel="noopener">反馈问题</a>
+    </div>
+    <div>Made with ❤️ · Aether · MIT License</div>
+  </div>
+</footer>
+
+<script>
+  // 滚动入场动画
+  (function () {
+    var els = document.querySelectorAll('.reveal');
+    if (!('IntersectionObserver' in window)) {
+      els.forEach(function (el) { el.classList.add('visible'); });
+      return;
+    }
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (e.isIntersecting) { e.target.classList.add('visible'); io.unobserve(e.target); }
+      });
+    }, { threshold: .12 });
+    els.forEach(function (el) { io.observe(el); });
+  })();
+
+  // 代码块复制
+  document.querySelectorAll('[data-copy]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var box = btn.parentElement;
+      var text = Array.from(box.childNodes)
+        .filter(function (n) { return n.nodeType === 3; })
+        .map(function (n) { return n.textContent; })
+        .join('');
+      text = text.replace(/^\s*\n/, '').replace(/\n\s*$/, '');
+      navigator.clipboard.writeText(text).then(function () {
+        var old = btn.textContent;
+        btn.textContent = '已复制';
+        setTimeout(function () { btn.textContent = old; }, 1500);
+      });
+    });
+  });
+</script>
+</body>
+</html>
