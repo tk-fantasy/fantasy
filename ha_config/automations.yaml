@@ -1,11 +1,11 @@
-- id: 0fe65d33c7e74ac59634fce3814c66c4
-  alias: Aether·早上7点半开客厅灯
-  description: 每天早上7点半自动打开客厅的灯光设备
+- id: 7dcd3306048e4cac8ba5c716b7b70d0c
+  alias: Aether·关闭床头灯
+  description: 每天晚上12点以后关闭床头灯
   triggers:
   - platform: time
-    at: 07:30:00
+    at: 00:00:00
   conditions: []
   actions:
   - action: aether_conversation.fire_rule
     data:
-      rule_id: 9c500c68-ce75-4916-871d-fa456a8044b1
+      rule_id: 77c640a1-4598-49bf-bbae-fcb07c511f5a
