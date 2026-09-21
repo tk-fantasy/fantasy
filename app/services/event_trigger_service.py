@@ -114,7 +114,7 @@ class EventTriggerService:
             if applied:
                 logger.info("Event-triggered rules applied: type=%s count=%d",
                             rule_type, len(applied))
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception("event-trigger evaluate failed (type=%s)", rule_type)
 
     # ------------------------------------------------------------------
@@ -128,7 +128,7 @@ class EventTriggerService:
                 await self._poll_calendars()
             except asyncio.CancelledError:
                 raise
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.debug("calendar poll failed", exc_info=True)
             await asyncio.sleep(_CALENDAR_POLL_SECONDS)
 
@@ -156,7 +156,7 @@ class EventTriggerService:
                     start=window_start.isoformat(),
                     end=(now + timedelta(seconds=1)).isoformat(),
                 )
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.debug("calendar_events failed for %s", entity_id, exc_info=True)
                 continue
             for ev in events or []:

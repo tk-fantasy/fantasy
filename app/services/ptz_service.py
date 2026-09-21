@@ -101,7 +101,7 @@ class PtzService:
                 data = {"tilt": vec[1] * spd, "pan": vec[0] * spd}
             await client.call_service("onvif", "ptz", entity_id=entity, data=data)
             return True
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.warning(
                 "PTZ via HA service failed (cam=%s), falling back to local ONVIF",
                 self.camera_id, exc_info=True)

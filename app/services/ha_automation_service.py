@@ -230,7 +230,7 @@ class HaAutomationService:
                 mcp_actions = repair_input["actions"]
                 auto_corrections = repair_input.get("auto_corrections") or []
                 errors = rs._validate_actions(mcp_actions, ctx["full_devices"], ctx["services_info"])
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.warning("HA automation action validation failed", exc_info=True)
             errors = []
         if errors:
@@ -270,7 +270,7 @@ class HaAutomationService:
             return False
         try:
             services = await client.get_services()
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.debug("get_services failed for delegation probe", exc_info=True)
             return False
         for block in services or []:
@@ -315,7 +315,7 @@ class HaAutomationService:
                 ]
                 if weather_ids:
                     weather_line = f"\n可用天气实体: {', '.join(weather_ids[:5])}"
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.debug("weather entity lookup failed", exc_info=True)
 
         type_hint = {"time": "时间触发", "weather": "天气触发"}.get(rule_type, rule_type or "时间/天气")
@@ -416,7 +416,7 @@ class HaAutomationService:
             return {"error": "草稿没有可执行动作"}
         try:
             result = await client.create_automation(config)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.exception("HA automation create failed")
             return {"error": f"写入 Home Assistant 失败: {exc}"}
         automation_id = str(result.get("id", ""))
@@ -430,7 +430,7 @@ class HaAutomationService:
             return []
         try:
             items = await client.list_automations()
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.warning("HA automations list failed", exc_info=True)
             return []
         return [
@@ -461,6 +461,6 @@ class HaAutomationService:
                     if str(a.get("state")) in ("unavailable", "unknown"):
                         await client.remove_entity(str(a["entity_id"]))
                     break
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.debug("ghost entity cleanup skipped", exc_info=True)
         return {"deleted": True, "id": automation_id}

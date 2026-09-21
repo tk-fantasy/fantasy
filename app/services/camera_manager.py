@@ -406,7 +406,7 @@ class CameraManager:
                 await self._refresh_ha_availability()
             except asyncio.CancelledError:
                 raise
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.debug("ha availability refresh failed", exc_info=True)
 
     async def fetch_camera_proxy_frames(self, entity_id: str, n: int = 1) -> list:
@@ -426,7 +426,7 @@ class CameraManager:
                 img = cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
                 if img is not None:
                     frames.append(img)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.warning("camera_proxy fetch failed for %s", entity_id, exc_info=True)
                 break
             if i < n - 1:

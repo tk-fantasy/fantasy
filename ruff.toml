@@ -7,7 +7,7 @@ line-length = 120
 [lint]
 # E9   语法错误（真缺陷）
 # F63/F7/F82  无效比较语句/循环控制误用/未定义名字（真缺陷）
-# BLE  裸 except Exception（项目惯例：必须显式 noqa 说明理由才允许）
+# BLE  裸 except Exception（ruff 对含日志/重抛的 handler 已豁免，仅静默吞错需 noqa 说明理由）
 # B023 循环变量闭包捕获（asyncio 场景的经典 bug 源）
 # RUF100 无效 noqa（防止 noqa 变成永久豁免的摆设）
 select = ["E9", "F63", "F7", "F82", "BLE", "B023", "RUF100"]

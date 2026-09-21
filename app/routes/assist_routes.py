@@ -80,7 +80,7 @@ async def assist_chat(
         Nlp.Request(query=text), request_id=rid, session_id=session_id)
     try:
         instructions = await dispatcher.dispatch(event, user_id="assist")
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.exception("assist dispatch failed")
         raise AppException(f"处理失败: {e}", code="dispatch_failed", http_status=500)
 

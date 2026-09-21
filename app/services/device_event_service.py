@@ -345,7 +345,7 @@ class DeviceEventService:
             apply = getattr(self._ha_service, "apply_state_change", None)
             if apply is not None:
                 apply(entity_id, new_state)
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.debug("apply_state_change failed for %s", entity_id, exc_info=True)
         # 2) 前端实时推送：sensor 数值类不推（高频噪声），交给兜底轮询
         if domain != _SENSOR_DOMAIN:
@@ -358,7 +358,7 @@ class DeviceEventService:
                     "state": str(new_state.get("state", "")),
                     "attributes": new_state.get("attributes") or {},
                 })
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.debug("entity_state push failed for %s", entity_id, exc_info=True)
         # 3) 内部订阅者（摄像头 HA 触发、presence/sun/helper 规则评估等）
         await self._dispatch({

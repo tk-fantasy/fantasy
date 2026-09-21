@@ -181,7 +181,7 @@ class SceneService:
             return []
         try:
             entities = await ha.get_entities_by_domains({"scene"})
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.warning("list HA scenes failed", exc_info=True)
             return []
         return [{"entity_id": e["entity_id"], "name": e["name"],

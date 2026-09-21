@@ -120,7 +120,7 @@ async def delete_rule(
         if ha_svc is not None:
             try:
                 await ha_svc.delete(str(removed["ha_automation_id"]))
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.warning("委托的 HA 自动化连带删除失败: %s",
                                removed["ha_automation_id"], exc_info=True)
     return ApiResponse(data=removed)
@@ -212,7 +212,7 @@ async def _resync_delegated_trigger(
     def _degrade() -> None:
         try:
             registry.set_ha_backing(rule_id, None)
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.warning("委托降级失败（规则可能已被删）: %s", rule_id, exc_info=True)
 
     if ha_svc is None or str(updated.get("type", "")) not in ("time", "weather"):
@@ -234,7 +234,7 @@ async def _resync_delegated_trigger(
             description=str(updated.get("summary", "") or ""),
             automation_id=auto_id,
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.warning("委托触发重同步失败: %s", rule_id, exc_info=True)
         _degrade()
         return

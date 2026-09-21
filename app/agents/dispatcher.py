@@ -504,7 +504,7 @@ class Dispatcher:
                 ha_automation_service=getattr(c, "ha_automation_service", None),
                 automation_service=getattr(c, "automation_service", None),
             )
-        except Exception:  # noqa: BLE001 — 短路失败回退模型流程，不能挡正常对话
+        except Exception:  # 短路失败回退模型流程，不能挡正常对话
             logger.exception("direct confirm failed, falling back to model flow")
             return None
         if not result.get("ok"):

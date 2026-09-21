@@ -91,7 +91,7 @@ class HAService:
             else:
                 self._states_cache.append(entry)
             self._states_cache_at = time.time()
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.debug("apply_state_change failed for %s", entity_id, exc_info=True)
 
     async def _refresh_registry(self) -> None:

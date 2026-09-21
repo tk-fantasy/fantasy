@@ -65,7 +65,7 @@ async def ha_entities(container: AppContainer = Depends(get_container)) -> ApiRe
         # 不混入设备列表（可控性语义不同）；失败不阻断主列表
         try:
             status_entities = await container.ha_service.get_status_entities()
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.warning("HA status entities failed", exc_info=True)
             status_entities = []
         return ApiResponse(data={
@@ -667,7 +667,7 @@ async def delete_ha_automation(
         try:
             container.rule_registry_service.delete_rule(str(linked.get("id", "")))
             result["delegated_rule_deleted"] = str(linked.get("name", "") or linked.get("id", ""))
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.warning("委托规则连带删除失败: %s", linked.get("id"), exc_info=True)
     return ApiResponse(data=result)
 

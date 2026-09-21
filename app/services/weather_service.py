@@ -104,7 +104,7 @@ async def _get_ha_weather() -> dict[str, Any] | None:
             "indices": [],  # met.no 无生活指数（和风特有）
             "source": "ha",
         }
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.warning("HA weather fallback failed", exc_info=True)
         return None
 
@@ -252,7 +252,7 @@ async def get_weather(location: str | None = None) -> dict[str, Any]:
     if _qweather_configured():
         try:
             result = await _fetch_qweather(location)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.exception("Failed to fetch weather from QWeather")
             result = {"error": f"获取天气失败: {e}", "location": location}
         if not result.get("error"):

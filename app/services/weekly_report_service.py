@@ -216,7 +216,7 @@ class WeeklyReportService:
             return ""
         try:
             snapshot = await ha.get_states_snapshot()
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.debug("weekly report: HA snapshot failed", exc_info=True)
             return ""
         configured = get_config("report.ha_stat_entities", {}) or {}
