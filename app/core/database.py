@@ -41,10 +41,12 @@ def _read_env_secret(name: str) -> str:
 
 
 class Database:
-    """SQLite 异步持久化层。
+    """SQLite 异步持久化层（WAL 模式）。
 
-    使用 WAL 模式提升并发性能，所有写操作通过 asyncio.create_task 异步执行，
-    内存缓存保持同步更新，数据库写入在后台完成。
+    写操作在 _write_lock 内同步 await，commit 返回即已写入 WAL：对进程崩溃
+    持久；synchronous=NORMAL 下整机掉电可能回滚最近事务（fsync 推迟到
+    checkpoint）。没有后台写路径与内存缓存，持久性边界以各写方法的 await
+    返回点为准。
     """
 
     _instance: Database | None = None
@@ -451,8 +453,13 @@ class Database:
     async def close_all(cls) -> int:
         """关闭登记在册的全部连接（含测试置空 _db 后失联的孤儿），返回关闭数。
 
-        aiosqlite 的连接队列是线程安全的，跨事件循环收尾没有问题；对已损坏/
-        已关闭的连接尽力而为即可（测试进程退出路径，吞异常换确定性）。
+        存活连接跨事件循环 close 没有问题（aiosqlite 的 future 在调用方当前
+        循环上创建）。真正会挂死的是 worker 线程已死的连接：其循环带着在途
+        操作关闭时，worker 对已关闭循环二次 call_soon_threadsafe 抛错穿出、
+        线程终止，此后 close() 的请求无人消费、永久挂起且不可取消（close 的
+        finally 还会 await stop() 的死 future）。进程退出/测试收尾请改用
+        dispose_all()（零 await，死活通吃）；对已损坏/已关闭的连接尽力而为
+        （吞异常换确定性）。
         """
         orphan_count = len(cls._open_conns) - (1 if cls._db is not None else 0)
         if orphan_count > 0:
@@ -464,6 +471,26 @@ class Database:
                 await conn.close()
             except Exception:  # noqa: BLE001
                 pass
+        return len(conns)
+
+    @classmethod
+    def dispose_all(cls) -> int:
+        """同步回收登记的全部连接（零 await、永不挂起），返回处理的连接数。
+
+        测试收尾 / 进程退出路径专用。对每条连接只投递 aiosqlite 的 stop()
+        哨兵：存活 worker 自行关闭 sqlite 句柄并退出线程（队列空时毫秒级，
+        解释器退出时 threading._shutdown 接手等待）；worker 已死的连接没
+        有线程可等，句柄留给进程退出时 OS 回收。
+        """
+        conns, cls._open_conns = cls._open_conns, []
+        cls._db = None
+        cls._instance = None
+        cls._write_lock = None
+        for conn in conns:
+            try:
+                conn.stop()
+            except Exception:
+                logger.debug("dispose_all: conn.stop() failed", exc_info=True)
         return len(conns)
 
     def __init__(self) -> None:

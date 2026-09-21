@@ -28,20 +28,20 @@ _startup_progress_mod.startup_progress.set = lambda *a, **kw: None
 
 @pytest.fixture(scope="session", autouse=True)
 def _close_database_at_session_end():
-    """pytest 退出前关闭全局 SQLite 连接。
+    """pytest 退出前同步回收全部 aiosqlite 连接（零 await，永不挂起）。
 
-    aiosqlite 0.22.1 的连接 worker 线程是非 daemon 线程：只要有一个连接
-    没被 close，解释器退出时会在 threading._shutdown 永久挂起（测试全过
-    但进程不退出，CI 会超时）。若干测试文件换临时库时把 Database._db 直
-    接置 None，旧连接就此失联——close_all 会把这些孤儿一并回收。
+    aiosqlite worker 是非 daemon 线程：漏关的连接会让解释器卡死在
+    threading._shutdown（测试全绿但进程不退出）。但 close()/close_all()
+    也不能用：测试里某条连接的循环带着在途操作关闭时，aiosqlite worker
+    对已关闭循环二次 call_soon_threadsafe 抛错穿出、线程死亡，此后对它
+    的 close() 永久挂起且不可取消（CI 曾在此卡满 20 分钟被强杀）。
+    dispose_all() 只投 stop() 哨兵：活 worker 自行收尾退出，死 worker
+    无需等待，两头都顾。
     """
     yield
-    import asyncio
-
     from app.core.database import Database
 
-    if Database._open_conns:
-        asyncio.run(Database.close_all())
+    Database.dispose_all()
 
 
 @pytest.fixture(autouse=True)
