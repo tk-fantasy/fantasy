@@ -20,6 +20,22 @@ MAX_RETRIES = 2
 # 自动匹配修复时排除的不可控 domain：传感器/诊断实体读得了但控不了，
 # 匹配到它们生成的动作永远执行不出效果（与 device_registry.DIAGNOSTIC_DOMAINS 同口径）
 _UNCONTROLLABLE_DOMAINS = frozenset({"sensor", "binary_sensor"})
+# 无参功率动作：对所属 domain 的任何设备恒适用，不参与「service 字段 vs 可控参数」交集检查。
+_POWER_ACTIONS = frozenset({"turn_on", "turn_off", "toggle"})
+
+
+def _params_related(field: str, param: str) -> bool:
+    """service 字段名与设备可控参数名是否指同一能力。
+
+    完全相等，或一方是另一方的前缀且短方 ≥3 字：entity_controls 会把 HA 的
+    brightness 字段规范成 brightness_pct 参数（volume/volume_level 同理），完全
+    相等判定会把合法的参数动作误杀。前缀锚定开头，避免「on」混配「transition」
+    这类子串假阳性。
+    """
+    if field == param:
+        return True
+    shorter = field if len(field) <= len(param) else param
+    return len(shorter) >= 3 and (field.startswith(param) or param.startswith(field))
 
 # 开/关意图在不同 domain 下的标准 service（不在 services_info 时回退 turn_on/turn_off）
 _INTENT_SERVICE_BY_DOMAIN = {
@@ -191,13 +207,18 @@ class RuleService:
                                 if data[field] not in valid_values:
                                     errors.append(f"动作{i+1}: data.{field} 的值 '{data[field]}' 不在可选值 {valid_values} 中")
                 
-                # 检查 service 是否与该设备的可控 param 有关联（只在 service 有 fields 时检查）
-                if service_fields:
+                # 检查 service 是否与该设备的可控 param 有关联（只在 service 有 fields 时检查）。
+                # 开/关类动作豁免：turn_on/turn_off/toggle 是无参功率动作，HA 给它们声明的
+                # transition 等可选字段与设备可控参数（brightness_pct 等）本就无交集，按交集
+                # 判定会把「关闭床头灯」这种完全正确的动作误杀（2026-09-20 a63da178：
+                # turn_off vs {brightness_pct} 三轮重试全被误拒 → 误报「设备不存在」）。
+                if service_fields and service not in _POWER_ACTIONS:
                     device = next((d for d in devices if d['entity_id'] == entity_id), None)
                     if device:
                         controls = device.get("_controls", {})
                         ctrl_params = {c.get("param") for c in controls.values() if c.get("param")}
-                        if ctrl_params and not any(f in ctrl_params for f in service_fields):
+                        if ctrl_params and not any(_params_related(f, cp)
+                                                   for f in service_fields for cp in ctrl_params):
                             errors.append(
                                 f"动作{i+1}: service '{service}' 与设备 '{entity_id}' 不匹配，"
                                 f"可控参数: {ctrl_params}，该 service 字段: {service_fields}"

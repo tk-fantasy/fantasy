@@ -777,14 +777,20 @@ class TestValidateActions:
         assert any("fancy" in e for e in errors)
 
     def test_service_device_mismatch(self):
-        """service 需要的参数与设备可控参数无交集 → 报不匹配。"""
+        """参数型 service 需要的参数与设备可控参数无交集 → 报不匹配。
+
+        turn_on/turn_off/toggle 这类无参功率动作豁免该检查：HA 给它们声明的
+        transition/effect 等可选字段与设备可控参数本就无交集，按交集判定会把
+        「关闭床头灯」这种正确动作误杀（rule_service._POWER_ACTIONS，回归
+        2026-09-20 a63da178）。
+        """
         action = {"mcp_tool_name": "ha_devices___call_service",
-                  "mcp_tool_input": {"domain": "light", "service": "turn_on",
+                  "mcp_tool_input": {"domain": "light", "service": "set_effect",
                                      "entity_id": "light.l1", "data": {}}}
         devices = [{"entity_id": "light.l1", "attributes": {},
                     "_controls": {"brightness": {"param": "brightness"}}}]
         errors = self._svc()._validate_actions([action], devices,
-                                               {"light": {"turn_on": ["effect"]}})
+                                               {"light": {"set_effect": ["effect"]}})
         joined = "\n".join(errors)
         assert "不匹配" in joined
         assert "brightness" in joined

@@ -498,3 +498,49 @@ def test_create_notes_auto_correction_for_review():
     assert "cover.front_door" in result["note"]
     # auto_corrections 随 rule 进入草稿，弹窗据此渲染核对横幅
     assert session.pending_confirmations[result["pending_id"]]["rule"]["auto_corrections"]
+
+
+def test_create_error_candidates_dedupe_same_name():
+    """一物多实体同名 → 候选名单里同名只出现一次，不念两遍「卧室床头灯」。"""
+
+    class _UnfixableSvc(StubRuleService):
+        async def build_rule(self, text, user_id="", camera_id=""):
+            return {**RULE, "validation_errors": [
+                "动作1: entity_id 'light.made_up' 不存在"]}
+
+    registry = StubRegistry()
+    tools, session = _make_deps_and_tools(
+        rule_service=_UnfixableSvc(), registry=registry,
+        all_devices=[{"entity_id": "light.bedside", "name": "卧室床头灯"},
+                     {"entity_id": "switch.bedside_plug", "name": "卧室床头灯"},
+                     {"entity_id": "switch.da_men", "name": "大门开关"}])
+
+    result = _create(tools, session, text="有人就开大门")
+
+    assert "error" in result
+    assert result["candidates"].count("卧室床头灯") == 1
+    assert "大门开关" in result["candidates"]
+
+
+def test_create_error_passes_through_real_validation_error():
+    """校验错误透传：实体存在但 service 不合法时，报错必须是真实原因而非「设备不存在」。
+
+    回归点（2026-09-20 a63da178）：turn_off 被交集检查误杀后，笼统的
+    「设备不存在」文案把模型带去念候选清单，用户被迫在明明存在的设备里二选一。
+    """
+
+    class _SvcErr(StubRuleService):
+        async def build_rule(self, text, user_id="", camera_id=""):
+            return {**RULE, "validation_errors": [
+                "动作1: service 'turn_off' 与设备 'light.chuang_tou_deng' 不匹配"]}
+
+    registry = StubRegistry()
+    tools, session = _make_deps_and_tools(
+        rule_service=_SvcErr(), registry=registry,
+        all_devices=[{"entity_id": "light.chuang_tou_deng", "name": "床头灯"}])
+
+    result = _create(tools, session, text="创建规则：每天晚上12点以后关闭床头灯")
+
+    assert "校验未通过" in result["error"]
+    assert "turn_off" in result["error"]  # 真实原因可见
+    assert "床头灯" in result["candidates"]

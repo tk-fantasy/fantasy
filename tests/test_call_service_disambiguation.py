@@ -425,3 +425,67 @@ class TestDraftLifecycle:
         assert first["pending_id"] in session.pending_confirmations
         assert second["pending_id"] in session.pending_confirmations
         assert "entity_id" not in captured
+
+
+# ---------------------------------------------------------------------------
+# 一物多实体同名 → 坍缩成一个目标（MIoT 灯 light+switch 都继承设备名）
+# ---------------------------------------------------------------------------
+
+# 一个物理灯、两个同名可控实体（friendly_name 全部继承设备名，无子功能后缀）
+BEDSIDE_LAMP = [("卧室床头灯", [
+    ("卧室床头灯", "light.bedside", "卧室", "off"),
+    ("卧室床头灯", "switch.bedside_plug", "卧室", "off"),
+])]
+
+# 两个不同物理设备的实体恰好同名——必须仍转用户选择，且候选展示名带区域消歧
+TWIN_SAME_NAME = [
+    ("主卧床头灯设备", [("卧室床头灯", "light.bedside_m", "主卧", "off")]),
+    ("客卧床头灯设备", [("卧室床头灯", "light.bedside_g", "客卧", "off")]),
+]
+
+
+class TestSameDeviceDuplicateGroup:
+    """回归点：用户说「关床头灯」，子串把同设备的两条同名实体都拉进候选 →
+    旧逻辑判 ambiguous → 弹框给两个一模一样的「卧室床头灯」选项。坍缩后按
+    exact 整组口径处理，直接执行，不再让用户在相同选项里挑。"""
+
+    @pytest.mark.asyncio
+    async def test_duplicate_named_group_executes_without_asking(self, captured):
+        from app.core.database import Database
+        await Database.init()
+        tool = _build_tool(BEDSIDE_LAMP)
+
+        result = await _run(tool, _session("关闭床头灯"), captured,
+                            domain="light", service="turn_off",
+                            entity_id="light.bedside", data={})
+
+        assert result["success"] is True
+        assert captured["entity_id"] == "light.bedside"
+
+    @pytest.mark.asyncio
+    async def test_switch_target_in_group_executes_switch(self, captured):
+        from app.core.database import Database
+        await Database.init()
+        tool = _build_tool(BEDSIDE_LAMP)
+
+        result = await _run(tool, _session("关闭床头灯"), captured,
+                            domain="switch", service="turn_off",
+                            entity_id="switch.bedside_plug", data={})
+
+        assert result["success"] is True
+        assert captured["entity_id"] == "switch.bedside_plug"
+
+    @pytest.mark.asyncio
+    async def test_same_name_different_devices_still_asks_with_disambiguation(self, captured):
+        """不同物理设备同名不坍缩，但弹框选项必须可区分（展示名附区域）。"""
+        from app.core.database import Database
+        await Database.init()
+        tool = _build_tool(TWIN_SAME_NAME)
+
+        result = await _run(tool, _session("关床头灯"), captured,
+                            domain="light", service="turn_off",
+                            entity_id="light.bedside_m", data={})
+
+        assert result["status"] == "need_selection"
+        labels = [c["label"] for c in result["candidates"]]
+        assert labels == ["卧室床头灯（主卧）", "卧室床头灯（客卧）"]

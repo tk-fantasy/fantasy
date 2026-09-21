@@ -278,6 +278,76 @@ class TestRuleServiceNotes:
 # 幻觉设备的确定性自动匹配：重试耗尽后代码层强制替换为最接近的真实设备
 # ---------------------------------------------------------------------------
 
+class TestValidateActionsServiceRelation:
+    """「service 字段 vs 设备可控参数」交集检查的边界。
+
+    回归点（2026-09-20 a63da178）：turn_off 在 HA 里声明 transition 等可选字段，
+    与灯的可控参数 brightness_pct 无交集 → 「关闭床头灯」这种完全正确的动作被
+    误杀，三轮重试全拒后误报「设备不存在」。开/关类动作必须豁免该检查。
+    """
+
+    SERVICES = {"light": {"turn_off": ["transition", "additional_fields"],
+                          "set_color": ["color"]}}
+
+    @staticmethod
+    def _lamp() -> list[dict]:
+        return [{"entity_id": "light.chuang_tou_deng", "name": "床头灯", "domain": "light",
+                 "attributes": {},
+                 "_controls": {"brightness": {"param": "brightness_pct"}}}]
+
+    @staticmethod
+    def _action(service: str) -> dict:
+        return {"mcp_tool_name": "ha_devices___call_service",
+                "mcp_tool_input": {"domain": "light", "service": service,
+                                   "entity_id": "light.chuang_tou_deng", "data": {}}}
+
+    def test_power_action_with_optional_fields_not_flagged(self):
+        """turn_off 声明了 transition 等可选字段但与可控参数无交集 → 不算错。"""
+        svc = RuleService(client=MagicMock())
+        errors = svc._validate_actions([self._action("turn_off")], self._lamp(), self.SERVICES)
+        assert errors == []
+
+    def test_param_service_without_relation_still_flagged(self):
+        """真正的参数型 service（set_color）与可控参数无交集 → 仍要拦。"""
+        svc = RuleService(client=MagicMock())
+        errors = svc._validate_actions([self._action("set_color")], self._lamp(), self.SERVICES)
+        assert any("不匹配" in e for e in errors)
+
+    def test_renamed_param_still_counts_as_related(self):
+        """字段名与可控参数只有粗细差异 → 前缀匹配视为相关，不误杀。
+
+        entity_controls 把 HA 的 brightness 字段规范成 brightness_pct 参数，
+        volume/volume_level 同理——完全相等判定会误杀合法参数动作。
+        """
+        svc = RuleService(client=MagicMock())
+        errors = svc._validate_actions(
+            [self._action("set_brightness")], self._lamp(),
+            {"light": {"set_brightness": ["brightness"]}})
+        assert errors == []
+
+        speaker = [{"entity_id": "media_player.speaker", "name": "音箱",
+                    "domain": "media_player", "attributes": {},
+                    "_controls": {"vol": {"param": "volume"}}}]
+        action = {"mcp_tool_name": "ha_devices___call_service",
+                  "mcp_tool_input": {"domain": "media_player", "service": "volume_set",
+                                     "entity_id": "media_player.speaker", "data": {}}}
+        errors = svc._validate_actions([action], speaker,
+                                       {"media_player": {"volume_set": ["volume_level"]}})
+        assert errors == []
+
+    def test_short_param_no_substring_false_positive(self):
+        """前缀放宽不引入子串假阳性：可控参数「on」与字段「transition」仍视为无关。"""
+        svc = RuleService(client=MagicMock())
+        dev = [{"entity_id": "switch.s1", "name": "开关", "domain": "switch",
+                "attributes": {}, "_controls": {"on": {"param": "on"}}}]
+        action = {"mcp_tool_name": "ha_devices___call_service",
+                  "mcp_tool_input": {"domain": "switch", "service": "set_thing",
+                                     "entity_id": "switch.s1", "data": {}}}
+        errors = svc._validate_actions([action], dev,
+                                       {"switch": {"set_thing": ["transition"]}})
+        assert any("不匹配" in e for e in errors)
+
+
 class TestAutoRepairActions:
     """_auto_repair_actions：用户说的设备不存在时强制匹配近似真实设备，弹窗里二次核对。"""
 
@@ -340,6 +410,27 @@ class TestAutoRepairActions:
         ti = parsed["actions"][0]["mcp_tool_input"]
         assert ti["entity_id"] == "cover.yang_tai"
         assert ti["service"] == "open_cover"
+
+    def test_repairs_with_time_prefixed_sentence(self):
+        """回归：描述是带时间前缀的整句也能修到真设备。
+
+        「每天晚上12点以后关闭床头灯」旧逻辑归一化剥不掉时间词 → 零候选 →
+        误挂 validation_errors 报「设备不存在」，而「床头灯」本可子串命中「卧室床头灯」。
+        """
+        svc = self._svc()
+        devices = self.DEVICES + [
+            {"entity_id": "light.bedside", "name": "卧室床头灯", "domain": "light"}]
+        parsed = self._hallucinated("每天晚上12点以后关闭床头灯")
+        parsed["actions"][0]["mcp_tool_input"]["service"] = "close_cover"
+
+        corrections = svc._auto_repair_actions(parsed, devices, self.SERVICES)
+
+        assert len(corrections) == 1
+        assert corrections[0]["to"] == "light.bedside"
+        assert corrections[0]["to_name"] == "卧室床头灯"
+        ti = parsed["actions"][0]["mcp_tool_input"]
+        assert ti["entity_id"] == "light.bedside"
+        assert ti["service"] == "turn_off"  # close 意图 → light 的 turn_off
 
     def test_zero_match_leaves_action_untouched(self):
         """完全无近似设备（只有不可控 sensor 命中）→ 不硬塞，留给调用方拦截。"""

@@ -431,3 +431,70 @@ class TestClassifyTargetCompoundSentence:
         """「打开开关」被误判成复合句 → 退回放行（旧行为），不会误弹框或误拒。"""
         entries = [_entry("switch.wall", "客厅开关", area="客厅")]
         assert classify_target("打开开关", entries).tier == TIER_NONE
+
+
+# ---------------------------------------------------------------------------
+# 时间短语剥离（规则自动修复回归） + 同设备同名实体坍缩
+# ---------------------------------------------------------------------------
+
+class TestTimePhraseStripping:
+    """定时/规则描述自带时间前缀（「每天晚上12点以后关闭床头灯」），剥掉才能命中。
+
+    回归点：规则自动修复拿整句当设备词，归一化剥不掉时间词 → 零候选 →
+    误挂 validation_errors 报「设备不存在」，而「床头灯」本可子串命中「卧室床头灯」。
+    """
+
+    @pytest.mark.parametrize("query,expected_names", [
+        ("每天晚上12点以后关闭床头灯", ["床头灯"]),
+        ("晚上10点关灯",        ["床头灯", "客厅吊灯", "客厅灯带", "台灯"]),
+        ("早上7点打开客厅吊灯",  ["客厅吊灯"]),
+        ("明天下午3点关空调",    ["中央空调"]),
+        ("晚上12点半关闭台灯",   ["台灯"]),
+        ("每天晚上8点开一下卧室加湿器", ["卧室加湿器"]),
+    ])
+    def test_time_prefixed_sentence_matches(self, query, expected_names):
+        matched = match_devices(query, DEVICES)
+        assert [d["name"] for d in matched] == expected_names
+
+
+class TestSameDeviceDuplicateCollapse:
+    """一物多实体且全部继承设备名（无子功能后缀）→ 坍缩成一个目标按 exact 整组执行。
+
+    回归点：MIoT 灯 light+switch 实体的 friendly_name 一模一样，用户说「床头灯」
+    子串命中两条 → 旧逻辑判 ambiguous → 弹框给两个一模一样的「卧室床头灯」选项。
+    """
+
+    @staticmethod
+    def _bedside_entries():
+        return [
+            _entry("light.bedside",       "卧室床头灯", device_name="卧室床头灯", area="卧室"),
+            _entry("switch.bedside_plug", "卧室床头灯", device_name="卧室床头灯", area="卧室"),
+        ]
+
+    def test_partial_name_collapses_to_exact(self):
+        result = classify_target("床头灯", self._bedside_entries())
+        assert result.tier == TIER_EXACT
+        assert _eids(result) == ["light.bedside", "switch.bedside_plug"]
+
+    def test_exact_name_of_duplicate_group_still_exact(self):
+        assert classify_target("卧室床头灯", self._bedside_entries()).tier == TIER_EXACT
+
+    def test_distinct_sub_labels_same_device_stay_ambiguous(self):
+        """左键/右键这类可区分子实体不坍缩——那是要用户挑的功能键。
+
+        query 不能带「开/关」字样（「开关」会按复合句判据放行，见
+        test_noun_kaiguan_falls_back_to_pass_through），用品类词「灯」命中两条。
+        """
+        entries = [
+            _entry("switch.wall_left",  "卧室灯 左键", device_name="卧室灯"),
+            _entry("switch.wall_right", "卧室灯 右键", device_name="卧室灯"),
+        ]
+        assert classify_target("灯", entries).tier == TIER_AMBIGUOUS
+
+    def test_same_name_different_devices_not_collapsed(self):
+        """两个不同物理设备同名不坍缩：把两盏都执行是错的，仍转用户选择。"""
+        entries = [
+            _entry("light.bedside_m", "卧室床头灯", device_name="主卧灯", area="主卧"),
+            _entry("light.bedside_g", "卧室床头灯", device_name="客卧灯", area="客卧"),
+        ]
+        assert classify_target("床头灯", entries).tier == TIER_AMBIGUOUS

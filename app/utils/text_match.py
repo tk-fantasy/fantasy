@@ -50,7 +50,20 @@ _ENUM_WORDS = ("低", "中", "高", "自动", "强", "弱", "最大", "最小",
 # 都被剥后,孤立的「到」会残留干扰匹配,故单独剥。设备名几乎不含「到/至」。
 _LINK_WORDS = ("到", "至")
 # 「到70」「到70度」「到70%」「至26」「26度」这类数值短语。单独的纯数字也剥。
-_NUM_VALUE_RE = re.compile(r"(到|至)?\s*\d+(?:\.\d+)?\s*(度|%|百分号)?")
+# 单位组含时间单位（12点/12点半/30分/2小时）：规则描述常带「晚上12点」这种
+# 时间前缀，点/分不跟数字一起吞会在归一化结果里留下「点」残渣。
+_NUM_VALUE_RE = re.compile(
+    r"(到|至)?\s*\d+(?:\.\d+)?\s*(度|%|百分号|个小时|小时|分钟|点半|点|分|秒)?")
+
+# 时间/条件词：规则描述与定时指令自带的时间前缀（「每天晚上12点以后关闭床头灯」）
+# 与设备名无子串关系，不剥则整句当设备词时必然零匹配。
+# 只收 ≥2 字的明确时间词，全局替换安全；单字「点/分/秒/天」不进词表（误伤面大），
+# 由 _NUM_VALUE_RE 的单位组跟数字一起吞。
+_TIME_WORDS = ("每天", "每日", "每晚", "今晚", "明晚", "今早", "明早",
+               "今天", "明天", "昨天", "后天", "前天",
+               "早上", "早晨", "上午", "中午", "下午", "傍晚", "凌晨",
+               "晚上", "晚间", "夜里", "夜晚", "半夜", "午夜", "白天",
+               "以后", "之前", "之后", "过后", "的时候")
 
 
 def _normalize_query(query: str) -> str:
@@ -65,6 +78,8 @@ def _normalize_query(query: str) -> str:
       「帮我开下灯」→ 去首「帮我」→「开下灯」→ 去首「开下」→「灯」
       「调亮度到70 灯」→ 去属性「亮度」→「调到70 灯」→ 去首动词「调」→「到70 灯」
                      → 去数值「到70」→「 灯」→ strip →「灯」
+      「每天晚上12点以后关闭床头灯」→ 去时间词「每天/晚上/以后」→「12点关闭床头灯」
+                     → 去数值「12点」→「关闭床头灯」→ 去首动词「关闭」→「床头灯」
 
     `len(q) > 1` 的循环条件是刻意的：单字 query 再剥就成空串，而空串与任何
     target 都构成子串关系（`"" in x` 恒真），会把全部设备拉进候选。
@@ -92,6 +107,9 @@ def _normalize_query(query: str) -> str:
             if q.endswith(w) and len(q) > len(w):
                 q = q[:-len(w)]
                 break
+        # 时间词先于属性/枚举词剥：「中午」含枚举词「中」，反过来剥会剩孤立的「午」。
+        for w in _TIME_WORDS:
+            q = q.replace(w, "")
         # 属性词和数值可在任意位置出现(常夹在动词和设备名之间),全局替换。
         for w in _PARAM_WORDS:
             q = q.replace(w, "")
@@ -365,6 +383,26 @@ def _finalize(candidates: list[dict[str, Any]], query: str) -> list[dict[str, An
     return _rank_by_relevance(list(candidates), query)[:_MAX_CANDIDATES]
 
 
+def _is_single_same_device_group(entries: list[dict[str, Any]]) -> bool:
+    """多条目是否为**同一物理设备**的同名实体组（用户无从区分的一组）。
+
+    MIoT 等设备常一物多实体且全部继承设备名（「卧室床头灯」下 light+switch
+    实体的 friendly_name 一模一样），子串匹配会把它们全拉进候选 → tier 落
+    ambiguous → 弹框给用户两个一模一样的选项。device_id 相同且展示名相同
+    即视为一个目标，交闸门按整组执行。label 不同的子实体（「B灯 左键/右键」）
+    不在此列——那是真要用户挑的功能键；device_id 为空（flat 兜底数据）时
+    无法认定同设备，保持原判定不坍缩。
+    """
+    if len(entries) < 2:
+        return False
+    device_ids = {str(e.get("device_id", "") or "") for e in entries}
+    if len(device_ids) != 1 or not next(iter(device_ids)):
+        return False
+    labels = {str(e.get("label") or e.get("name") or e.get("entity_id", "") or "")
+              for e in entries}
+    return len(labels) == 1
+
+
 def classify_target(
     query: str,
     entries: list[dict[str, Any]],
@@ -386,6 +424,10 @@ def classify_target(
 
     前置豁免：**复合句**（「开灯关窗帘」「关灯然后拉窗帘」）直接判 `none`，
     整句交给 LLM 拆解——归一化按单设备词设计，硬判会误落 category_miss。
+
+    同设备同名实体组（MIoT 一物多实体全部继承设备名，如「卧室床头灯」下
+    light+switch 同名）在 unique/ambiguous 判定前坍缩为一个目标按 exact 处理：
+    候选一模一样时弹框让用户挑没有意义。
 
     Args:
         query: 用户原话（未剥离），如 "开灯" / "把所有灯关掉" / "月球的灯"
@@ -446,6 +488,13 @@ def classify_target(
         # 过滤后为空则保留原候选：宁可弹框让用户挑，也不能把候选清空变成放行
         if by_domain:
             candidates = by_domain
+
+    # 同设备同名实体组坍缩成一个目标：候选全是同一物理设备的同名实体时，用户
+    # 在弹框里无从区分，问「选哪个」没有意义——按 exact 交闸门整组执行（语义
+    # 与「一设备多子实体精确同名 → 全部执行」一致）。放 has_all_marker 之前，
+    # 与「exact 先于 all_marker」的既有顺序同构。
+    if _is_single_same_device_group(candidates):
+        return MatchResult(TIER_EXACT, _finalize(candidates, raw), normalized)
 
     if has_all_marker:
         return MatchResult(TIER_ALL_MARKER, _finalize(candidates, raw), normalized)

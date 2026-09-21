@@ -89,6 +89,17 @@ def _need_selection(session, query: str, res: Any, domain: str, service: str,
         for c in res.candidates
     ]
     labels = [c["label"] for c in candidates]
+    # 重名消歧：不同物理设备恰好同名时（都叫「卧室床头灯」），弹框两个一模一样
+    # 的选项用户没法挑——重名候选把区域名（无区域则 entity_id）追加到展示名。
+    # 选择回传按 entity_id（pending_selections._candidate_index），改展示名不影响回填。
+    dup_labels = {lbl for lbl in labels if labels.count(lbl) > 1}
+    if dup_labels:
+        for c in candidates:
+            if c["label"] in dup_labels:
+                suffix = str(c.get("area_name") or "") or str(c.get("entity_id") or "")
+                if suffix:
+                    c["label"] = f"{c['label']}（{suffix}）"
+        labels = [c["label"] for c in candidates]
     if res.tier == TIER_CATEGORY_MISS:
         # 必须如实说设备不存在：用户说的是「月球的灯」，不能假装找到了它
         notice = f"没有找到名为「{query}」的设备。"
@@ -1116,7 +1127,7 @@ async def _compile_ha_trigger(rule: dict, fallback_text: str, user_id: str) -> d
         compiled = await ha_svc.compile_trigger(
             str(rule.get("condition", "") or fallback_text),
             str(rule.get("type", "")), user_id=user_id)
-    except Exception:  # noqa: BLE001 — 容器未初始化/HA 不可达都按"不委托"处理
+    except Exception:  # 容器未初始化/HA 不可达都按"不委托"处理
         logger.warning("HA trigger delegation compile failed", exc_info=True)
         return None
     if compiled.get("error") or not compiled.get("trigger"):
@@ -1178,22 +1189,29 @@ def _register_automation_rule_tools(deps: ToolDeps) -> None:
                 "解析出的规则没有可执行动作",
                 hint="不要凭空创建；请用户说清要对哪台设备做什么，再重新创建。",
             )
-        # 零匹配拦截：自动修复也救不回来的动作（用户说的设备家里根本没有，
-        # 如没有门类设备时说"开大门"）不出草稿——硬塞不相干设备比确认不了更危险。
+        # 校验未通过拦截：自动修复也救不回来的动作不出草稿——硬塞不相干设备比
+        # 确认不了更危险。报错必须透传首条真实校验错误：可能根本不是设备不存在
+        # （实体对了但 service/data 不合法），谎报「设备不存在」会把模型带去念候选。
         # 附主控设备候选让模型如实告知用户重新选择。
-        if rule.pop("validation_errors", None):
+        validation_errors = rule.pop("validation_errors", None)
+        if validation_errors:
+            first_error = str(validation_errors[0] or "规则动作校验未通过")
             candidates: list[str] = []
             try:
                 devices = await deps.ha_service.get_all_devices()
-                candidates = [str(d.get("name") or d.get("entity_id", "")) for d in devices or []
-                              if str(d.get("entity_id", "")).split(".")[0]
-                              not in ("sensor", "binary_sensor")][:8]
+                # 同名去重：一物多实体的 friendly_name 相同（MIoT 灯的 light+switch
+                # 都叫「卧室床头灯」），候选清单出现两个一模一样的名字只会让用户
+                # 以为家里有两盏。dict.fromkeys 保序去重后再截断。
+                names = [str(d.get("name") or d.get("entity_id", "")) for d in devices or []
+                         if str(d.get("entity_id", "")).split(".")[0]
+                         not in ("sensor", "binary_sensor")]
+                candidates = list(dict.fromkeys(names))[:8]
             except Exception:  # noqa: BLE001 — 候选拉不到就只报错，不阻塞拒绝路径
                 candidates = []
             return tool_error(
-                "规则动作引用的设备不存在，且找不到可自动替换的近似设备",
-                hint="不要凭空创建，也不要强行替换不相干的设备；把候选设备念给用户，"
-                     "请其明确要对哪台设备做什么后重建。",
+                f"规则动作校验未通过：{first_error}",
+                hint="如实把这条校验错误转告用户，并请其确认要操作的设备后重建；"
+                     "不要凭空创建，也不要强行替换不相干的设备。",
                 candidates=candidates,
             )
         pending_id = uuid4().hex[:12]
@@ -1401,7 +1419,7 @@ def _register_automation_rule_tools(deps: ToolDeps) -> None:
             if ha_svc is not None:
                 try:
                     await ha_svc.delete(str(removed["ha_automation_id"]))
-                except Exception:  # noqa: BLE001
+                except Exception:
                     logger.warning("委托的 HA 自动化连带删除失败: %s",
                                    removed["ha_automation_id"], exc_info=True)
         return {"success": True, "rule_id": rule_id}

@@ -306,7 +306,7 @@ async def _attach_ha_trigger(
             ha_trigger.get("trigger") or [], ha_trigger.get("condition") or [],
             description=str(saved.get("summary", "") or ""),
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("write_delegated 异常，规则降级本地评估: %s", exc, exc_info=True)
         written = {"error": str(exc)}
     if written.get("error"):
@@ -321,7 +321,7 @@ async def _attach_ha_trigger(
             if instant.get("fired"):
                 return {"note": ("（规则触发已委托 Home Assistant 原生自动化；创建时条件已成立，"
                                  "已立即执行一轮动作）"), "delegated": True}
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.debug("instant hit check failed", exc_info=True)
     return {"note": "（规则触发已委托 Home Assistant 原生自动化：HA 精确触发，动作仍在 Aether 执行）",
             "delegated": True}
