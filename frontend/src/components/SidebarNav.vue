@@ -260,8 +260,8 @@ watch(user, () => {
   bottom: 0;
   width: var(--sidebar-width);
   background: var(--sidebar-bg);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
+  /* 不加 backdrop-filter：主内容区的极光层从 sidebar 右侧才开始(margin-left)，
+     背后只有静态底色，blur 模糊纯色毫无视觉差异，纯耗每帧合成预算。 */
   border-right: 1px solid var(--color-border);
   display: flex;
   flex-direction: column;

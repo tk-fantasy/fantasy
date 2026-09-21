@@ -17,6 +17,7 @@
  */
 import { ref, computed, watch, nextTick } from 'vue'
 import { apiPost, apiPut } from '../utils/api'
+import { formatActions, formatCondition } from '../utils/ruleDisplay'
 
 const props = defineProps({
   kind: { type: String, required: true, validator: (v) => v === 'rule' || v === 'task' },
@@ -134,7 +135,7 @@ const summaryParts = computed(() => {
     const r = pendingJson.value
     return [
       { label: '如果', value: formatCondition(r.condition) },
-      { label: '则', value: formatActionsShort(r.actions, r.action_descriptions) },
+      { label: '则', value: formatActions(r.actions, r.action_descriptions).join('，') || '—' },
     ]
   }
   const t = pendingJson.value
@@ -307,45 +308,7 @@ function onKeydown(e) {
   }
 }
 
-// ===== 摘要格式化（从 TaskView / ScheduledTasksView 复刻，保持自包含）=====
-
-function formatCondition(condition) {
-  if (!condition) return '—'
-  if (typeof condition === 'string') return condition
-  if (condition.description) return condition.description
-  if (condition.type) return condition.type
-  return JSON.stringify(condition)
-}
-
-// 优先用 LLM 生成的中文描述(action_descriptions,如"关闭大门"),
-// 缺了才从 actions 的 entity_id 解析。entity_id 常是机器拼音/ID 乱码。
-function formatActionsShort(actions, descriptions) {
-  if (!actions || !actions.length) {
-    // 没有动作,但有描述也显示描述
-    if (Array.isArray(descriptions) && descriptions.length) return descriptions.join('，')
-    return '—'
-  }
-  const descs = Array.isArray(descriptions) ? descriptions : []
-  return actions.map((a, idx) => {
-    if (descs[idx]) return descs[idx]
-    return formatSingleAction(a)
-  }).join('，')
-}
-
-function formatSingleAction(action) {
-  if (!action) return ''
-  if (typeof action === 'string') return action
-  const ti = action.mcp_tool_input || action
-  const eid = ti.entity_id || ''
-  const name = (eid.split('.')[1] || eid).replace(/_/g, ' ')
-  const svc = ti.service || ''
-  const map = {
-    turn_on: '打开', turn_off: '关闭',
-    open_cover: '打开', close_cover: '关闭',
-    set_temperature: '设置温度', set_brightness: '设置亮度',
-  }
-  return `${name} ${map[svc] || svc}`
-}
+// ===== 摘要格式化（定时任务侧的 schedule/payload；规则摘要共用 utils/ruleDisplay）=====
 
 function formatSchedule(schedule) {
   if (!schedule) return '—'

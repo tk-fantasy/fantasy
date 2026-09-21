@@ -25,7 +25,12 @@ if (saved === 'light') {
       <WeatherWidget v-if="!hideWeather" />
       <router-view v-slot="{ Component }">
         <transition name="page" mode="out-in">
-          <component :is="Component" />
+          <!-- ChatView 保活：切页不断开聊天 WS，进行中的回复在后台继续流式接收，
+               回到 /chat 时对话现场原样恢复（后端断连并不中止本轮，但前端拿不到
+               剩余的流，表现为对话被打断——缓存组件实例才是根治）。 -->
+          <keep-alive include="ChatView">
+            <component :is="Component" />
+          </keep-alive>
         </transition>
       </router-view>
     </main>

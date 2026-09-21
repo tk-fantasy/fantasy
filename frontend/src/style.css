@@ -695,6 +695,19 @@ body {
   opacity: 0.4;
 }
 
+/* ============ 打字保护 ============
+   流光背景(background-position/@property 色板)逐帧重绘走主线程,会直接
+   拖慢中文输入法的按键响应。任一文本输入聚焦期间,把全页动画冻结在当前帧
+   (纯 CSS :has 实现,无需 JS;失焦自动恢复)。动画配方本身保持原样,只在
+   打字时让出主线程。 */
+body:has(input:focus, textarea:focus) .main-content::before,
+body:has(input:focus, textarea:focus) .main-content::after,
+body:has(input:focus, textarea:focus) .modal-content::before,
+body:has(input:focus, textarea:focus) .aurora-layer,
+body:has(input:focus, textarea:focus) .aurora-before::before {
+  animation-play-state: paused;
+}
+
 /* Modal 极光容器混入: 半透明玻璃背景 + 内嵌流动极光层 + 子元素自动置顶。
    给任意 modal 容器(.modal-content/.cam-modal 等)加 .aurora-modal 即可获得极光。
    依赖 .aurora-layer(需在容器内插入 <div class="aurora-layer"></div>)。 */

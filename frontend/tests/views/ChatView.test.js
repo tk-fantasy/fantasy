@@ -34,7 +34,8 @@ global.fetch = vi.fn(() =>
 
 // Mock vue-router
 vi.mock('vue-router', () => ({
-  useRouter: () => ({ push: vi.fn() })
+  useRouter: () => ({ push: vi.fn() }),
+  useRoute: () => ({ query: {} })
 }))
 
 // Mock useAuth

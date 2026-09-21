@@ -7,6 +7,7 @@ import CameraBindModal from '../components/CameraBindModal.vue'
 import FlowSelect from '../components/FlowSelect.vue'
 import { apiGet, apiPost } from '../utils/api'
 import { getRuleMismatch } from '../utils/ruleMismatch'
+import { formatActions, formatCondition } from '../utils/ruleDisplay'
 import { useCamera } from '../composables/useCamera'
 import { useEmojiPref } from '../composables/useEmojiPref'
 
@@ -148,99 +149,6 @@ function onBindConfirm(cameraId) {
 function onBindCancel() {
   // 只丢掉这次解析结果，输入框内容留着让用户改措辞重来
   pendingPreview.value = null
-}
-
-function formatCondition(condition) {
-  if (typeof condition === 'string') return condition
-  if (condition?.description) return condition.description
-  if (condition?.type) return condition.type
-  if (condition?.visual) return `视觉: ${condition.visual}`
-  if (condition?.time) return `时间: ${condition.time}`
-  if (condition?.weather) return `天气: ${condition.weather}`
-  return JSON.stringify(condition)
-}
-
-// 优先用 LLM 生成的中文描述(action_descriptions,如"关闭大门"),
-// 缺了才从 actions 的 entity_id 解析。entity_id 常是机器拼音/ID 乱码,
-// 无法还原"大门"这类可读名字,故描述字段优先。
-function formatActions(actions, descriptions) {
-  const descs = Array.isArray(descriptions) ? descriptions : []
-  if (descs.length && !actions) return descs.slice()
-  if (!actions) return []
-  if (typeof actions === 'string') {
-    if (descs[0]) return [descs[0]]
-    // Try to parse JSON string
-    try {
-      const parsed = JSON.parse(actions)
-      return [formatSingleAction(parsed)]
-    } catch {
-      return [actions]
-    }
-  }
-  if (Array.isArray(actions)) {
-    return actions.map((a, idx) => {
-      if (descs[idx]) return descs[idx]
-      if (typeof a === 'string') {
-        // Try to parse JSON string
-        try {
-          const parsed = JSON.parse(a)
-          return formatSingleAction(parsed)
-        } catch {
-          return a
-        }
-      }
-      return formatSingleAction(a)
-    })
-  }
-  // Single object
-  if (descs[0]) return [descs[0]]
-  return [formatSingleAction(actions)]
-}
-
-function formatSingleAction(action) {
-  if (!action) return ''
-  if (typeof action === 'string') return action
-  if (action?.description) return action.description
-  
-  // Handle MCP tool format: {"mcp_tool_name":"ha_devices___call_service","mcp_tool_input":{...}}
-  if (action?.mcp_tool_name) {
-    const toolInput = action.mcp_tool_input || {}
-    const entity_id = toolInput.entity_id || ''
-    const service = toolInput.service || ''
-    
-    // Extract device name from entity_id (e.g., "light.chuang_tou_deng" -> "床头灯")
-    const deviceName = entity_id.split('.')[1] || entity_id
-    const readableName = deviceName.replace(/_/g, ' ')
-    
-    // Map service to readable action
-    const serviceMap = {
-      'turn_on': '打开',
-      'turn_off': '关闭',
-      'open_cover': '打开',
-      'close_cover': '关闭',
-      'set_temperature': '设置温度',
-      'set_brightness': '设置亮度',
-    }
-    const readableAction = serviceMap[service] || service
-    
-    return `${readableName} ${readableAction}`
-  }
-  
-  // Handle direct format: {domain, service, entity_id}
-  if (action?.service && action?.entity_id) {
-    const deviceName = action.entity_id.split('.')[1] || action.entity_id
-    const readableName = deviceName.replace(/_/g, ' ')
-    const serviceMap = {
-      'turn_on': '打开',
-      'turn_off': '关闭',
-      'open_cover': '打开',
-      'close_cover': '关闭',
-    }
-    const readableAction = serviceMap[action.service] || action.service
-    return `${readableName} ${readableAction}`
-  }
-  
-  return JSON.stringify(action)
 }
 
 function getDefaultConditionIcon(condition) {

@@ -1,6 +1,6 @@
 <script setup>
-import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, computed, onMounted, onUnmounted, onActivated, onDeactivated, watch } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
 import { getChatSessionId, setChatSessionId, clearChatSession } from '../utils/storage'
 import { toolIcon, summarizeToolCall, summarizeToolResult, parseToolResult, shortToolName } from '../utils/toolNames'
 import { useVoiceInput } from '../composables/useVoiceInput'
@@ -16,6 +16,7 @@ import ReviseChatModal from '../components/ReviseChatModal.vue'
 import DeviceSelectModal from '../components/DeviceSelectModal.vue'
 
 const router = useRouter()
+const route = useRoute()
 
 // LLM 模型状态（composable 统一封装：模型名静态读 + 悬停懒加载连通性测试）
 const { chatModelName, llmStatus, llmStatusLoading, showLlmPopover, onStatusHover, loadChatModelName } = useLlmStatus()
@@ -74,6 +75,8 @@ const pendingToolCalls = ref([])
 let currentStreamingMsg = null
 let ws = null
 let reconnectTimer = null
+let wsUserId = null           // WS 建立时的登录用户（KeepAlive 下登出重登需对准身份）
+let suppressReconnect = false // 主动弃连（用户切换重连）时跳过 onclose 的自动重连
 
 // ============ 待确认规则弹窗 ============
 // automation_rule_create 只解析不落库，返回 pending_confirm 草稿。网页端在这里
@@ -140,6 +143,7 @@ function connectWS() {
   // WS 鉴权靠同源请求自动携带的 httpOnly cookie（aether_token），
   // JS 无法读取该 cookie，故不在 URL 拼 token。
   const wsUrl = `${protocol}//${window.location.host}/ws/chat`
+  wsUserId = currentUsername()
 
   ws = new WebSocket(wsUrl)
 
@@ -153,6 +157,12 @@ function connectWS() {
 
   ws.onclose = (event) => {
     wsConnected.value = false
+    // 主动弃连（KeepAlive 激活时发现用户已切换）：连接由 reconnectAsCurrentUser
+    // 立即按新身份重建，这里不再排 3s 重连，避免双连接
+    if (suppressReconnect) {
+      suppressReconnect = false
+      return
+    }
     // 1008 = Policy Violation (认证失败)。可能是 access token 过期。
     // 先尝试静默刷新 cookie（复用 /api/auth/refresh），成功则重连（用户无感）；
     // 失败说明 refresh 也过期 → 派发 session-expired 走登录流程，不盲目重连。
@@ -193,6 +203,16 @@ async function refreshAndReconnect() {
   }
   // refresh 失败：会话不可恢复，通知 useAuth 走登录流程
   window.dispatchEvent(new Event('aether:session-expired'))
+}
+
+// KeepAlive 下登出→重登不重挂组件：旧 WS 在服务端仍是旧用户身份（cookie 已换），
+// 继续复用会把回复推给错误用户。主动弃连并立即按当前用户重连。
+function reconnectAsCurrentUser() {
+  if (ws) {
+    suppressReconnect = true
+    ws.close()
+  }
+  connectWS()
 }
 
 function handleInstruction(inst) {
@@ -549,8 +569,13 @@ function finalizeStreaming() {
   currentStreamingMsg = null
 }
 
+// 流式输出时每个 token 都会调这里：rAF 合并成一帧最多滚一次，
+// 避免逐 token 强制 reflow 霸占主线程（长会话下打字/输入法跟着卡）。
+let scrollRaf = 0
 function scrollToBottom() {
-  nextTick(() => {
+  if (scrollRaf) return
+  scrollRaf = requestAnimationFrame(() => {
+    scrollRaf = 0
     const el = document.querySelector('.chat-messages')
     if (el) el.scrollTop = el.scrollHeight
   })
@@ -630,6 +655,10 @@ function onInput(e) {
 }
 
 function onKeydown(e) {
+  // 中文输入法组合期间（候选确认的 Enter/方向键，keyCode=229）不触发任何
+  // 按键行为：否则按 Enter 选字会被 preventDefault 打断组合，甚至拿旧文本
+  // 提前 sendMessage。
+  if (e.isComposing || e.keyCode === 229) return
   if (showSlashMenu.value) {
     if (e.key === 'ArrowDown') {
       e.preventDefault()
@@ -755,6 +784,20 @@ async function loadSessionHistory(sid) {
   }
 }
 
+// 新建会话并写入当前用户的 sessionStorage（挂载兜底 / KeepAlive 激活时旧会话失效共用）
+async function createFreshSession() {
+  try {
+    const res = await fetch('/api/sessions', { method: 'POST' })
+    const json = await res.json()
+    sessionId.value = json.data?.id
+    if (sessionId.value) {
+      setChatSessionId(currentUsername(), sessionId.value)
+    }
+  } catch (e) {
+    console.error('Failed to create session:', e)
+  }
+}
+
 // ============ Lifecycle ============
 onMounted(async () => {
   connectWS()
@@ -789,25 +832,69 @@ onMounted(async () => {
   }
   // If session was stale (404 cleared it), create a fresh one
   if (!sessionId.value) {
-    try {
-      const res = await fetch('/api/sessions', { method: 'POST' })
-      const json = await res.json()
-      sessionId.value = json.data?.id
-      if (sessionId.value) {
-        setChatSessionId(currentUsername(), sessionId.value)
-      }
-    } catch (e) {
-      console.error('Failed to create session:', e)
-    }
+    await createFreshSession()
   }
 })
 
+// ============ KeepAlive 激活/停用（切页不打断主对话） ============
+// ChatView 被 App.vue 的 <KeepAlive> 缓存：切页不断开聊天 WS，这轮回复在后台
+// 继续流式接收，回到 /chat 时对话现场原样保留。这里只处理"离开期间世界变了"的对准。
+let activatedOnce = false
+
+onActivated(async () => {
+  // 首次激活紧跟 onMounted，会话/模式已初始化过，跳过避免重复请求
+  if (!activatedOnce) {
+    activatedOnce = true
+    return
+  }
+
+  // 登出→重登（组件不重挂）：WS 仍挂旧用户身份，强制重建
+  if (wsUserId !== currentUsername()) {
+    reconnectAsCurrentUser()
+  } else if (!ws || (ws.readyState !== WebSocket.OPEN && ws.readyState !== WebSocket.CONNECTING)) {
+    // 掉线且重连定时器不在跑（极端边界）：立即补连
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer)
+      reconnectTimer = null
+    }
+    connectWS()
+  }
+
+  // 会话对准：?session= 优先（SessionsView 点开会话跳回），其次当前用户保存的会话。
+  // 与当前一致则什么都不做 —— 内存里的流式现场正是保活的意义所在。
+  const desired = route.query.session || getChatSessionId(currentUsername())
+  if (desired && desired !== sessionId.value) {
+    sessionId.value = desired
+    setChatSessionId(currentUsername(), desired)
+    await loadSessionHistory(desired)
+    // 会话已不存在（loadSessionHistory 404 清了 ID）→ 新建兜底
+    if (!sessionId.value) await createFreshSession()
+  } else if (!desired && sessionId.value) {
+    // 保存的会话被清（如登出）且无跳转参数：按挂载语义新建
+    await createFreshSession()
+  }
+
+  // 标签刷新：模型名/聊天模式可能在别的页面被改
+  loadChatModelName()
+  try {
+    const resp = await apiGet('/api/integrations/state/current_mode')
+    if (resp?.value) chatMode.value = resp.value
+  } catch { /* 集成平台未启用，默认 aether */ }
+})
+
+onDeactivated(() => {
+  // WS 保持连接（保活的意义所在），只停页面级副作用：
+  // 相机预览弹窗（feed 轮询/重试计时器）与进行中的录音
+  closeCamera()
+  voice.stop()
+})
+
 onUnmounted(() => {
+  // KeepAlive 下切页不会走到这里（组件只是停用），仅真卸载时兜底清理
   if (ws) ws.close()
   if (reconnectTimer) clearTimeout(reconnectTimer)
+  if (scrollRaf) cancelAnimationFrame(scrollRaf)
   window.removeEventListener('mode-changed', onModeChanged)
-  // 摄像头预览模态框（feedRetryTimer / 轮询）与欢迎语计时器（greetingTimer）
-  // 均由各自 composable 的 onScopeDispose 自行清理，这里无需感知。
   // 保持 sessionId 在 sessionStorage 中，下次进入可恢复
 })
 </script>
