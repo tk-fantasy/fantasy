@@ -282,7 +282,7 @@ class TestWeatherHelpers:
         assert _beaufort_from_kmh(200) == "12"
 
     def test_condition_zh(self):
-        from app.services.weather_service import _HA_CONDITION_ZH, _get_ha_weather  # noqa: F401
+        from app.services.weather_service import _HA_CONDITION_ZH, _get_ha_weather
         assert _HA_CONDITION_ZH["partlycloudy"] == "多云"
         assert _HA_CONDITION_ZH["pouring"] == "暴雨"
         assert _HA_CONDITION_ZH["clear-night"] == "晴夜"
